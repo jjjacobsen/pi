@@ -1,0 +1,150 @@
+// pi-browser: thin TypeScript glue for the Zig headless-browser backend.
+//
+// pi extensions must be TypeScript modules, so this file only registers tool
+// schemas and bridges tool calls to the Zig backend (src/browser.zig) over a
+// newline-delimited JSON pipe. All browser logic lives in Zig, which talks
+// MCP to `lightpanda mcp`.
+//
+// Protocol (one JSON object per line):
+//   -> {"id":1,"tool":"goto","params":"{\"url\":\"...\"}"}   params is a JSON string
+//   <- {"id":1,"ok":true,"result":"..."} | {"id":1,"ok":false,"error":"..."}
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { spawn, spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
+import { existsSync } from "node:fs";
+import path from "node:path";
+
+const T = Type;
+const enumOpt = (values: string[], description: string) =>
+  T.Optional(T.Union(values.map((v) => T.Literal(v)), { description }));
+const intOpt = (description: string) => T.Optional(T.Integer({ description }));
+const strOpt = (description: string) => T.Optional(T.String({ description }));
+const urlOpt = (description: string) => strOpt(description);
+
+// name: tool name exposed to the model. mcp: lightpanda MCP tool behind it.
+// params are passed through as-is, so keys must match the MCP argument names.
+const TOOLS = [
+  { name: "browser_open", mcp: "goto", description: "Navigate to a URL. The page stays loaded for later browser_* calls.",
+    params: { url: T.String({ description: "The URL to navigate to." }), waitUntil: enumOpt(["load", "domcontentloaded", "networkalmostidle", "networkidle", "done"], "Event that completes navigation. Default 'load'. Prefer 'domcontentloaded' + browser_wait_selector on ad-heavy pages."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_read", mcp: "markdown", description: "Read the current page (or a url/selector) as token-efficient markdown.",
+    params: { url: urlOpt("Optional URL to navigate to before reading."), selector: strOpt("Optional CSS selector; read only that element's subtree."), backendNodeId: intOpt("Optional node id; read only that subtree."), maxBytes: intOpt("Soft cap on output size in bytes."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_html", mcp: "html", description: "Get the raw serialized HTML of the page (or a node/selector).",
+    params: { url: urlOpt("Optional URL to navigate to first."), selector: strOpt("Optional CSS selector; dump only that element's outerHTML."), backendNodeId: intOpt("Optional node id; dump only that node's outerHTML."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_tree", mcp: "tree", description: "Semantic DOM tree (role, name, value, backendNodeId per node). Best starting point for an unfamiliar page.",
+    params: { url: urlOpt("Optional URL to navigate to first."), maxDepth: intOpt("Maximum tree depth; start shallow."), backendNodeId: intOpt("Optional node id; tree for that element only."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_links", mcp: "links", description: "Extract all links from the loaded page as absolute URLs, one per line.",
+    params: { url: urlOpt("Optional URL to navigate to first."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_click", mcp: "click", description: "Click an element by CSS selector or backendNodeId. Returns the resulting URL and title.",
+    params: { selector: strOpt("CSS selector of the element to click. Preferred."), backendNodeId: intOpt("Node id of the element to click.") } },
+  { name: "browser_fill", mcp: "fill", description: "Fill text into an input element by CSS selector or backendNodeId.",
+    params: { selector: strOpt("CSS selector of the input. Preferred."), backendNodeId: intOpt("Node id of the input."), value: T.String({ description: "The text to fill." }) } },
+  { name: "browser_press", mcp: "press", description: "Press a keyboard key (e.g. 'Enter', 'Tab', 'a'), optionally targeted at an element.",
+    params: { key: T.String({ description: "The key to press." }), selector: strOpt("Optional CSS selector of the target element."), backendNodeId: intOpt("Optional node id of the target element.") } },
+  { name: "browser_scroll", mcp: "scroll", description: "Scroll the window or a specific element. Returns the scroll position.",
+    params: { x: intOpt("Horizontal scroll offset."), y: intOpt("Vertical scroll offset."), backendNodeId: intOpt("Optional node id of the element to scroll.") } },
+  { name: "browser_hover", mcp: "hover", description: "Hover over an element, triggering mouseover/mouseenter events.",
+    params: { selector: strOpt("CSS selector of the element. Preferred."), backendNodeId: intOpt("Node id of the element.") } },
+  { name: "browser_select", mcp: "selectOption", description: "Select an option in a <select> dropdown by value.",
+    params: { selector: strOpt("CSS selector of the <select>. Preferred."), backendNodeId: intOpt("Node id of the <select>."), value: T.String({ description: "The option value to select." }) } },
+  { name: "browser_check", mcp: "setChecked", description: "Check or uncheck a checkbox or radio input.",
+    params: { selector: strOpt("CSS selector of the input. Preferred."), backendNodeId: intOpt("Node id of the input."), checked: T.Optional(T.Boolean({ description: "Check (true) or uncheck (false). Default true." })) } },
+  { name: "browser_evaluate", mcp: "evaluate", description: "Run JavaScript in the page and return the result as a string.",
+    params: { script: T.String({ description: "JS expression or statement; its value is returned." }), url: urlOpt("Optional URL to navigate to first."), save: strOpt("Bridge-store key; the result is re-exposed as lp.<name> to later evaluates."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_wait_selector", mcp: "waitForSelector", description: "Wait until an element matching a CSS selector appears. Returns its backendNodeId.",
+    params: { selector: T.String({ description: "The CSS selector to wait for." }), timeout: intOpt("Timeout in ms. Default 5000.") } },
+  { name: "browser_wait_script", mcp: "waitForScript", description: "Wait until a JS expression evaluates truthy.",
+    params: { script: T.String({ description: "JS expression (not a statement) re-evaluated until truthy." }), timeout: intOpt("Timeout in ms. Default 5000.") } },
+  { name: "browser_wait_state", mcp: "waitForState", description: "Wait for the page to reach a load state.",
+    params: { state: T.Union([T.Literal("load"), T.Literal("domcontentloaded"), T.Literal("networkalmostidle"), T.Literal("networkidle"), T.Literal("done")], { description: "Load state to wait for. 'networkidle' is the usual choice for dynamic pages." }), timeout: intOpt("Timeout in ms. Default 5000.") } },
+  { name: "browser_extract", mcp: "extract", description: "Extract structured data from the page using a schema mapping field names to CSS-selector specs.",
+    params: { schema: T.String({ description: "JSON object literal mapping output field names to CSS-selector specs, e.g. {\"title\":\"h1\",\"price\":\".price\"}." }), save: strOpt("Bridge-store key for later evaluates.") } },
+  { name: "browser_structured", mcp: "structuredData", description: "Extract structured data (JSON-LD, OpenGraph, etc) from the loaded page.",
+    params: { url: urlOpt("Optional URL to navigate to first."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_forms", mcp: "detectForms", description: "Detect all forms on the page with fields, types, and required status.",
+    params: { url: urlOpt("Optional URL to navigate to first."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_interactive", mcp: "interactiveElements", description: "Extract interactive elements (buttons, links, inputs, etc) from the page.",
+    params: { url: urlOpt("Optional URL to navigate to first."), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_node", mcp: "nodeDetails", description: "Get details for a node by backendNodeId, including a ready-to-use CSS selector.",
+    params: { backendNodeId: T.Integer({ description: "The backend node ID." }) } },
+  { name: "browser_find", mcp: "findElement", description: "Find interactive elements by ARIA role and/or accessible name. Returns backend node IDs.",
+    params: { role: strOpt("ARIA role to match (e.g. 'button', 'link', 'textbox')."), name: strOpt("Accessible name substring to match (case-insensitive).") } },
+  { name: "browser_console", mcp: "consoleLogs", description: "Get buffered console.log/warn/error messages from the current page, then clear the buffer.",
+    params: {} },
+  { name: "browser_cookies", mcp: "getCookies", description: "Get cookies stored in the browser.",
+    params: { url: urlOpt("Restrict to cookies matching this URL's host. Defaults to the current page."), all: T.Optional(T.Boolean({ description: "Dump every cookie regardless of host." })) } },
+  { name: "browser_url", mcp: "getUrl", description: "Get the URL of the page currently loaded in the browser.",
+    params: {} },
+  { name: "browser_search", mcp: "search", description: "Run a web search and return the results as markdown.",
+    params: { query: T.String({ description: "The search query." }), timeout: intOpt("Timeout in ms. Default 10000.") } },
+];
+
+const root = path.resolve(import.meta.dirname, "..");
+const bin = path.join(root, "zig-out", "bin", "pi-browser");
+
+if (!existsSync(bin)) {
+  const r = spawnSync("zig", ["build"], { cwd: root, stdio: "inherit" });
+  if (r.status !== 0 || !existsSync(bin)) {
+    throw new Error(`pi-browser binary missing; run \`zig build\` in ${root}`);
+  }
+}
+
+const child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
+let nextId = 1;
+const pending = new Map();
+const settle = (id, fn) => {
+  const p = pending.get(id);
+  if (p) {
+    pending.delete(id);
+    fn(p);
+  }
+};
+
+const rl = createInterface({ input: child.stdout });
+rl.on("line", (line) => {
+  try {
+    const msg = JSON.parse(line);
+    if (msg.ok) settle(msg.id, (p) => p.resolve(msg.result));
+    else settle(msg.id, (p) => p.reject(new Error(msg.error)));
+  } catch {}
+});
+child.on("exit", (code) => {
+  for (const p of pending.values()) p.reject(new Error(`browser backend exited (code ${code})`));
+  pending.clear();
+});
+child.on("error", (err) => {
+  for (const p of pending.values()) p.reject(err);
+  pending.clear();
+});
+
+function call(mcp, params) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    const done = (fn, v) => {
+      pending.delete(id);
+      fn(v);
+    };
+    pending.set(id, {
+      resolve: (v) => done(resolve, v),
+      reject: (e) => done(reject, e),
+    });
+    child.stdin.write(JSON.stringify({ id, tool: mcp, params: JSON.stringify(params) }) + "\n");
+  });
+}
+
+export default function (pi: ExtensionAPI) {
+  for (const t of TOOLS) {
+    pi.registerTool({
+      name: t.name,
+      label: t.name,
+      description: t.description,
+      parameters: T.Object(t.params),
+      async execute(_toolCallId, params, signal) {
+        if (signal?.aborted) throw new Error("aborted");
+        const result = await call(t.mcp, params);
+        return { content: [{ type: "text", text: result }], details: {} };
+      },
+    });
+  }
+}
