@@ -110,4 +110,10 @@ exercises the whole stack and is the gate for `mise check`.
 - **Lightpanda is early-stage**: its own JS engine is not Chromium-complete;
   heavy sites may misrender. Lightpanda nightly is installed via
   `brew install lightpanda-io/browser/lightpanda`.
+- **Possible future: build Lightpanda from source as a git submodule** of this
+  repo instead of relying on the brew nightly. This would pin the exact
+  browser version our extension is tested against and allow local patches.
+  Add the submodule under e.g. `third_party/lightpanda` and build it with a
+  mise task; the Zig backend would prefer the locally built binary over
+  `lightpanda` from PATH.
 - **MAX_LINE cap**: single messages over 64MB fail with LineTooLong.
