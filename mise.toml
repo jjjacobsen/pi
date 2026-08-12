@@ -1,0 +1,7 @@
+[tasks.build]
+run = "zig build"
+description = "Build all extension binaries"
+
+[tasks.check]
+run = "zig build run -- --self-check"
+description = "Build and run the browser extension self-check"

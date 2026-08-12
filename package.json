@@ -1,0 +1,10 @@
+{
+  "name": "jonah-pi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Jonah's custom pi extensions, skills, and config",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
