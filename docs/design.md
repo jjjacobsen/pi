@@ -27,11 +27,17 @@ Why this split:
   surface: navigation, extraction (markdown/html/tree/links), interaction
   (click/fill/press/scroll/hover/select/check), JS evaluate, waits,
   structured data, cookies, console logs, and web search.
-- CDP (`lightpanda serve --cdp-port`) was the alternative: full control
-  including screenshots, but requires a WebSocket client, which Zig's stdlib
-  does not provide, so we would have to hand-roll RFC 6455. MCP covers the
-  interaction surface with a trivial protocol. Add a CDP client in Zig later
-  if screenshots become necessary.
+- CDP (`lightpanda serve --cdp-port`) was the alternative. CDP (Chrome
+  DevTools Protocol) is the remote-control language Chromium-based browsers
+  speak: a set of JSON commands like "capture a screenshot" or "run this
+  JavaScript", with the browser also pushing messages at any time (page
+  loaded, console line, network event). That push behavior needs a
+  persistent two-way channel, and CDP's channel is WebSocket (RFC 6455).
+  Zig's stdlib (0.16) has no WebSocket client, so talking CDP means
+  implementing the WebSocket wire protocol ourselves (handshake, frame
+  parsing, payload masking, ping/pong), roughly 300-500 lines of byte-level
+  code. MCP covers the interaction surface with a trivial protocol, so we
+  chose MCP. Add a CDP client in Zig later if screenshots become necessary.
 
 ## Protocols
 
@@ -88,8 +94,12 @@ exercises the whole stack and is the gate for `mise check`.
 
 ## Known limitations and upgrade paths
 
-- **No screenshots**: MCP is text-only. Add a Zig CDP client (hand-rolled
-  WebSocket) against `lightpanda serve --cdp-port` when needed.
+- **No screenshots**: MCP is text-only, and screenshots are the one thing
+  CDP gives us that MCP does not. When screenshots matter, add a Zig CDP
+  client against `lightpanda serve --cdp-port`. That means speaking
+  WebSocket, either hand-rolled RFC 6455 in Zig (see the architecture
+  section above) or, as an escape hatch, letting a JS WebSocket library
+  handle it from the glue side instead of Zig.
 - **Session is per-process**: the loaded page lives in the `lightpanda mcp`
   process spawned by this backend. `lightpanda mcp` supports sessions
   (session_new/list/close) and script saving (`save`, PandaScript); the
