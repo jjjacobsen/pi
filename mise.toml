@@ -5,3 +5,7 @@ description = "Build all extension binaries"
 [tasks.check]
 run = "zig build run -- --self-check"
 description = "Build and run the browser extension self-check"
+
+[tools]
+zig = "0.16.0"
+zls = "0.16.0"
