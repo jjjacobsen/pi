@@ -18,7 +18,7 @@ house, piece by piece
 `extensions/browser.ts` + `src/browser.zig`. Gives the model 26 `browser_*`
 tools (navigate, read, click, fill, evaluate, waits, extract, search, ...)
 backed by a real headless browser (Lightpanda) with a persistent session.
-See [docs/design.md](docs/design.md).
+See [docs/architecture.md](docs/architecture.md).
 
 ```sh
 mise check        # build + self-check (needs `lightpanda` on PATH)
@@ -28,4 +28,4 @@ mise check        # build + self-check (needs `lightpanda` on PATH)
 
 1. Write the backend in `src/foo.zig`, add it to the `bins` list in `build.zig`
 2. Write `extensions/foo.ts` glue that spawns the binary and registers tools
-3. Document it in `docs/design.md` and this README
+3. Document it in `docs/architecture.md` and this README
