@@ -8,7 +8,7 @@ house, piece by piece
 
 - `extensions/` - TypeScript extension entry points (pi requires TS modules)
 - `src/` - Zig backends. One binary per extension, built by `build.zig`
-- `docs/` - design notes
+- `docs/` - design notes; [installed-packages.md](docs/installed-packages.md) lists all pi packages installed via `settings.json`
 - `package.json` - pi package manifest; load this repo into pi with `pi install /path/to/this/repo`
 
 ## Extensions
