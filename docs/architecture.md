@@ -21,23 +21,21 @@ Why this split:
   JSON, register tools.
 - Everything else lives in Zig (`src/browser.zig`). It owns the browser
   process lifecycle, the MCP session, error handling, and result extraction.
-  Future logic (post-processing, screenshots via CDP) grows in Zig.
+  Future logic (post-processing) grows in Zig.
 - Wire protocol to the browser is **MCP over stdio** (JSON-RPC 2.0,
   newline-delimited). Lightpanda's MCP server exposes the full interaction
   surface: navigation, extraction (markdown/html/tree/links), interaction
   (click/fill/press/scroll/hover/select/check), JS evaluate, waits,
   structured data, cookies, console logs, and web search.
-- CDP (`lightpanda serve --cdp-port`) was the alternative. CDP (Chrome
-  DevTools Protocol) is the remote-control language Chromium-based browsers
-  speak: a set of JSON commands like "capture a screenshot" or "run this
-  JavaScript", with the browser also pushing messages at any time (page
-  loaded, console line, network event). That push behavior needs a
-  persistent two-way channel, and CDP's channel is WebSocket (RFC 6455).
-  Zig's stdlib (0.16) has no WebSocket client, so talking CDP means
-  implementing the WebSocket wire protocol ourselves (handshake, frame
-  parsing, payload masking, ping/pong), roughly 300-500 lines of byte-level
-  code. MCP covers the interaction surface with a trivial protocol, so we
-  chose MCP. Add a CDP client in Zig later if screenshots become necessary.
+- CDP (`lightpanda serve`) was the alternative. CDP (Chrome DevTools
+  Protocol) is the remote-control language Chromium-based browsers speak.
+  Its channel is WebSocket (RFC 6455), which Zig's stdlib (0.16) does not
+  implement, so talking CDP would mean hand-rolling the wire protocol
+  (handshake, frame parsing, payload masking, ping/pong), roughly 300-500
+  lines of byte-level code. MCP covers the interaction surface with a
+  trivial protocol, so we chose MCP. CDP is not an upgrade path: lightpanda
+  has no graphical rendering engine, so `Page.captureScreenshot` returns a
+  placeholder image. Vision is out of scope for this extension.
 
 ## Protocols
 
@@ -94,12 +92,12 @@ exercises the whole stack and is the gate for `mise check`.
 
 ## Known limitations and upgrade paths
 
-- **No screenshots**: MCP is text-only, and screenshots are the one thing
-  CDP gives us that MCP does not. When screenshots matter, add a Zig CDP
-  client against `lightpanda serve --cdp-port`. That means speaking
-  WebSocket, either hand-rolled RFC 6455 in Zig (see the architecture
-  section above) or, as an escape hatch, letting a JS WebSocket library
-  handle it from the glue side instead of Zig.
+- **No screenshots, by design**: lightpanda has no graphical rendering
+  engine, so there are no pixels to capture. `Page.captureScreenshot`
+  returns a placeholder image and MCP is text-only, so this extension is
+  deliberately text-based. A workflow that needs real screenshots or vision
+  requires a different browser engine (e.g., Chromium), not an addition to
+  this one.
 - **Session is per-process**: the loaded page lives in the `lightpanda mcp`
   process spawned by this backend. `lightpanda mcp` supports sessions
   (session_new/list/close) and script saving (`save`, PandaScript); the
