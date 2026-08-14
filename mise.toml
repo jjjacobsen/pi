@@ -7,5 +7,13 @@ run = "zig build run -- --self-check"
 description = "Build and run the browser extension self-check"
 
 [tools]
+hk = "latest"
+gitleaks = "latest"
+pkl = "latest"
+taplo = "latest"
+typos = "latest"
 zig = "0.16.0"
 zls = "0.16.0"
+
+[env]
+HK_MISE = 1
