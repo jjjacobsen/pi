@@ -79,8 +79,22 @@ matched by id; unrelated notifications are skipped.
   therefore closes the child's stdin pipe first, then `child.kill` (which
   signals and reaps). Null `child.stdin` after closing to avoid a double
   close in its cleanup.
-- The child process's stderr is inherited, so lightpanda logs land in pi's
-  stderr. Run with `LP_*` env vars or `--log-level` as needed.
+- The child process's stderr is **piped**, not inherited: a background
+  thread drains it and forwards only `$level=error` / `$level=fatal` log
+  lines to pi's stderr. Everything below error is dropped — pages drive
+  warn/info noise (websocket reconnects, `console.*` calls) that lightpanda
+  logs by default and that would otherwise flood the TUI. To see full
+  lightpanda logs, run `lightpanda mcp --log-level debug` manually.
+- lightpanda applies its HTTP transfer timeout to WebSocket connections and
+  never resets it after the upgrade, so with the default 5s cap, idle
+  persistent sockets (webpack HMR, Supabase Realtime, ...) die every 5
+  seconds, pages auto-reconnect in an endless loop, and each disconnect
+  logs a warn. We spawn lightpanda with `--http-timeout 0` so websockets
+  stay connected, and bound every MCP tool call ourselves with
+  `CALL_TIMEOUT_MS` (120s, enforced via `posix.poll` in `readLine`) so a
+  stalled transfer cannot hang the backend forever. Lightpanda's own
+  tool-level timeouts (navigation 10s, waits 5s, evaluate 30s) are far
+  shorter and unaffected.
 - The main loop reads requests from our own stdin (fd 0); the Browser's
   line reader is used for the child's stdout only.
 
