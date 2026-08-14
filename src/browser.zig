@@ -22,6 +22,23 @@ const List = std.array_list.AlignedManaged(u8, null);
 const MAX_LINE = 64 * 1024 * 1024; // hard cap on a single message line
 const CHUNK = 64 * 1024;
 
+// Backstop for a single MCP tool call. Lightpanda runs its own (far shorter)
+// timeouts for navigation, waits, and evaluate, so this only fires when a
+// transfer stalls. We disable lightpanda's http timeout (--http-timeout 0)
+// because it is applied to websockets too and kills idle persistent
+// connections (webpack HMR, supabase realtime, ...), which makes pages
+// reconnect in an endless loop. With it disabled, this deadline is what
+// keeps a stalled transfer from hanging the backend forever.
+const CALL_TIMEOUT_MS: i64 = 120_000;
+
+// Monotonic wall clock in milliseconds (std.time.milliTimestamp was removed
+// in Zig 0.16; this is the remaining supported way to read a clock).
+fn nowMs() i64 {
+    var ts: posix.timespec = undefined;
+    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
+}
+
 var g_terminate = std.atomic.Value(bool).init(false);
 
 const Request = struct {
@@ -42,14 +59,21 @@ const Browser = struct {
     out_file: std.Io.File, // child -> parent (responses)
     next_id: i64 = 1,
     line_buf: List, // leftover bytes between lines
+    stderr_thread: ?std.Thread = null,
 
     fn spawn(io: std.Io, line_alloc: Allocator) !Browser {
+        // --http-timeout 0: lightpanda applies its http transfer timeout to
+        // websocket connections too (it never resets it after the upgrade),
+        // so the default 5s cap kills idle persistent sockets, pages
+        // auto-reconnect, and the cycle repeats forever. CALL_TIMEOUT_MS in
+        // call() replaces it as the bound on our side.
         const child = try std.process.spawn(io, .{
-            .argv = &.{ "lightpanda", "mcp" },
+            .argv = &.{ "lightpanda", "mcp", "--http-timeout", "0" },
             .stdin = .pipe,
             .stdout = .pipe,
-            .stderr = .inherit,
-        });        var b = Browser{
+            .stderr = .pipe,
+        });
+        var b = Browser{
             .io = io,
             .child = child,
             .in_file = child.stdin.?,
@@ -57,6 +81,11 @@ const Browser = struct {
             .line_buf = List.init(line_alloc),
         };
         errdefer b.deinit();
+        // Drain lightpanda's stderr on a background thread and forward only
+        // error/fatal lines to our stderr. Inheriting it directly flooded
+        // the TUI: pages drive warn/info noise (websocket reconnects,
+        // console.* calls) that lightpanda logs by default.
+        b.stderr_thread = std.Thread.spawn(.{}, stderrForwarder, .{b.child.stderr.?.handle}) catch null;
         try b.handshake();
         return b;
     }
@@ -67,6 +96,13 @@ const Browser = struct {
         // cleanup does not close the fd a second time), then signal and reap.
         b.in_file.close(b.io);
         b.child.stdin = null;
+        // Closing the stderr pipe makes the forwarder thread's blocking read
+        // fail, so it exits; join before freeing anything it touches.
+        if (b.child.stderr) |stderr_file| {
+            stderr_file.close(b.io);
+            b.child.stderr = null;
+        }
+        if (b.stderr_thread) |t| t.join();
         b.child.kill(b.io);
         b.line_buf.deinit();
     }
@@ -74,7 +110,7 @@ const Browser = struct {
     fn handshake(b: *Browser) !void {
         const init = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"pi-browser\",\"version\":\"0.1.0\"}}}\n";
         try writeAllIo(b.io, b.in_file, init);
-        _ = try readLine(b.out_file.handle, &b.line_buf, null) orelse return error.McpClosed;
+        _ = try readLine(b.out_file.handle, &b.line_buf, null, null) orelse return error.McpClosed;
         // we do not check the response contents, just that it came back
         try writeAllIo(b.io, b.in_file, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n");
     }
@@ -88,7 +124,9 @@ const Browser = struct {
         const req = try std.fmt.allocPrint(alloc, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"tools/call\",\"params\":{{\"name\":\"{s}\",\"arguments\":{s}}}}}\n", .{ id, tool, params });
         try writeAllIo(b.io, b.in_file, req);
 
-        while (try readLine(b.out_file.handle, &b.line_buf, arena)) |line| {
+        const deadline = nowMs() + CALL_TIMEOUT_MS;
+
+        while (try readLine(b.out_file.handle, &b.line_buf, arena, deadline)) |line| {
             const parsed = json.parseFromSlice(json.Value, alloc, line, .{ .ignore_unknown_fields = true }) catch |err| return err;
             const obj = parsed.value.object;
             const msg_id = obj.get("id") orelse continue;
@@ -122,8 +160,10 @@ const Browser = struct {
 // Reads one newline-delimited line from a fd. The returned slice is
 // owned by `arena` (or page_allocator when null) and survives until the
 // next call. Returns null on EOF. `line_buf` holds leftover bytes between
-// calls and must be distinct per fd.
-fn readLine(fd: posix.fd_t, line_buf: *List, arena: ?Allocator) !?[]const u8 {
+// calls and must be distinct per fd. `deadline` is a wall-clock millisecond
+// timestamp; when set and data has not arrived by then, returns
+// error.McpTimeout. Pass null for no deadline.
+fn readLine(fd: posix.fd_t, line_buf: *List, arena: ?Allocator, deadline: ?i64) !?[]const u8 {
     const alloc = arena orelse std.heap.page_allocator;
     var consumed: usize = 0;
     while (true) {
@@ -141,6 +181,15 @@ fn readLine(fd: posix.fd_t, line_buf: *List, arena: ?Allocator) !?[]const u8 {
             return line;
         }
         if (line_buf.items.len > MAX_LINE) return error.LineTooLong;
+        if (deadline) |dl| {
+            const remaining = dl - nowMs();
+            if (remaining <= 0) return error.McpTimeout;
+            var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
+            _ = posix.poll(&fds, @intCast(@min(remaining, 2147483647))) catch |err| return err;
+            // Only proceed to read when there is data or the pipe is closed;
+            // anything else (spurious wake) re-checks the deadline.
+            if (fds[0].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP) == 0) continue;
+        }
         var chunk: [CHUNK]u8 = undefined;
         const n = try posix.read(fd, &chunk);
         if (n == 0) {
@@ -158,6 +207,27 @@ fn writeAllIo(io: std.Io, file: std.Io.File, bytes: []const u8) !void {
     var w = std.Io.File.writerStreaming(file, io, &wbuf);
     try w.interface.writeAll(bytes);
     try w.flush();
+}
+
+// Reads lightpanda's stderr and forwards only error/fatal log lines to our
+// stderr. Everything below error is suppressed: pages drive warn/info noise
+// (websocket reconnect failures, console.* calls) that would otherwise
+// flood the TUI. Lightpanda logfmt lines carry "$level="; any other output
+// is dropped too.
+fn stderrForwarder(fd: posix.fd_t) void {
+    var line_buf = List.init(std.heap.page_allocator);
+    defer line_buf.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    while (true) {
+        _ = arena_state.reset(.retain_capacity);
+        const line = readLine(fd, &line_buf, arena_state.allocator(), null) catch return;
+        if (line) |l| {
+            if (mem.indexOf(u8, l, "$level=error") != null or mem.indexOf(u8, l, "$level=fatal") != null) {
+                std.debug.print("{s}\n", .{l});
+            }
+        } else return;
+    }
 }
 
 fn appendJsonEscaped(buf: *List, s: []const u8) !void {
@@ -237,7 +307,7 @@ pub fn main(init: std.process.Init) !void {
         _ = arena_state.reset(.retain_capacity);
         const arena = arena_state.allocator();
 
-        const line = readLine(posix.STDIN_FILENO, &stdin_buf, arena) catch |err| {
+        const line = readLine(posix.STDIN_FILENO, &stdin_buf, arena, null) catch |err| {
             std.debug.print("pi-browser: {s}\n", .{@errorName(err)});
             break;
         } orelse break;
