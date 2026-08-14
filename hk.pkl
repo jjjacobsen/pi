@@ -1,0 +1,57 @@
+amends "package://github.com/jdx/hk/releases/download/v1.54.0/hk@1.54.0#/Config.pkl"
+
+import "package://github.com/jdx/hk/releases/download/v1.54.0/hk@1.54.0#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+  // repo hygiene
+  ["check-added-large-files"] = Builtins.check_added_large_files
+  ["check-case-conflict"] = Builtins.check_case_conflict
+  ["check-executables-have-shebangs"] = Builtins.check_executables_have_shebangs
+  ["check-merge-conflict"] = Builtins.check_merge_conflict
+  ["check-symlinks"] = Builtins.check_symlinks
+  ["detect-private-key"] = Builtins.detect_private_key
+  ["byte-order-marker"] = Builtins.byte_order_marker
+  ["mixed-line-ending"] = Builtins.mixed_line_ending
+  ["newlines"] = Builtins.newlines
+  ["trailing-whitespace"] = Builtins.trailing_whitespace
+  ["fix-smart-quotes"] = Builtins.fix_smart_quotes
+  ["typos"] = Builtins.typos
+  ["gitleaks"] = Builtins.gitleaks
+
+  // pkl
+  ["pkl"] = Builtins.pkl
+  ["pkl-format"] = Builtins.pkl_format
+
+  // toml
+  ["taplo"] = Builtins.taplo
+  ["taplo-format"] = Builtins.taplo_format
+
+  // json
+  ["jq"] = Builtins.jq
+
+  // zig: no hk builtin, no zls CLI lint, so the official tooling is a custom step
+  ["zig-fmt"] = new Step {
+    glob = "**/*.zig"
+    check = "zig fmt --check {{files}}"
+    fix = "zig fmt {{files}}"
+  }
+  ["zig-build"] = new Step {
+    glob = "**/*.zig"
+    check = "zig build"
+  }
+}
+
+hooks {
+  ["pre-commit"] {
+    fix = true
+    stash = "git"
+    steps = linters
+  }
+  ["check"] {
+    steps = linters
+  }
+  ["fix"] {
+    fix = true
+    steps = linters
+  }
+}
