@@ -7,6 +7,7 @@ house, piece by piece
 ## Layout
 
 - `extensions/` - TypeScript extension entry points (pi requires TS modules)
+- `prompts/` - prompt templates (slash commands); served to pi via the package manifest
 - `src/` - Zig backends. One binary per extension, built by `build.zig`
 - `docs/` - design notes; [installed-packages.md](docs/installed-packages.md) lists all pi packages installed via `settings.json`
 - `package.json` - pi package manifest; load this repo into pi with `pi install /path/to/this/repo`
@@ -31,6 +32,16 @@ See [docs/architecture.md](docs/architecture.md).
 ```sh
 mise check        # build + self-check (needs `lightpanda` on PATH)
 ```
+
+## Prompts
+
+### q - question only
+
+`prompts/q.md` defines the `/q` slash command. It expands into an instruction
+that tells the model not to make any changes, then passes through whatever you
+type after it. Because this repo is loaded into pi as a package, the template
+is available in every project, no per-machine copy needed. See
+[pi prompt template docs](https://pi.dev) for the format.
 
 ## Adding a new extension
 

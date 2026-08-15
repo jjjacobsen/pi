@@ -7,6 +7,9 @@
   "pi": {
     "extensions": [
       "./extensions"
+    ],
+    "prompts": [
+      "./prompts"
     ]
   },
   "private": true,
