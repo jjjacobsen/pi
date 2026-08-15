@@ -123,6 +123,38 @@ extensions/ as a hk step.
   an anonymous struct used as a fn return type must be a named type
 - `error` is a reserved word: cannot be a struct field name (used `err`)
 
+## 2026-08-15: Zig 0.16 std.net/http API traps while building pi-vision
+
+- `std.Io.net.listen`/`connect` are methods on `Io.net.IpAddress`
+  (`IpAddress.listen(&addr, io, opts)`), not on `Io.net`. They also take
+  `*const IpAddress`, and `listen` returns a `var` (deinit takes `*Server`)
+- `std.Io.Clock` has no `.monotonic`: members are `.real`, `.awake`, `.boot`
+  (use `.awake` for sleeps)
+- `mem.trimRight` is gone; `mem.trim` trims both ends
+- `std.ArrayList(T)` is unmanaged: `.empty` + `append(alloc, item)`
+- `std.http.Client.fetch` DISCARDS the body unless you pass a
+  `response_writer`; `Io.Writer.fixed(buf)` + `writer.end` gives the written
+  length. There is no request deadline anywhere in the client
+- `std.Thread.Condition` no longer exists (no `timedWait` anywhere in std);
+  the new `Io.Mutex`/`Io.Condition` have no timed wait either. For a
+  request deadline, spawn a worker thread + poll an atomic with
+  `Io.sleep`, and unblock a hung read with `stream.shutdown(io, .both)`
+  from the main thread (macOS wakes the blocked reader)
+- `http.Server.Request.readerExpectNone` returns `*Reader` (no error union)
+- Debug allocator prints leaks at exit; the first deadline design leaked the
+  worker structs on every timeout, which showed up as noise in self-check
+  output. Fixed by main-thread-only freeing after join, with a bounded
+  wait for the worker post-shutdown
+- sips defaults its OUTPUT format to the INPUT format, and its WebP writer is
+  broken ("Can't write format: org.webmproject.webp"). Resizing a WebP
+  without an explicit `-s format` fails, so the `-s format` flag must always
+  be passed (jpeg/png/gif). Also: an alpha WebP comes back as PNG, so the
+  data-URL mime must follow what sips produced, not the input mime
+- VP8X chunk layout: flags at chunk+8, canvas width at chunk+12, height at
+  chunk+15 (the header is 8 bytes, the payload 10). The first version read
+  them 12 bytes too far (into the next chunk), which silently produced
+  garbage dimensions and a wrong alpha flag for every extended WebP; only a
+  real-file test caught it
 ## 2026-08-16
 
 - Fixed the /reload staleness trap in `extensions/lib/backend.ts`: pi's

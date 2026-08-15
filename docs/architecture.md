@@ -911,3 +911,125 @@ follow-ups: `ask` op, queue while streaming, one at a time -> `c` copy /
 - The glue unrefs the backend child and its pipes (shared `createBackend`),
   registers `session_shutdown` to kill it, and the backend self-terminates
   on stdin EOF like the other backends.
+# Vision extension (pi-vision)
+
+## Goal
+
+In-house replacement for the third-party @getpipher/vision package: a
+`describe_image` tool that works with text-only primaries (deepseek-v4-flash
+cannot see images). Multimodal models are left alone entirely: the tool is
+hidden from them and pi's native image pass-through does the work, the same
+pattern Claude Code / Codex / Amp use. Everything image-related and all HTTP
+lives in Zig; the TS glue is ~230 lines of registration, capability sync,
+config, and auth resolution.
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/vision.ts    TS glue: describe_image tool, capability sync, /vision, paste hint
+       └─ src/vision.zig     Zig backend: image detection + sips compression + base64 + HTTP
+```
+
+Why this split:
+
+- The glue is the only code inside the pi process, and pi's model registry is
+  the only place provider auth lives. The glue resolves the configured vision
+  model (`ctx.modelRegistry.find` + `getApiKeyAndHeaders`) and hands the
+  base URL, key, and extra headers to Zig per call. Zig stays stateless.
+- Zig owns everything else: path resolution, file read, format detection from
+  header bytes (PNG/JPEG/GIF/WebP, no decode), dimension check, sips
+  compression, base64, the OpenAI-compatible chat/completions request, the
+  response parse, the retry, and the deadline.
+
+## Protocol (newline-delimited JSON on stdin/stdout)
+
+```json
+{"id":1,"op":"describe","path":"img.png","cwd":"/repo","prompt":"...","base_url":"https://openrouter.ai/api/v1","api_key":"sk-...","model":"xiaomi/mimo-v2.5","headers":"[[\"h\",\"v\"]]","max_dimension":1568,"jpeg_quality":85,"timeout_ms":60000}
+{"id":1,"ok":true,"result":"<model text>"}
+{"id":1,"ok":false,"error":"..."}
+```
+
+`headers` is a JSON string of name/value pairs from pi's provider auth
+(serialized by the glue). If it contains no `authorization`, Zig adds
+`Authorization: Bearer <api_key>`.
+
+## Zig behavior
+
+- **Compression**: images within `max_dimension` (default 1568) and under
+  10MB are sent as-is, byte-for-byte (best quality, zero loss, fastest).
+  Bigger images go through `sips -Z <max_dim>` (macOS built-in, same pattern
+  as peon's afplay). Opaque images become JPEG at the configured quality
+  (default 85); images with alpha keep their transparency — GIF stays GIF,
+  PNG and WebP are re-encoded as PNG (sips cannot write WebP). The output
+  mime always matches what sips produced. The temp file is unlinked after
+  reading.
+- **Request**: `POST {base_url}/chat/completions` with the standard
+  `image_url` data-URL content block plus the prompt, `max_tokens: 4096`,
+  `temperature: 0`. Response text is `choices[0].message.content`, falling
+  back to `reasoning_content` for reasoning models that hide the content.
+  Non-2xx responses surface the provider's `error.message` with the status.
+- **Retry**: one retry after 500ms for 429, 5xx, and network errors. 4xx,
+  timeouts, and parse failures fail immediately.
+- **Deadline**: the HTTP call runs on a worker thread so a hung provider
+  cannot stall the backend. The main thread waits with the deadline (60s
+  default, passed per call); on expiry it shuts down the worker's socket
+  (unblocking its read), waits up to 1s for it to exit, joins, and reports
+  the timeout. If the worker is stuck before registering its socket
+  (connect/TLS handshake), the shared structs leak; bounded (~200 bytes)
+  and rare. The glue additionally kills the backend on user abort (Esc), so
+  no request can outlive its turn.
+- TLS uses the std lib's system CA bundle, which on macOS reads the system
+  keychains directly; no cert file handling.
+- **Self-check**: `zig build run -- --self-check` spins up an in-process
+  `std.http.Server` on an ephemeral port (no network) and exercises the full
+  pipeline: passthrough of a small PNG (asserts the data URL is image/png),
+  a server-injected 500 proving the single retry, a forced sips resize to
+  JPEG (skipped with a note when sips is missing), a 400 surfacing the
+  provider error, a 300ms deadline against a 2s-slow server, a missing file,
+  a non-image, and an exact server request count (a wrongly retried 4xx
+  would shift it). It is the gate for `mise check`.
+
+## Glue behavior
+
+- `describe_image` visibility tracks the active model's capability via
+  `pi.getActiveTools()` / `setActiveTools()`: hidden for multimodal models
+  (native pass-through, zero delegation), visible for text-only ones.
+  Re-synced on `session_start` and `model_select`.
+- The `input` hook appends a one-line hint when an image is attached and the
+  primary is text-only: pi otherwise replaces pasted images with
+  "(image omitted: model does not support images)" and the model never knows
+  they existed. Multimodal primaries get the image natively and no hint.
+- Config is `~/.pi/agent/vision.json`: `provider`, `model`, `maxDimension`,
+  `jpegQuality`. Unknown keys from the old @getpipher/vision config are
+  ignored, so the existing file carries over. `/vision show` prints the
+  config; `/vision model <provider/model>` validates against the registry
+  (must exist and have image input) and saves; bare `/vision model` opens a
+  picker over vision-capable models.
+- `createBackend` gained a `restart()` method (kill + respawn, pending calls
+  reject) used when an in-flight describe call is aborted; other extensions
+  are unaffected.
+
+## Flow
+
+`describe_image(path, prompt)` -> glue resolves the vision model + auth ->
+backend reads the image, compresses if needed, base64s, POSTs -> on
+retryable failure one retry -> text returned to the model. `Esc` during the
+call kills and respawns the backend. `input` with images on a text-only
+primary -> hint appended -> model calls describe_image.
+
+## Notes
+
+- The glue unrefs the backend child and its pipes (shared `createBackend`),
+  and the backend self-terminates on stdin EOF like the other backends.
+- Zig 0.16 API notes: `std.http.Client` is a plain struct
+  (`{ .allocator, .io }`), `fetch` discards the body without a
+  `response_writer`, `Io.Writer.fixed` buffers capture it (`out.end` is the
+  written length), `Io.net.IpAddress.listen`/`connect` take
+  `*const IpAddress`, `Io.sleep(io, duration, .awake)` replaces
+  nanosleep, `std.Io.net.Stream.Reader.stream` exposes the raw socket for
+  deadline shutdowns, and `Connection.stream_reader.stream.socket.handle`
+  is the client-side socket. The `Io.Clock` enum has `.real`/`.awake`/
+  `.boot` (no `.monotonic`).
+- The old `~/.pi/agent/vision-audit.log` from @getpipher/vision is
+  orphaned once the package is removed; harmless.
