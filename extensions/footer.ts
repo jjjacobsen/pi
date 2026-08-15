@@ -7,7 +7,9 @@
  *
  * vs the built-in footer this drops the R (cache read), W (cache write),
  * CH (cache hit %) and (auto) compaction segments, and adds a tok/s
- * readout: live while streaming, frozen at the last value once idle.
+ * readout: live while streaming, frozen at the last value once idle. The
+ * live value is a rolling average over the last ~15s of streaming, excluding
+ * downtime pauses, so it reads steady instead of jumping chunk to chunk.
  * Model + reasoning level stay right-aligned.
  *
  * Pure TS glue, no Zig backend: everything comes from the extension API
@@ -34,6 +36,12 @@ const SUBSCRIPTION_PROVIDERS = new Set(["anthropic", "github-copilot", "kimi-cod
 
 // Rough chars-per-token for the live tok/s estimate
 const CHARS_PER_TOKEN = 4;
+// Tok/s smoothing: rolling average over SAMPLE_WINDOW_MS of history, counting
+// only active streaming time (inter-sample gaps > MAX_GAP_MS are downtime and
+// are excluded from the average)
+const SAMPLE_WINDOW_MS = 15000;
+const MAX_GAP_MS = 2000;
+const MIN_ACTIVE_MS = 2000;
 
 interface FooterData {
 	getGitBranch(): string | null;
@@ -109,6 +117,12 @@ function sessionTotals(ctx: ExtensionContext): { input: number; output: number; 
 
 // =============================================================================
 // tok/s (live while streaming, frozen at the last value when idle)
+//
+// The reading is a rolling average over the last ~15s of streaming, so a
+// single burst or hiccup doesn't move it much. Only active streaming time
+// counts toward the average: inter-sample gaps longer than MAX_GAP_MS are
+// treated as downtime (pauses between tool calls, network stalls) and
+// excluded, so a pause doesn't drag the reading toward 0.
 // =============================================================================
 
 function freezeTokPerSec(perSec: number): void {
@@ -117,21 +131,25 @@ function freezeTokPerSec(perSec: number): void {
 	streamFrozen = true;
 }
 
+function activeRatePerSec(samples: { t: number; chars: number }[]): number | null {
+	// Average token rate over the active streaming time in the sample window.
+	// Inter-sample gaps longer than MAX_GAP_MS are downtime and don't count
+	// toward the denominator; returns null until MIN_ACTIVE_MS accumulates.
+	let activeMs = 0;
+	for (let i = 1; i < samples.length; i++) {
+		const gap = samples[i]!.t - samples[i - 1]!.t;
+		if (gap <= MAX_GAP_MS) activeMs += gap;
+	}
+	if (activeMs < MIN_ACTIVE_MS) return null;
+	const chars = samples[samples.length - 1]!.chars - samples[0]!.chars;
+	if (chars <= 0) return null;
+	return (chars / CHARS_PER_TOKEN) / (activeMs / 1000);
+}
+
 function currentTokPerSec(): string | null {
 	if (stream && streaming) {
-		const now = Date.now();
-		const elapsedMs = now - stream.startMs;
-		if (elapsedMs >= 1000) {
-			const first = stream.samples[0]!;
-			const last = stream.samples[stream.samples.length - 1]!;
-			let perSec: number;
-			if (last.t > first.t && now - first.t >= 2000) {
-				perSec = ((last.chars - first.chars) / CHARS_PER_TOKEN) / ((last.t - first.t) / 1000);
-			} else {
-				perSec = (stream.chars / CHARS_PER_TOKEN) / (elapsedMs / 1000);
-			}
-			freezeTokPerSec(perSec);
-		}
+		const perSec = activeRatePerSec(stream.samples);
+		if (perSec !== null) freezeTokPerSec(perSec);
 	}
 	return lastTokPerSec;
 }
@@ -248,18 +266,24 @@ export default function (pi: ExtensionAPI) {
 		if (ev.type === "text_delta" || ev.type === "thinking_delta") stream.chars += ev.delta.length;
 		const now = Date.now();
 		stream.samples.push({ t: now, chars: stream.chars });
-		while (stream.samples.length > 2 && now - stream.samples[0]!.t > 5000) stream.samples.shift();
+		while (stream.samples.length > 2 && now - stream.samples[0]!.t > SAMPLE_WINDOW_MS) stream.samples.shift();
 		if (footerTui) footerTui.requestRender();
 	});
 
 	pi.on("message_end", () => {
 		if (!streaming) return;
 		streaming = false;
-		// Freeze the final value: keep the last live reading, or fall back to
-		// the stream's overall average when it was too short to measure live.
+		// Freeze the final value: keep the last live reading, or fall back to the
+		// stream's overall average when it was too short for a windowed one.
+		// The fallback includes any brief downtime, but for such short streams
+		// that's negligible.
 		if (!streamFrozen && stream && stream.chars > 0) {
-			const elapsedMs = Date.now() - stream.startMs;
-			if (elapsedMs > 0) freezeTokPerSec((stream.chars / CHARS_PER_TOKEN) / (elapsedMs / 1000));
+			const perSec = activeRatePerSec(stream.samples);
+			if (perSec !== null) freezeTokPerSec(perSec);
+			else {
+				const elapsedMs = Date.now() - stream.startMs;
+				if (elapsedMs > 0) freezeTokPerSec((stream.chars / CHARS_PER_TOKEN) / (elapsedMs / 1000));
+			}
 		}
 		if (footerTui) footerTui.requestRender();
 	});
