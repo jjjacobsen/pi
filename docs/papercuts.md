@@ -134,3 +134,11 @@ extensions/ as a hk step.
   `pi.on("session_shutdown", () => backend.kill())` to close stdin and
   SIGTERM the old child. Verified: `zig build` is skipped when current, so
   plain startup latency is unchanged.
+- `git merge` refuses outright when a file the merge rewrites has uncommitted
+  local changes ("Your local changes ... would be overwritten by merge"),
+  even when the local diff and the merge both touch disjoint regions of the
+  file (docs/architecture.md: local wt-section edits vs branch appends).
+  Fix: `git stash push`, merge, resolve, `git stash pop` — the pop
+  auto-merges the local diff back in, and the working tree ends up identical
+  to what you had. The /wt dirty-worktree reporting work in src/wt.zig makes
+  the error friendlier but cannot fix the underlying refusal.

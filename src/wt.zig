@@ -172,6 +172,40 @@ fn currentBranchLabel(arena: Allocator, io: std.Io, root: []const u8) ![]const u
     return "detached HEAD";
 }
 
+// Summarizes uncommitted changes in a worktree, e.g. "2 modified, 1
+// untracked (README.md, build.zig)". Returns "" when clean.
+fn dirtyFiles(arena: Allocator, io: std.Io, path: []const u8) ![]const u8 {
+    const status = try runGit(arena, io, &.{ "git", "-C", path, "status", "--porcelain" }, 64 * 1024);
+    if (!status.ok) return "";
+    var names = List.init(arena);
+    var modified: usize = 0;
+    var untracked: usize = 0;
+    var it = mem.splitScalar(u8, status.stdout, '\n');
+    while (it.next()) |line| {
+        const t = mem.trim(u8, line, " \t\r\n");
+        if (t.len < 4) continue;
+        if (mem.eql(u8, t[0..2], "??")) untracked += 1 else modified += 1;
+        if (names.items.len == 0) {
+            try names.appendSlice(t[3..]);
+        } else if (names.items.len < 60) {
+            try names.appendSlice(", ");
+            try names.appendSlice(t[3..]);
+        }
+    }
+    if (modified + untracked == 0) return "";
+    var out = List.init(arena);
+    if (modified > 0) try out.print("{d} modified", .{modified});
+    if (modified > 0 and untracked > 0) try out.appendSlice(", ");
+    if (untracked > 0) try out.print("{d} untracked", .{untracked});
+    if (names.items.len > 0) {
+        try out.appendSlice(" (");
+        try out.appendSlice(names.items);
+        if (modified + untracked > 3) try out.appendSlice(", ...");
+        try out.appendSlice(")");
+    }
+    return out.items;
+}
+
 // Parses `git worktree list --porcelain` into entries. Blocks are separated
 // by blank lines; a worktree block has a "worktree <path>" line, a "HEAD
 // <hash>" line, and optionally a "branch refs/heads/<name>" line.
@@ -378,7 +412,16 @@ fn opMerge(arena: Allocator, io: std.Io, cwd: []const u8, topic: []const u8) !Wo
     }
 
     const stdout = res.stdout;
-    const text = if (mem.indexOf(u8, stdout, "Already up to date") != null)
+    const up_to_date = mem.indexOf(u8, stdout, "Already up to date") != null;
+    if (up_to_date) {
+        // The branch has no new commits, but uncommitted work in the worktree
+        // was not merged; say so instead of implying it landed.
+        const dirty = try dirtyFiles(arena, io, target.path);
+        if (dirty.len > 0) {
+            return .{ .err = try std.fmt.allocPrint(arena, "{s} is already up to date in {s} but has uncommitted changes ({s}); commit or stash them in the worktree first", .{ branch, current, dirty }) };
+        }
+    }
+    const text = if (up_to_date)
         try std.fmt.allocPrint(arena, "{s} already up to date in {s}", .{ branch, current })
     else if (mem.indexOf(u8, stdout, "Fast-forward") != null)
         try std.fmt.allocPrint(arena, "merged {s} into {s} (fast-forward)", .{ branch, current })
@@ -387,7 +430,7 @@ fn opMerge(arena: Allocator, io: std.Io, cwd: []const u8, topic: []const u8) !Wo
 
     const result = MergeResult{
         .merged = true,
-        .up_to_date = mem.indexOf(u8, stdout, "Already up to date") != null,
+        .up_to_date = up_to_date,
         .branch = branch,
         .text = text,
     };
@@ -407,6 +450,12 @@ fn opPrune(arena: Allocator, io: std.Io, cwd: []const u8, topic: []const u8) !Wo
 
     const remove = try runGit(arena, io, &.{ "git", "-C", root, "worktree", "remove", target.path }, 4096);
     if (!remove.ok) {
+        // git's own error suggests --force, which would delete the user's
+        // uncommitted work; report the dirty files instead.
+        const dirty = try dirtyFiles(arena, io, target.path);
+        if (dirty.len > 0) {
+            return .{ .err = try std.fmt.allocPrint(arena, "{s} has uncommitted changes ({s}); commit or stash them in the worktree first", .{ target.path, dirty }) };
+        }
         const err = mem.trim(u8, remove.stderr, " \t\r\n");
         return .{ .err = if (err.len > 0) err else "git worktree remove failed" };
     }
@@ -522,6 +571,17 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     const s = try json.parseFromSlice(CreateResult, arena, second.text, .{});
     const self_merge = try opMerge(arena, io, s.value.path, "second");
     fail(!self_merge.ok and mem.indexOf(u8, self_merge.err, "into itself") != null, "self-merge rejected");
+
+    // an up-to-date branch whose worktree has uncommitted changes reports
+    // the dirty files instead of a misleading success or a --force hint
+    const dirty_wt = try opCreate(arena, io, dir, "dirty");
+    fail(dirty_wt.ok, "dirty worktree created");
+    const dw = try json.parseFromSlice(CreateResult, arena, dirty_wt.text, .{});
+    try write(io, try std.fmt.allocPrint(arena, "{s}/base.txt", .{dw.value.path}), "uncommitted change\n");
+    const dirty_merge = try opMerge(arena, io, dir, "dirty");
+    fail(!dirty_merge.ok and mem.indexOf(u8, dirty_merge.err, "uncommitted changes") != null, "dirty worktree merge reports uncommitted changes");
+    const dirty_prune = try opPrune(arena, io, dir, "dirty");
+    fail(!dirty_prune.ok and mem.indexOf(u8, dirty_prune.err, "commit or stash") != null and mem.indexOf(u8, dirty_prune.err, "--force") == null, "dirty worktree prune reports a clean message");
 
     // conflicting changes surface as conflicts, not silent failures. The
     // worktree must branch BEFORE the main-side commit so both sides diverge

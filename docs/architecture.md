@@ -626,15 +626,21 @@ parses. All other ops return plain text.
   when possible, merge commit otherwise, `--no-edit` so no editor can hang
   the backend. A failed merge with unmerged paths is reported as
   `merge conflicts in <files>; resolve and commit`; any other failure
-  surfaces git's own stderr (e.g. local changes would be overwritten).
+  surfaces git's own stderr (e.g. local changes would be overwritten). An
+  up-to-date merge whose worktree holds uncommitted changes reports those
+  files and tells the user to commit or stash first, instead of a
+  misleading "already up to date".
 - `prune` runs `git worktree remove` (refuses on a dirty worktree, no
   `--force`) then `git branch -d` (refuses on an unmerged branch, no `-D`).
-  A leftover branch is reported, never force-deleted.
+  A dirty worktree is reported with the offending files (git's own error
+  suggests `--force`, which would delete the user's work); a leftover
+  branch is reported, never force-deleted.
 - **Self-check**: `zig build run -- --self-check` builds a scratch repo and
   exercises create (explicit and auto-named), the exclude write, listing,
   a fast-forward merge, prune, duplicate-topic rejection, self-merge
-  rejection, a real conflict, pruning an unmerged branch, and the non-repo
-  error. It is the gate for `mise check`.
+  rejection, a real conflict, pruning an unmerged branch, an up-to-date
+  merge with a dirty worktree (merge and prune both report the uncommitted
+  files), and the non-repo error. It is the gate for `mise check`.
 
 ## Flow
 
