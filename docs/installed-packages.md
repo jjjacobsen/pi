@@ -13,7 +13,6 @@ file whenever packages change.
 | @narumitw/pi-btw | 0.50.0 |
 | @tmustier/pi-usage-extension | 0.9.4 |
 | @baylarsadigov/omp-undo-redo | 1.2.5 |
-| pi-peon-ping | 0.2.0 |
 | @dietrichgebert/ponytail | 4.9.0 |
 | pi-transcribe (ssh) |  |
 

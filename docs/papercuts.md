@@ -63,3 +63,15 @@
   tests for extension code must run under `node`, with pi's module aliases
   (`typebox`, `@earendil-works/*`) mocked, because jiti cannot resolve them
   from a repo without node_modules.
+
+## 2025-08-15: /lg "path is not defined"
+
+The extensions/lib refactor (ff8e38e) moved backend spawning into
+lib/backend.ts but dropped the `import path from "node:path"` from
+extensions/lazygit.ts while the handler kept using `path.resolve`. No
+typecheck or lint gate covers extensions/*.ts (bun build transpiles without
+typechecking), so the ReferenceError only surfaced at runtime on the first
+/lg after the refactor. Fix: re-add the import. Lesson: when editing the
+extension glue, grep for bare node globals (`path.`, `process.`, `Buffer.`)
+after any import shuffling, and consider a tsc --noEmit pass over
+extensions/ as a hk step.

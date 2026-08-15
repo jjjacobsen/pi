@@ -454,3 +454,95 @@ that outputs ranked, concrete findings without applying anything.
   the report caps at 15 findings so it forces prioritization.
 - Deliberate repo conventions (AGENTS.md) are never findings. Correctness
   and security are out of scope except as red flags spotted in passing.
+
+# Peon extension (pi-peon)
+
+## Goal
+
+In-house replacement for the third-party pi-peon-ping extension: Warcraft
+orc peon and human peasant voice lines on pi lifecycle events (session
+start, task acknowledge, task complete, task error, rapid prompt spam).
+Everything pi-peon-ping added beyond that is cut: the other eight sound
+packs, the pack picker and installer, relay mode for remote sessions,
+desktop notifications, the preview sound, and the input.required /
+resource.limit categories (pi has no events for those, they were dead
+config). Both kept packs play together: every sound pick is random from
+both, never repeating the last one per category.
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/peon.ts     TS glue: event wiring + /peon settings panel
+       └─ src/peon.zig      Zig backend: config, decisions, sound picking
+            └─ afplay       spawned per sound with the volume gain
+```
+
+- The glue only moves events and settings. The backend owns every decision:
+  whether an event plays a sound (paused, category toggles, error gating,
+  debounce, silent window), which sound, and the afplay spawn (killing the
+  previous sound so lines never overlap).
+- The 33 wavs from the peon and peasant packs are embedded in the binary
+  (`src/peon/sounds.zig`, generated from the pack manifests) and extracted
+  to `~/.pi/agent/peon-sounds/` on startup. Idempotent: existing files are
+  skipped.
+- Config is `~/.pi/agent/peon.json` (volume percent, paused, silent window,
+  spam threshold/window, five category toggles). On first run, values are
+  migrated from the old pi-peon-ping config at `~/.config/peon-ping/`
+  (volume 0..1 -> percent, carried categories, paused from state.json);
+  after that the old paths are never touched again. Unknown old keys
+  (default_pack, relay_mode, desktop_notifications, the two dead categories)
+  are dropped.
+- `afplay` only: the user's platform is macOS, and the wsl/linux player
+  matrix of pi-peon-ping was bloat. A failed spawn logs one stderr line and
+  plays nothing; audio problems never break the event pipeline.
+
+## Protocol (newline-delimited JSON on stdin/stdout)
+
+```json
+{"id":1,"op":"config"}                                       <- {"id":1,"ok":true,"config":{...}}
+{"id":2,"op":"set","field":"volume","value":"75%"}           <- {"id":2,"ok":true}
+{"id":2,"op":"set","field":"cat:task.error","value":"on"}    <- {"id":2,"ok":true}
+{"id":3,"op":"event","event":"session_start","reason":"startup"}
+{"id":4,"op":"event","event":"agent_start"}
+{"id":5,"op":"event","event":"tool_error"}
+{"id":6,"op":"event","event":"agent_end","error":true}
+```
+
+Fields: volume (10%..100%), paused (active|paused), silent_window_seconds
+(0s..3600s), cat:<category> (on|off). The set op validates and persists.
+
+## Zig behavior
+
+- `session_start` plays session.start for every reason, reload included
+  (matches the original).
+- `agent_start` plays task.acknowledge, or user.spam when at least
+  `annoyed_threshold` prompts arrived within `annoyed_window_seconds`
+  (ring buffer of prompt timestamps).
+- `tool_error` plays task.error when the category is on.
+- `agent_end` plays task.complete only when the run did not end in error
+  (this is the fix for the original's bug where an errored run still got
+  the cheerful complete sound), at most once per 5s debounce, and only
+  when the run took at least `silent_window_seconds` (the original
+  compared against session start, which made the setting mean something
+  else than its label said).
+- One sound at a time: a new play kills and reaps the previous afplay.
+  A finished afplay is reaped on the next play, so at most one zombie
+  exists.
+- State (last played per category, timestamps, debounce clock) is
+  in-memory; nothing survives a backend restart except peon.json. The
+  original's state.json carried nothing that mattered across sessions.
+- **Self-check**: `zig build run -- --self-check` exercises defaults,
+  migration (with a fake old install in a temp home), extraction, all
+  event decisions with synthetic clocks, set validation, and persistence.
+  It is the gate for `mise check`.
+
+## Notes
+
+- Sound packs: Orc Peon by tonyyont, Human Peasant by thomasKn
+  (OpenPeon CESP, CC-BY-NC-4.0). The generated `src/peon/sounds.zig`
+  credits them; regenerating it requires the pack wavs plus a jq pass over
+  the manifests, documented in the file header.
+- The glue unrefs the backend child and its pipes (shared `createBackend`),
+  and the backend self-terminates on stdin EOF like the other backends.
+- Sessions with no UI (print mode) never fire the event ops, so no sounds.

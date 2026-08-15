@@ -48,6 +48,10 @@ status. See [docs/architecture.md](docs/architecture.md).
 `extensions/goal.ts` + `src/goal.zig`. The `/goal` command runs the agent
 autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 100k] [--max-tokens 100k] [--no-ask]`, plus `/goal status | pause | resume | clear`. The Zig backend owns the whole state machine: min/max time and token boundaries, automatic continuation turns, a no-progress guard, stale-turn-safe goal_complete / goal_blocked / goal_wait tools, and it never asks questions mid-run. `--no-ask` removes even start-time questions for full automation. See [docs/architecture.md](docs/architecture.md).
 
+### peon - Warcraft peon sounds via /peon
+
+`extensions/peon.ts` + `src/peon.zig`. Plays random orc peon and human peasant voice lines on pi events: session start, task acknowledge, task complete, task error, and rapid prompt spam. `/peon` opens the settings panel (volume, silent window, per-category toggles). The 33 wavs are embedded in the binary, config lives in `~/.pi/agent/peon.json`, and all decisions live in Zig. Replaces the third-party pi-peon-ping extension (no pack picker, relay, desktop notifications, or preview sound). See [docs/architecture.md](docs/architecture.md).
+
 ## Prompts
 
 ### q - question only

@@ -13,6 +13,7 @@
 //   -> {"id":2,"op":"run","cwd":"/path"}      <- {"id":2,"ok":true,"result":"exited 0"}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import path from "node:path";
 import { Text } from "@earendil-works/pi-tui";
 import { createBackend } from "./lib/backend";
 
