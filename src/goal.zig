@@ -46,6 +46,7 @@ const MAX_EVIDENCE = 4000;
 const MIN_WAIT_MS = 10_000;
 const MAX_WAIT_MS = 2_147_483_647;
 const NO_PROGRESS_LIMIT = 3;
+const ERROR_LIMIT = 3; // consecutive errored agent runs before pausing
 const ID_HEX_LEN = 16;
 const GOAL_ID_PREFIX = "g-";
 
@@ -72,6 +73,7 @@ const GoalState = struct {
     active_started_at: ?i64 = null, // epoch ms while the active clock runs
     iteration: i64 = 0, // automatic continuation count
     no_progress_count: i64 = 0,
+    error_count: i64 = 0, // consecutive errored agent runs; reset by any successful run
     last_fingerprint: ?[]const u8 = null,
     stop_cause: ?[]const u8 = null, // user | time_limit | token_limit | no_progress | interruption | blocked
     waiting: ?Waiting = null,
@@ -476,6 +478,9 @@ fn buildContinue(arena: Allocator, state: *const GoalState, wait_reason: ?[]cons
         escapeXml(&buf, reason) catch return "";
         buf.appendSlice("\n</goal_wait_reason>\n\n") catch return "";
     }
+    if (state.error_count > 0) {
+        buf.appendSlice("The previous run ended in an error. Re-check the current state and retry the work that was interrupted; do not assume the last tool calls landed:\n\n") catch return "";
+    }
     buf.appendSlice("Continue the active goal until it is complete:\n\n") catch return "";
     objectiveBlock(&buf, state) catch return "";
     buf.appendSlice("\n") catch return "";
@@ -704,14 +709,19 @@ fn opEvent(arena: Allocator, req: *const Request, resp: *Response) void {
             return;
         }
         if (req.error_run orelse false) {
-            next.status = "paused";
-            next.stop_cause = "interruption";
-            checkpointTime(&next, now, false);
-            resp.state = next;
-            resp.action = "stop";
-            resp.text = "Goal paused after an error in the agent run. Run /goal resume to continue.";
-            resp.statusline = shortStatus(arena, &next);
-            return;
+            next.error_count += 1;
+            if (next.error_count >= ERROR_LIMIT) {
+                next.status = "paused";
+                next.stop_cause = "interruption";
+                checkpointTime(&next, now, false);
+                resp.state = next;
+                resp.action = "stop";
+                resp.text = errMsg(arena, "Goal paused: {d} consecutive agent runs ended in error. Run /goal resume to continue.", .{next.error_count});
+                resp.statusline = shortStatus(arena, &next);
+                return;
+            }
+        } else {
+            next.error_count = 0;
         }
         if (next.max_time_sec) |mt| {
             if (next.active_seconds >= mt) {
@@ -823,6 +833,7 @@ fn opEvent(arena: Allocator, req: *const Request, resp: *Response) void {
         if (req.user_input orelse false) {
             next.waiting = null;
             next.no_progress_count = 0;
+            next.error_count = 0;
             next.last_fingerprint = null;
             next.active_started_at = now;
             next.updated_at = now;
@@ -1012,6 +1023,7 @@ fn opResume(arena: Allocator, req: *const Request, resp: *Response) void {
     next.stop_cause = null;
     next.waiting = null;
     next.no_progress_count = 0;
+    next.error_count = 0;
     next.last_fingerprint = null;
     next.active_started_at = nowMs();
     next.updated_at = nowMs();
@@ -1100,6 +1112,9 @@ fn opStatus(arena: Allocator, req: *const Request, resp: *Response) void {
         if (ceilings.items.len > 0) buf.print("Ceilings: {s}\n", .{ceilings.items}) catch return;
     }
     buf.print("No-progress guard: {d}/{d}\n", .{ state.no_progress_count, NO_PROGRESS_LIMIT }) catch return;
+    if (state.error_count > 0) {
+        buf.print("Consecutive errored runs: {d}/{d}\n", .{ state.error_count, ERROR_LIMIT }) catch return;
+    }
     buf.appendSlice("Commands: /goal pause | resume | clear") catch return;
     resp.text = buf.items;
     resp.statusline = shortStatus(arena, &state);
@@ -1359,7 +1374,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     g_restore_both.active_started_at = 1;
     g_restore_both.max_time_sec = 3600; // not exceeded
     g_restore_both.max_tokens = 10_000; // exceeded
-    req = Request{ .id = 31, .op = "restore", .state = g_restore_both, .tokens = 50_000 };
+    req = Request{ .id = 34, .op = "restore", .state = g_restore_both, .tokens = 50_000 };
     resp = Response{ .id = 31, .ok = true };
     opRestore(arena, &req, &resp);
     check(mem.eql(u8, resp.state.?.status, "paused") and mem.eql(u8, resp.state.?.stop_cause.?, "token_limit"), "restore checks both ceilings");
@@ -1371,15 +1386,34 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     check(mem.indexOf(u8, resp.text.?, "a goal") != null, "status shows objective");
     check(resp.statusline != null and mem.indexOf(u8, resp.statusline.?, "goal") != null, "statusline set");
 
-    // error run pauses
-    req = Request{ .id = 29, .op = "event", .event = "agent_end", .state = g, .tokens = 10_000, .error_run = true };
+    // consecutive error limit: single error runs continue, three pause
+    const g_err = g;
+    req = Request{ .id = 29, .op = "event", .event = "agent_end", .state = g_err, .tokens = 10_000, .error_run = true };
     resp = Response{ .id = 29, .ok = true };
     opEvent(arena, &req, &resp);
-    check(mem.eql(u8, resp.action.?, "stop") and mem.eql(u8, resp.state.?.stop_cause.?, "interruption"), "error run pauses");
+    check(mem.eql(u8, resp.action.?, "continue") and resp.state.?.error_count == 1, "single error run continues");
+    check(mem.indexOf(u8, resp.prompt.?, "error") != null, "continue prompt notes the error");
+
+    req = Request{ .id = 30, .op = "event", .event = "agent_end", .state = resp.state, .tokens = 10_000, .error_run = true };
+    resp = Response{ .id = 30, .ok = true };
+    opEvent(arena, &req, &resp);
+    check(mem.eql(u8, resp.action.?, "continue") and resp.state.?.error_count == 2, "two error runs continue");
+
+    req = Request{ .id = 31, .op = "event", .event = "agent_end", .state = resp.state, .tokens = 10_000, .error_run = true };
+    resp = Response{ .id = 31, .ok = true };
+    opEvent(arena, &req, &resp);
+    check(mem.eql(u8, resp.action.?, "stop") and mem.eql(u8, resp.state.?.stop_cause.?, "interruption") and resp.state.?.error_count == 3, "three error runs pause");
+
+    var g_err_reset = g;
+    g_err_reset.error_count = 2;
+    req = Request{ .id = 32, .op = "event", .event = "agent_end", .state = g_err_reset, .tokens = 10_000, .text = "working", .tool_called = true };
+    resp = Response{ .id = 32, .ok = true };
+    opEvent(arena, &req, &resp);
+    check(mem.eql(u8, resp.action.?, "continue") and resp.state.?.error_count == 0, "successful run resets error count");
 
     // system injection
-    req = Request{ .id = 30, .op = "event", .event = "agent_start", .state = g };
-    resp = Response{ .id = 30, .ok = true };
+    req = Request{ .id = 33, .op = "event", .event = "agent_start", .state = g };
+    resp = Response{ .id = 33, .ok = true };
     opEvent(arena, &req, &resp);
     check(mem.eql(u8, resp.action.?, "inject") and mem.indexOf(u8, resp.prompt.?, "Active /goal") != null, "agent_start injects system prompt");
 

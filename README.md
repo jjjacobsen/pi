@@ -55,7 +55,7 @@ status. See [docs/architecture.md](docs/architecture.md).
 ### goal - autonomous goal loop via /goal
 
 `extensions/goal.ts` + `src/goal.zig`. The `/goal` command runs the agent
-autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 100k] [--max-tokens 100k] [--no-ask]`, plus `/goal status | pause | resume | clear`. The Zig backend owns the whole state machine: min/max time and token boundaries, automatic continuation turns, a no-progress guard, stale-turn-safe goal_complete / goal_blocked / goal_wait tools, and it never asks questions mid-run. `--no-ask` removes even start-time questions for full automation. See [docs/architecture.md](docs/architecture.md).
+autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 100k] [--max-tokens 100k] [--no-ask]`, plus `/goal status | pause | resume | clear`. The Zig backend owns the whole state machine: min/max time and token boundaries, automatic continuation turns, a no-progress guard, error tolerance (transient provider errors retry; the goal pauses only after 3 consecutive errored runs), stale-turn-safe goal_complete / goal_blocked / goal_wait tools, and it never asks questions mid-run. `--no-ask` removes even start-time questions for full automation. See [docs/architecture.md](docs/architecture.md).
 
 ### peon - Warcraft peon sounds via /peon
 

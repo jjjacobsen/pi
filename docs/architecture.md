@@ -419,6 +419,13 @@ as a system-prompt addition).
   three consecutive identical turns stop the goal with `stop_cause`
   `no_progress`. Any user input, tool call, or output change resets the
   counter.
+- **Error tolerance**: a run ending in provider error (`stopReason`
+  `error`), e.g. a transient rate limit or network failure, does not pause
+  the goal. Consecutive errored runs are counted; the goal pauses with
+  `stop_cause` `interruption` only after three in a row. Any successful run,
+  user input, or resume resets the count, and the continuation prompt notes
+  the error so the model re-checks state instead of assuming its last tool
+  calls landed.
 - **goal_complete**: stale-turn guard via the `goal_id` shown in the goal
   prompt; a second completion is rejected with "goal is complete, not
   active".
@@ -438,10 +445,12 @@ as a system-prompt addition).
 
 `/goal <objective> [flags]` -> parse -> start -> inject the goal-mode system
 prompt (objective, goal_id, rules) -> the agent works -> `agent_end` ->
-backend decides: continue (repeat until the floors are satisfied), stop
-(complete / blocked / ceiling / no progress), or send (a follow-up prompt) ->
-`agent_settled` dispatches the pending continuation or a due wait deadline ->
-`goal_complete` ends the loop -> status line and notification.
+backend decides: continue (repeat until the floors are satisfied; errored
+runs count toward a 3-strike pause instead of stopping immediately), stop
+(complete / blocked / ceiling / no progress / 3 consecutive errors), or send
+(a follow-up prompt) -> `agent_settled` dispatches the pending continuation
+or a due wait deadline -> `goal_complete` ends the loop -> status line and
+notification.
 
 ## Notes
 
