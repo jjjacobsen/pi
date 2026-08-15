@@ -8,11 +8,13 @@
 //
 // /reload safety (two guarantees):
 // - Stale binaries are rebuilt: before spawning, if any source
-//   (build.zig, build.zig.zon, src/**/*.zig) is newer than the binary, run
+//   (build.zig, build.zig.zon, anything under src/) is newer than the last
+//   successful build (recorded in zig-out/.pi-build-stamp.json), run
 //   `zig build`. A failed build throws instead of silently running the old
 //   binary, so a reload after a Zig edit either runs the new code or tells
-//   you why not. A successful build stamps the binary, so mtime-only source
-//   changes (touch, git checkout) don't trigger repeat builds.
+//   you why not. The stamp is project-wide and written once per successful
+//   build, so the rebuild runs at most once per source change and a launch
+//   with no source edits never invokes zig at all.
 // - Old processes are killed on host teardown: use the exported
 //   killOnHostTeardown(backend, event) from a pi.on("session_shutdown")
 //   handler, which kills only when the host actually goes away (reason
@@ -30,12 +32,15 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync, readdirSync, statSync, utimesSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-// Newest mtime across everything a backend build depends on. Project-wide
-// on purpose: all backends share common.zig and build.zig, and `zig build`
-// compiles every binary in one step.
+const STAMP_FILE = ".pi-build-stamp.json"; // in zig-out/, next to the binaries
+
+// Newest mtime across everything a backend build depends on: build.zig,
+// build.zig.zon, and every file under src/ (Zig files plus @embedFile
+// assets like the peon sounds, and directories, whose mtime bumps when
+// files are added or removed).
 function newestSourceMtime(root) {
   let newest = 0;
   for (const rel of ["build.zig", "build.zig.zon"]) {
@@ -45,31 +50,39 @@ function newestSourceMtime(root) {
       if (m > newest) newest = m;
     }
   }
-  for (const name of readdirSync(path.join(root, "src"), { recursive: true })) {
-    if (typeof name === "string" && name.endsWith(".zig")) {
-      const m = statSync(path.join(root, "src", name)).mtimeMs;
-      if (m > newest) newest = m;
-    }
+  const srcRoot = path.join(root, "src");
+  for (const name of readdirSync(srcRoot, { recursive: true })) {
+    const m = statSync(path.join(srcRoot, name)).mtimeMs;
+    if (m > newest) newest = m;
   }
   return newest;
 }
 
-// Rebuild when the binary is missing or older than any source. A failed
-// build throws: silently running a stale binary after /reload is worse than
-// refusing to start.
+// Newest source mtime at the last successful build, or 0 when the stamp is
+// missing or unreadable (then the next load rebuilds once and rewrites it).
+function readStamp(stampPath) {
+  try {
+    return JSON.parse(readFileSync(stampPath, "utf8")).newest;
+  } catch {
+    return 0;
+  }
+}
+
+// Rebuild only when the source tree is newer than the last successful
+// build, or the binary is missing. `zig build` compiles every binary in one
+// step, so the project-wide stamp makes the rebuild run at most once per
+// source change: other backends, later launches, and /reload all skip it
+// until the next edit. A failed build throws: silently running a stale
+// binary after /reload is worse than refusing to start.
 function ensureBuilt(root, bin) {
-  const stale = !existsSync(bin) || newestSourceMtime(root) > statSync(bin).mtimeMs;
+  const stampPath = path.join(root, "zig-out", STAMP_FILE);
+  const stale = !existsSync(bin) || newestSourceMtime(root) > readStamp(stampPath);
   if (!stale) return;
   const r = spawnSync("zig", ["build"], { cwd: root, stdio: "inherit" });
   if (r.status !== 0 || !existsSync(bin)) {
     throw new Error(`zig build failed (status ${r.status}) in ${root}; fix the build and /reload again`);
   }
-  // Zig's cache is content-addressed: a build is a no-op when file contents
-  // are unchanged (e.g. a touch or git checkout), so the binary keeps its old
-  // mtime and would look stale forever. Stamp it so the staleness check
-  // passes on the next load; content-wise it is current.
-  const now = new Date();
-  utimesSync(bin, now, now);
+  writeFileSync(stampPath, JSON.stringify({ newest: newestSourceMtime(root) }));
 }
 
 export function killOnHostTeardown(backend, event) {

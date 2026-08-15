@@ -17,9 +17,12 @@ shared parts live in two files:
   the binary, the pending-call map, line dispatch, and the unref dance that
   lets pi exit in print mode while the backend self-terminates on stdin EOF.
   It is also what makes `/reload` trustworthy: before spawning it rebuilds
-  with `zig build` whenever any source (build.zig, build.zig.zon,
-  src/**/*.zig) is newer than the binary, and a failed build throws instead
-  of running a stale binary. `createBackend` returns `{call, kill}`; every
+  with `zig build` when the source tree (build.zig, build.zig.zon, everything
+  under src/, including @embedFile assets) is newer than the last successful
+  build recorded in `zig-out/.pi-build-stamp.json`, and a failed build throws
+  instead of running a stale binary. The stamp is project-wide and written
+  once per successful build, so the rebuild runs at most once per source
+  change and a launch with no source edits never invokes zig at all. `createBackend` returns `{call, kill}`; every
   extension registers `pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event))`,
   which kills only on host teardown (quit, reload) and lets the backend
   survive session replacement (new, resume, fork, /wt switches): pi rebinds

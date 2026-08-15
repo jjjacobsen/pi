@@ -8,9 +8,11 @@ house, piece by piece
 
 - `extensions/` - TypeScript extension entry points (pi requires TS modules);
   `extensions/lib/backend.ts` is the shared stdio bridge all of them use.
-  It rebuilds stale binaries and kills old backends on host teardown
-  (`session_shutdown` with reason quit/reload via `killOnHostTeardown`), so
-  `/reload` picks up Zig and TS changes with no orphaned processes, while
+  It rebuilds binaries when sources changed (stamped in
+  `zig-out/.pi-build-stamp.json`, so at most once per edit) and kills old
+  backends on host teardown (`session_shutdown` with reason quit/reload via
+  `killOnHostTeardown`), so `/reload` picks up Zig and TS changes with no
+  orphaned processes, while
   `/new` keeps the backends alive for the new session
 - `prompts/` - prompt templates (slash commands); served to pi via the package manifest
 - `src/` - Zig backends. One binary per extension, built by `build.zig`;

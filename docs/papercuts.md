@@ -186,3 +186,17 @@ extensions/ as a hk step.
   read, `toss()` what was consumed, and re-check it after any 0-return
   readVec. The flake only showed up as an intermittent results-mode timeout
   in the self-check, ~50% of runs.
+
+## 2026-08-15
+
+- `PI_TIMING=1` startup timings are swallowed when the TUI runs: the timings
+  print into the alternate screen buffer, then the teardown escape sequence
+  wipes them. Run `PI_TIMING=1 pi -p "hi"` (print mode) and read stderr
+  instead; the `extensions` namespace breaks down per-extension import cost.
+- A no-op `zig build` (nothing stale) still costs ~230ms of process startup
+  + manifest evaluation. The old per-binary staleness check in
+  `extensions/lib/backend.ts` compared each binary against a project-wide
+  newest-source mtime, so one edited file marked 8 of 10 binaries stale and
+  each backend paid a full no-op build on every launch (~2s of startup).
+  Fixed with a project-wide stamp (zig-out/.pi-build-stamp.json): the
+  rebuild now runs at most once per source change.
