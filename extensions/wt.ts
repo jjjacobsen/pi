@@ -73,6 +73,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", () => backend.kill());
   pi.registerCommand("wt", {
     description: "Create a git worktree and switch to a fresh pi session in it (/wt list, /wt merge <topic>, /wt prune <topic>)",
+    getArgumentCompletions: (prefix) => {
+      const words = ["list", "merge", "prune"];
+      const trimmed = (prefix ?? "").trimStart();
+      if (!trimmed) return words.map((w) => ({ value: w, label: w }));
+      if (trimmed.includes(" ")) return null;
+      const filtered = words.filter((w) => w.startsWith(trimmed));
+      return filtered.length > 0 ? filtered.map((w) => ({ value: w, label: w })) : null;
+    },
     handler: async (args, ctx) => {
       // Session replacement needs the pi TUI. RPC mode cannot service the
       // backend child-pipe I/O (upstream pi quirk: any await on a
