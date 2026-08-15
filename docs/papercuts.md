@@ -22,6 +22,15 @@
 
 ## 2026-08-15
 
+- Zig 0.16 generic thread helpers: when a shared helper takes a worker as a
+  `comptime worker: fn (*@TypeOf(ctx), ...) void` parameter, the `*` must be
+  spelled out. Writing `fn (@TypeOf(ctx), ...)` compiles the signature as a
+  by-value ctx and the caller's `*WorkerCtx` worker fails with "cannot cast
+  into" — cost one compile cycle while consolidating the vision/search HTTP
+  machinery into common.zig.
+
+## 2026-08-15
+
 - Zig 0.16 removed several `std.mem` helpers: `trimRight`, `trimLeft`,
   `asciiLowerString`. Use `mem.trim` and `std.ascii.lowerString(dst, src)`.
   `std.posix.mkdir` and `std.posix.getpid` are also gone; dir creation is
