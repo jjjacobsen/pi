@@ -1146,6 +1146,7 @@ function getAgentDir(): string {
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("session_shutdown", () => backend.kill());
 	pi.registerCommand("usage", {
 		description: "Show usage statistics dashboard",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {

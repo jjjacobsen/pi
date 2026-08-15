@@ -122,3 +122,15 @@ extensions/ as a hk step.
 - `std.Thread.spawn` needs the ctx as `*T` (declare `var`, not `const`);
   an anonymous struct used as a fn return type must be a named type
 - `error` is a reserved word: cannot be a struct field name (used `err`)
+
+## 2026-08-16
+
+- Fixed the /reload staleness trap in `extensions/lib/backend.ts`: pi's
+  `/reload` re-imports extension TS but never touched Zig binaries, and old
+  backend processes were orphaned until pi exited (they only self-terminate
+  on stdin EOF, which pi's held pipe fds prevented). The glue now rebuilds
+  with `zig build` whenever any source is newer than the binary (failed
+  builds throw instead of running stale code), and every extension registers
+  `pi.on("session_shutdown", () => backend.kill())` to close stdin and
+  SIGTERM the old child. Verified: `zig build` is skipped when current, so
+  plain startup latency is unchanged.

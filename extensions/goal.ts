@@ -666,6 +666,7 @@ function registerGoalLifecycle(pi) {
 // ----- entry point -----
 
 export default function goal(pi: ExtensionAPI) {
+  pi.on("session_shutdown", () => backend.kill());
   registerGoalCommand(pi);
   registerTools(pi);
   registerGoalLifecycle(pi);
