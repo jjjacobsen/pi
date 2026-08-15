@@ -99,3 +99,26 @@ extensions/ as a hk step.
   goal, peon, wt), not just wt. TUI mode is fine
 - Workaround: guard commands that need the backend with `ctx.mode !== "tui"`
   and refuse before touching the backend, which is what `/wt` does
+
+## 2026-08-15: Zig 0.16 API churn hit while writing pi-usage
+
+- `std.posix` no longer exports `pipe`/`close`/`write`/`getpid`; use
+  `posix.system.pipe(&fds)` / `posix.system.close(fd)` /
+  `posix.system.write(fd, ptr, len)` / `posix.system.getpid()` and check
+  returns via `posix.errno(...)` (they return raw errno c_int, and close/write
+  return values must be discarded with `_ =`)
+- `std.ArrayList(T)` is now the UNMANAGED list (init via `.empty`, methods
+  take the allocator); the managed variant is
+  `std.array_list.AlignedManaged(T, null)` (what common.zig's `List` uses).
+  `std.Io.Writer.Allocating.fromArrayList` pairs with the unmanaged one
+- File APIs moved to `std.Io.Dir`: `statFile(.cwd(), io, path, .{})` returns
+  `Io.File.Stat` with `mtime: Io.Timestamp` (use `.toMilliseconds()`) and
+  `.permissions` (a `Permissions` value, not `.mode`); `renameAbsolute`,
+  `createFileAbsolute`, `readFileAlloc(.cwd(), io, path, arena, .limited(n))`
+- `std.base64.url_safe_no_pad` is a `Codecs` value: the decoder field is
+  capitalized (`.Decoder`), no `.decoder` member
+- `json.Value` `.number` no longer exists for ints/floats: match `.integer`
+  and `.float` separately
+- `std.Thread.spawn` needs the ctx as `*T` (declare `var`, not `const`);
+  an anonymous struct used as a fn return type must be a named type
+- `error` is a reserved word: cannot be a struct field name (used `err`)

@@ -658,3 +658,99 @@ unless `--keep` -> notify. `/wt list` and `/wt prune` are one-shot ops.
   `ctx.mode !== "tui"` and refuses there. The worktree would still be
   created (the backend runs) before the hang, which is why the guard sits at
   the top of the handler.
+
+# Usage extension (pi-usage)
+
+## Goal
+
+`/usage` is a usage dashboard for the pi agent: per-period usage stats
+(graphs, table, insights) plus live provider quota limits (OpenAI Codex
+subscription and OpenCode Go). Replaces `@tmustier/pi-usage-extension`
+(removed from `~/.pi/agent/settings.json` packages; same command name). The
+original extension's UI is ported as-is, its data pipeline is rewritten in
+Zig with a binary cache, and the provider-limits view is ported from omp
+(can1357/oh-my-pi).
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/usage.ts            TS glue: /usage command, TUI rendering
+       └─ extensions/lib/usage/     types.ts, graph.ts, export.ts (ported)
+            └─ src/usage.zig        Zig backend: scan/parse/cache/aggregate,
+                                    insights, provider-limit fetches
+```
+
+Why this split:
+
+- pi's inline TUI (`ctx.ui.custom`) is TypeScript-only, so all rendering
+  stays in TS. The three original views (graph/table/insights) and their
+  keybindings are ported from the tmuster extension nearly verbatim; the
+  limits view renders the quota data the backend fetches.
+- Everything slow lives in Zig: session-JSONL scanning and parsing, the
+  on-disk cache, aggregation into the five periods plus hourly buckets,
+  insights, and the HTTPS fetches for provider limits.
+
+## Protocol (newline-delimited JSON on stdin/stdout)
+
+```json
+{"id":1,"op":"collect","bounds":{"todayMs":..,"weekStartMs":..,"lastWeekStartMs":..,"last30DaysStartMs":..,"nowMs":..}}
+{"id":1,"ok":true,"result":"{\"bounds\":..,\"hourly\":..,\"today\":..,\"thisWeek\":..,\"lastWeek\":..,\"last30Days\":..,\"allTime\":..}"}
+{"id":2,"op":"limits"}
+{"id":2,"ok":true,"result":"{\"fetchedAt\":..,\"providers\":[...]}"}
+```
+
+- `collect` is local-only. Bounds are computed by the glue (local calendar
+  midnights; Zig has no portable local-timezone API). The backend scans
+  `~/.pi/agent/sessions` for `.jsonl` files, re-parses only files whose
+  (size, mtime) changed since the binary cache (`~/.pi/agent/pi-usage-cache.bin`),
+  aggregates, computes insights, and returns one JSON payload.
+- `limits` fetches quota over HTTPS on a worker thread; the main loop polls
+  the result pipe with a 20s deadline so a hung network can never block the
+  backend. OpenCode Go uses `GET https://opencode.ai/zen/go/v1/usage` with
+  `Bearer $OPENCODE_API_KEY` (env). Codex uses
+  `GET https://chatgpt.com/backend-api/wham/usage` with the OAuth bearer and
+  `ChatGPT-Account-Id` from `~/.pi/agent/auth.json`; when the access token
+  is expired it refreshes via `https://auth.openai.com/oauth/token`
+  (`grant_type=refresh_token`, `client_id=app_EMoamEEZ73f0CkXaXp7hrann`) and
+  rewrites auth.json atomically, preserving other provider entries and the
+  original file mode. Account id/email come from JWT claims.
+
+## Zig behavior
+
+- The JSONL parser pre-filters lines by byte patterns (assistant/session/
+  thinking/compaction/branch_summary) so multi-megabyte tool results are
+  never decoded. Tool-result usage is deliberately ignored: the original
+  extension only used it for nested-agent reconciliation, and there are no
+  subagent records in practice.
+- The cache is a binary little-endian format: magic `PIUC`, version 1, an
+  interned string table, then per file a fixed-size message record set
+  (74 bytes per message). Writes go through a temp file + rename.
+- Dedupe of copied branch history uses a hash of (auxiliary, sourceId,
+  timestamp, token fingerprint); insights text and thresholds are ported
+  verbatim from the original extension (data.ts computeInsights).
+- **Self-check**: `zig build run -- --self-check` builds a scratch session
+  tree, runs the real parse/aggregate/cache pipeline with
+  `PI_CODING_AGENT_DIR` pointed at it, verifies the payload and cache round
+  trip, and checks that the limits op fails gracefully without credentials
+  (no network in the self-check).
+
+## Notes
+
+- The original JSON cache (`usage-extension-cache.json`) is left in place
+  but unused; the extension never reads it.
+- The cache path differs from the tmuster one, so the two extensions cannot
+  corrupt each other's data even if both are installed.
+- The worker thread's `agent_dir` string is copied to the gpa before
+  spawning; the main loop's arena is reset on the next request. On timeout
+  the copy leaks (~50 bytes, rare) rather than risking a use-after-free.
+- Zig 0.16 API notes: `std.posix` no longer exposes `pipe`/`close`/`write`/
+  `getpid`; use `posix.system.pipe(&fds)` / `posix.system.close(fd)` /
+  `posix.system.write(fd, ...)` / `posix.system.getpid()` with
+  `posix.errno()` for return codes. `std.ArrayList(T)` is the unmanaged
+  list; use `std.array_list.AlignedManaged(T, null)` for the managed
+  variant. `Io.Dir` replaces `std.fs.cwd()` (`statFile` returns
+  `Io.Timestamp` mtime with `.toMilliseconds()`). File stat exposes
+  `.permissions` directly (no `.mode`); `File.setPermissions(io, perms)`
+  preserves modes. `std.base64.url_safe_no_pad` is a `Codecs` value; the
+  decoder is the capitalized `.Decoder` field.

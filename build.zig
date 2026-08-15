@@ -9,6 +9,7 @@ const bins = .{
     .{ .name = "pi-goal", .path = "src/goal.zig" },
     .{ .name = "pi-peon", .path = "src/peon.zig" },
     .{ .name = "pi-wt", .path = "src/wt.zig" },
+    .{ .name = "pi-usage", .path = "src/usage.zig" },
 };
 
 pub fn build(b: *std.Build) void {

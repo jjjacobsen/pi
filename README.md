@@ -52,6 +52,10 @@ autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 1
 
 `extensions/peon.ts` + `src/peon.zig`. Plays random orc peon and human peasant voice lines on pi events: session start, task acknowledge, task complete, task error, and rapid prompt spam. `/peon` opens the settings panel (volume, silent window, per-category toggles). The 33 wavs are embedded in the binary, config lives in `~/.pi/agent/peon.json`, and all decisions live in Zig. Replaces the third-party pi-peon-ping extension (no pack picker, relay, desktop notifications, or preview sound). See [docs/architecture.md](docs/architecture.md).
 
+### usage - usage dashboard via /usage
+
+`extensions/usage.ts` + `src/usage.zig`. The `/usage` command shows usage stats for Today / This Week / Last Week / Last 30 Days / All Time across four views: Graphs (braille charts by provider/model/thinking, cumulative toggle), Table (providers to models, filter/hide/expand), Insights (cost advice), and Limits (provider quota: OpenAI Codex subscription and OpenCode Go 5h/weekly/monthly windows with usage bars, reset timers, plan/account info, Codex saved resets). All data collection runs in the Zig backend: session JSONL scanning with a binary cache, aggregation, insights, and the quota fetches. Replaces the third-party `@tmustier/pi-usage-extension`; the limits view is adapted from omp (can1357/oh-my-pi). See [docs/architecture.md](docs/architecture.md).
+
 ## Prompts
 
 ### q - question only
