@@ -358,6 +358,11 @@ function formatRemaining(remainingFraction: number | null): string {
 	return `${shown}% free`;
 }
 
+/** "  (3h15m)" when the limit resets in the future, else "". */
+function resetSuffix(resetsAt: number | null): string {
+	return resetsAt !== null && resetsAt > Date.now() ? `  (${formatDuration(resetsAt - Date.now())})` : "";
+}
+
 function renderUsageBar(fraction: number | null, barWidth: number, color: "success" | "warning" | "error" | "dim", theme: Theme): string {
 	if (fraction === null) {
 		return theme.fg("dim", "·".repeat(Math.max(barWidth, 1)));
@@ -927,8 +932,7 @@ class UsageComponent {
 			// "99% free  (3h15m)" text so rows never wrap.
 			let trailingWidth = 0;
 			for (const l of p.limits) {
-				const reset = l.resetsAt !== null && l.resetsAt > Date.now() ? `  (${formatDuration(l.resetsAt - Date.now())})` : "";
-				trailingWidth = Math.max(trailingWidth, visibleWidth(`  ${formatRemaining(l.remainingFraction)}${reset}`));
+				trailingWidth = Math.max(trailingWidth, visibleWidth(`  ${formatRemaining(l.remainingFraction)}${resetSuffix(l.resetsAt)}`));
 			}
 			const barWidth = Math.min(Math.max(width - 24 - trailingWidth, 8), 44);
 
@@ -939,8 +943,7 @@ class UsageComponent {
 					l.windowLabel && !l.label.toLowerCase().includes(l.windowLabel.toLowerCase()) ? th.fg("dim", ` (${l.windowLabel})`) : "";
 				const header = `${th.fg(color, icon)} ${th.bold(l.label)}${windowSuffix}`;
 				const bar = renderUsageBar(l.usedFraction, barWidth, color, th);
-				const reset = l.resetsAt !== null && l.resetsAt > Date.now() ? `  (${formatDuration(l.resetsAt - Date.now())})` : "";
-				const trailing = `  ${formatRemaining(l.remainingFraction)}${reset}`;
+				const trailing = `  ${formatRemaining(l.remainingFraction)}${resetSuffix(l.resetsAt)}`;
 				lines.push(`${header}  ${bar}${trailing}`.trimEnd());
 				if (l.resetsAt !== null && l.resetsAt > Date.now()) {
 					lines.push(`  ${th.fg("dim", `resets in ${formatDuration(l.resetsAt - Date.now())}`)}`);

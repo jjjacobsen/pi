@@ -393,6 +393,7 @@ fn commitGuidance(arena: Allocator, io: std.Io, root: []const u8) !?[]const u8 {
     for (names) |name| {
         if (out.items.len >= 2048) break;
         const dir = std.Io.Dir.openDirAbsolute(io, root, .{}) catch continue;
+        defer dir.close(io); // one fd per guidance file; must not leak across /commit runs
         const content = dir.readFileAlloc(io, name, arena, .limited(64 * 1024)) catch continue;
         var lines = mem.splitScalar(u8, content, '\n');
         var pending: usize = 0; // context lines to carry after a match

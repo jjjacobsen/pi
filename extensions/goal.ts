@@ -22,6 +22,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { prefixCompletions } from "./lib/toolkit";
 
 const STATUS_KEY = "goal";
 const STATE_ENTRY_TYPE = "goal-state";
@@ -387,14 +388,8 @@ function registerGoalCommand(pi) {
   pi.registerCommand("goal", {
     description:
       "Run a goal to completion: /goal [--min-time 1h] [--max-tokens 500k] [--no-ask] <goal_to_complete>. Also: /goal status | pause | resume | clear",
-    getArgumentCompletions: (prefix) => {
-      const words = ["status", "pause", "resume", "clear", "--min-time 1h", "--max-time 1h", "--min-tokens 100k", "--max-tokens 100k", "--no-ask"];
-      const trimmed = (prefix ?? "").trimStart();
-      if (!trimmed) return words.map((w) => ({ value: w, label: w }));
-      if (trimmed.includes(" ")) return null;
-      const filtered = words.filter((w) => w.startsWith(trimmed));
-      return filtered.length > 0 ? filtered.map((w) => ({ value: w, label: w })) : null;
-    },
+    getArgumentCompletions: (prefix) =>
+      prefixCompletions(["status", "pause", "resume", "clear", "--min-time 1h", "--max-time 1h", "--min-tokens 100k", "--max-tokens 100k", "--no-ask"], prefix),
     handler: async (args, ctx) => {
       let parsed;
       try {

@@ -30,6 +30,7 @@ import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-codi
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { prefixCompletions } from "./lib/toolkit";
 
 const backend = createBackend("pi-wt");
 
@@ -92,14 +93,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
   pi.registerCommand("wt", {
     description: "Create a git worktree and switch to a pi session in it (re-enters an existing worktree; /wt list, /wt merge <topic>, /wt prune <topic>)",
-    getArgumentCompletions: (prefix) => {
-      const words = ["list", "merge", "prune"];
-      const trimmed = (prefix ?? "").trimStart();
-      if (!trimmed) return words.map((w) => ({ value: w, label: w }));
-      if (trimmed.includes(" ")) return null;
-      const filtered = words.filter((w) => w.startsWith(trimmed));
-      return filtered.length > 0 ? filtered.map((w) => ({ value: w, label: w })) : null;
-    },
+    getArgumentCompletions: (prefix) => prefixCompletions(["list", "merge", "prune"], prefix),
     handler: async (args, ctx) => {
       // Session replacement needs the pi TUI. RPC mode cannot service the
       // backend child-pipe I/O (upstream pi quirk: any await on a
