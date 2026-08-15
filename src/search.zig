@@ -28,14 +28,11 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const List = common.List;
-const nowMs = common.nowMs;
 const readLine = common.readLine;
 const respond = common.respond;
 
 const MAX_LINE = 4 * 1024 * 1024; // hard cap on a single request line
 const MAX_EVENT_LINE = 4 * 1024 * 1024; // cap on a single SSE data line
-const MAX_RESULT_TEXT = 64 * 1024; // cap on the formatted result
-const MAX_ERR_TEXT = 2048;
 const MAX_ANSWER = 32 * 1024; // cap on the answer part of the result
 const MAX_SNIPPET = 400; // cap on one source snippet
 const MAX_SOURCES = 30; // cap on the source list
@@ -483,18 +480,9 @@ fn buildBody(arena: Allocator, req: Request) ![]const u8 {
 // ---------------------------------------------------------------------------
 // HTTP call with deadline (worker thread + socket shutdown, same pattern as
 // pi-vision). The worker streams the SSE response, collects items, formats
-// the result, and signals done. The main thread enforces the timeout.
-
-const WorkerSlot = struct {
-    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(-1),
-    ok: bool = false,
-    retryable: bool = false,
-    text: [MAX_RESULT_TEXT]u8 = undefined,
-    text_len: usize = 0,
-    err: [MAX_ERR_TEXT]u8 = undefined,
-    err_len: usize = 0,
-};
+// the result, and signals done. The worker-slot machinery itself
+// (WorkerSlot, workerFinish, retryability, httpWithDeadline) lives in
+// common.zig, shared with pi-vision.
 
 const WorkerCtx = struct {
     gpa: Allocator,
@@ -504,44 +492,7 @@ const WorkerCtx = struct {
     headers: []const [2][]const u8,
     body: []const u8,
     results_mode: bool,
-    slot: *WorkerSlot,
 };
-
-fn workerFinish(ctx: *WorkerCtx, ok: bool, retryable: bool, text: []const u8) void {
-    const slot = ctx.slot;
-    slot.ok = ok;
-    slot.retryable = retryable;
-    if (ok) {
-        const n = @min(text.len, MAX_RESULT_TEXT - 1);
-        @memcpy(slot.text[0..n], text[0..n]);
-        slot.text_len = n;
-    } else {
-        const n = @min(text.len, MAX_ERR_TEXT - 1);
-        @memcpy(slot.err[0..n], text[0..n]);
-        slot.err_len = n;
-    }
-    slot.done.store(true, .release);
-}
-
-fn isRetryableStatus(code: u16) bool {
-    return code == 429 or (code >= 500 and code <= 599);
-}
-
-fn isRetryableErr(err: anyerror) bool {
-    return switch (err) {
-        error.ConnectionRefused,
-        error.ConnectionResetByPeer,
-        error.NetworkUnreachable,
-        error.HostUnreachable,
-        error.TlsInitializationFailed,
-        error.CertificateBundleLoadFailure,
-        error.EndOfStream,
-        error.BrokenPipe,
-        error.WriteFailed,
-        => true,
-        else => false,
-    };
-}
 
 const FetchResult = struct {
     ok: bool,
@@ -553,7 +504,7 @@ const FetchResult = struct {
 // content parts. In results mode the read loop stops as soon as the message
 // item is added (all searches have completed by then); in answer mode it
 // runs until response.completed or EOF.
-fn runSearchFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []const u8, headers: []const [2][]const u8, body: []const u8, results_mode: bool, slot: *WorkerSlot) !FetchResult {
+fn runSearchFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []const u8, headers: []const [2][]const u8, body: []const u8, results_mode: bool, slot: *common.WorkerSlot) !FetchResult {
     var client = std.http.Client{ .allocator = arena, .io = io };
     defer client.deinit();
     const uri = try std.Uri.parse(url);
@@ -606,7 +557,7 @@ fn runSearchFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []cons
             try std.fmt.allocPrint(arena, "search API error {d}: {s}", .{ code, message })
         else
             try std.fmt.allocPrint(arena, "search API error {d}", .{code});
-        return .{ .ok = false, .retryable = isRetryableStatus(code), .text = text };
+        return .{ .ok = false, .retryable = common.isRetryableStatus(code), .text = text };
     }
 
     // The client advertises gzip/deflate in Accept-Encoding, so the body must
@@ -634,7 +585,7 @@ fn runSearchFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []cons
         } else {
             const n = reader.readVec(&slices) catch |err| switch (err) {
                 error.EndOfStream => break,
-                else => return .{ .ok = false, .retryable = isRetryableErr(err), .text = try std.fmt.allocPrint(arena, "search stream read failed: {s}", .{@errorName(err)}) },
+                else => return .{ .ok = false, .retryable = common.isRetryableErr(err), .text = try std.fmt.allocPrint(arena, "search stream read failed: {s}", .{@errorName(err)}) },
             };
             if (n > 0) try line_buf.appendSlice(arena, chunk[0..n]);
         }
@@ -667,94 +618,31 @@ fn runSearchFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []cons
     return .{ .ok = true, .retryable = false, .text = formatted };
 }
 
-fn searchWorker(ctx: *WorkerCtx) void {
+fn searchWorker(ctx: *WorkerCtx, slot: *common.WorkerSlot) void {
     var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
     // Dupe the inputs: the caller's request arena is reset on the next loop
     // iteration while a timed-out worker may still be running.
-    const url = arena.dupe(u8, ctx.url) catch return workerFinish(ctx, false, false, "out of memory");
-    const api_key = arena.dupe(u8, ctx.api_key) catch return workerFinish(ctx, false, false, "out of memory");
-    const body = arena.dupe(u8, ctx.body) catch return workerFinish(ctx, false, false, "out of memory");
-    const headers = arena.alloc([2][]const u8, ctx.headers.len) catch return workerFinish(ctx, false, false, "out of memory");
+    const url = arena.dupe(u8, ctx.url) catch return common.workerFinish(slot, false, false, "out of memory");
+    const api_key = arena.dupe(u8, ctx.api_key) catch return common.workerFinish(slot, false, false, "out of memory");
+    const body = arena.dupe(u8, ctx.body) catch return common.workerFinish(slot, false, false, "out of memory");
+    const headers = arena.alloc([2][]const u8, ctx.headers.len) catch return common.workerFinish(slot, false, false, "out of memory");
     for (ctx.headers, 0..) |pair, i| {
-        headers[i][0] = arena.dupe(u8, pair[0]) catch return workerFinish(ctx, false, false, "out of memory");
-        headers[i][1] = arena.dupe(u8, pair[1]) catch return workerFinish(ctx, false, false, "out of memory");
+        headers[i][0] = arena.dupe(u8, pair[0]) catch return common.workerFinish(slot, false, false, "out of memory");
+        headers[i][1] = arena.dupe(u8, pair[1]) catch return common.workerFinish(slot, false, false, "out of memory");
     }
 
-    const res = runSearchFetch(arena, ctx.io, url, api_key, headers, body, ctx.results_mode, ctx.slot) catch |err| {
-        workerFinish(ctx, false, isRetryableErr(err), @errorName(err));
+    const res = runSearchFetch(arena, ctx.io, url, api_key, headers, body, ctx.results_mode, slot) catch |err| {
+        common.workerFinish(slot, false, common.isRetryableErr(err), @errorName(err));
         return;
     };
-    workerFinish(ctx, res.ok, res.retryable, res.text);
-}
-
-const SearchOutcome = struct {
-    ok: bool,
-    retryable: bool,
-    text: []const u8,
-    err: []const u8,
-};
-
-fn httpSearchWithDeadline(gpa: Allocator, arena: Allocator, io: std.Io, url: []const u8, api_key: []const u8, headers: []const [2][]const u8, body: []const u8, results_mode: bool, timeout_ms: u32) !SearchOutcome {
-    const slot = try gpa.create(WorkerSlot);
-    const ctx = try gpa.create(WorkerCtx);
-    ctx.* = .{ .gpa = gpa, .io = io, .url = url, .api_key = api_key, .headers = headers, .body = body, .results_mode = results_mode, .slot = slot };
-
-    const thread = std.Thread.spawn(.{}, searchWorker, .{ctx}) catch |err| {
-        gpa.destroy(ctx);
-        gpa.destroy(slot);
-        return err;
-    };
-
-    const deadline = nowMs() + @as(i64, timeout_ms);
-    while (true) {
-        if (slot.done.load(.acquire)) break;
-        const remaining = deadline - nowMs();
-        if (remaining <= 0) {
-            // Deadline hit: shut down the worker's socket so its blocked read
-            // unblocks, wait for it to finish (it always exits promptly after
-            // the shutdown), then clean up and report the timeout.
-            const fd = slot.fd.load(.monotonic);
-            if (fd >= 0) {
-                const stream: std.Io.net.Stream = .{ .socket = .{ .handle = fd, .address = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = 0 } } } };
-                stream.shutdown(io, .both) catch {};
-            }
-            var waited: i64 = 0;
-            while (!slot.done.load(.acquire) and waited < 1000) : (waited += 10) {
-                std.Io.sleep(io, std.Io.Duration.fromMilliseconds(10), .awake) catch {};
-            }
-            if (slot.done.load(.acquire)) {
-                thread.join();
-                gpa.destroy(ctx);
-                gpa.destroy(slot);
-            }
-            // If the worker is stuck before registering its socket (connect /
-            // TLS handshake), the structs leak; bounded and rare.
-            return error.TimedOut;
-        }
-        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(@min(remaining, 50)), .awake) catch {};
-    }
-    thread.join();
-
-    const out: SearchOutcome = if (slot.ok)
-        .{ .ok = true, .retryable = false, .text = try arena.dupe(u8, slot.text[0..slot.text_len]), .err = "" }
-    else
-        .{ .ok = false, .retryable = slot.retryable, .text = "", .err = try arena.dupe(u8, slot.err[0..slot.err_len]) };
-    gpa.destroy(ctx);
-    gpa.destroy(slot);
-    return out;
+    common.workerFinish(slot, res.ok, res.retryable, res.text);
 }
 
 // ---------------------------------------------------------------------------
 // search op
-
-fn parseHeaders(arena: Allocator, s: ?[]const u8) ![]const [2][]const u8 {
-    const h = s orelse return &.{};
-    if (h.len == 0) return &.{};
-    return json.parseFromSliceLeaky([][2][]const u8, arena, h, .{ .ignore_unknown_fields = true });
-}
 
 fn opSearch(gpa: Allocator, arena: Allocator, io: std.Io, req: Request) !Outcome {
     const query = mem.trim(u8, req.query orelse "", " \t\r\n");
@@ -771,13 +659,14 @@ fn opSearch(gpa: Allocator, arena: Allocator, io: std.Io, req: Request) !Outcome
     }
 
     const body = try buildBody(arena, req);
-    const hdrs = parseHeaders(arena, req.headers) catch return failOutcome(arena, "invalid headers json", .{});
+    const hdrs = common.parseHeaders(arena, req.headers) catch return failOutcome(arena, "invalid headers json", .{});
     const timeout_ms = req.timeout_ms orelse DEFAULT_TIMEOUT_MS;
     const api_key = req.api_key orelse "";
 
     var attempt: usize = 0;
     while (true) {
-        const res = httpSearchWithDeadline(gpa, arena, io, endpoint, api_key, hdrs, body, results_mode, timeout_ms) catch |err| switch (err) {
+        const ctx = WorkerCtx{ .gpa = gpa, .io = io, .url = endpoint, .api_key = api_key, .headers = hdrs, .body = body, .results_mode = results_mode };
+        const res = common.httpWithDeadline(gpa, arena, io, ctx, searchWorker, timeout_ms) catch |err| switch (err) {
             error.TimedOut => return failOutcome(arena, "search timed out after {d}ms", .{timeout_ms}),
             else => return failOutcome(arena, "search request failed: {s}", .{@errorName(err)}),
         };

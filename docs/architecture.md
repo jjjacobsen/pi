@@ -8,7 +8,13 @@ shared parts live in two files:
   the line reader with deadline (`readLine`), buffered writer
   (`writeAllIo`), JSON-escaped responder (`respond`), monotonic and
   realtime clocks (`nowMs` / `nowRealtimeMs`), and the command runner
-  (`runCmd`, `gitRoot`, `GitResult`). Each backend aliases only what it
+  (`runCmd`, `gitRoot`, `GitResult`). Since pi-search and pi-vision were
+  built, it also holds the HTTP-with-deadline machinery they share
+  (`httpWithDeadline`, `WorkerSlot`, `workerFinish`, `isRetryableStatus` /
+  `isRetryableErr`, `parseHeaders`): each backend keeps its own fetch
+  worker and response parsing, and the worker-slot lifecycle (socket
+  shutdown on deadline, bounded leak on a stuck pre-socket worker) lives
+  once. Each backend aliases only what it
   needs and keeps its own request parsing, op dispatch, protocol structs,
   and self-check. `goal.zig` aliases `nowRealtimeMs` because its deadlines
   must be comparable to the glue's wall time; the others use the monotonic

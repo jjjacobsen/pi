@@ -9,6 +9,7 @@
 const std = @import("std");
 const posix = std.posix;
 const mem = std.mem;
+const json = std.json;
 const Allocator = std.mem.Allocator;
 
 pub const List = std.array_list.AlignedManaged(u8, null);
@@ -132,4 +133,142 @@ pub fn gitRoot(arena: Allocator, io: std.Io, cwd: []const u8) !?[]const u8 {
     const root = mem.trim(u8, res.stdout, " \t\r\n");
     if (root.len == 0) return null;
     return root;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP call with deadline (shared by pi-vision and pi-search)
+//
+// Both backends POST to a remote endpoint on a worker thread so a hung
+// provider cannot stall the main loop. The worker runs with its own arena
+// (it must dupe any caller-arena strings before use), writes the result into
+// the shared slot's fixed buffers, and signals done. The main thread waits
+// with a deadline; on expiry it shuts down the worker's socket (slot.fd) so
+// the worker unblocks, waits up to 1s for it to exit, and only then frees
+// the heap structs. If the worker is stuck before registering its socket
+// (connect/TLS handshake), the structs leak; bounded and rare.
+
+pub const MAX_RESULT_TEXT = 64 * 1024; // cap on the result copied out of the slot
+pub const MAX_ERR_TEXT = 2048; // cap on the error text copied out of the slot
+
+pub const WorkerSlot = struct {
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(-1),
+    ok: bool = false,
+    retryable: bool = false,
+    text: [MAX_RESULT_TEXT]u8 = undefined,
+    text_len: usize = 0,
+    err: [MAX_ERR_TEXT]u8 = undefined,
+    err_len: usize = 0,
+};
+
+pub const HttpOutcome = struct {
+    ok: bool,
+    retryable: bool,
+    text: []const u8,
+    err: []const u8,
+};
+
+pub fn workerFinish(slot: *WorkerSlot, ok: bool, retryable: bool, text: []const u8) void {
+    slot.ok = ok;
+    slot.retryable = retryable;
+    if (ok) {
+        const n = @min(text.len, MAX_RESULT_TEXT - 1);
+        @memcpy(slot.text[0..n], text[0..n]);
+        slot.text_len = n;
+    } else {
+        const n = @min(text.len, MAX_ERR_TEXT - 1);
+        @memcpy(slot.err[0..n], text[0..n]);
+        slot.err_len = n;
+    }
+    slot.done.store(true, .release);
+}
+
+pub fn isRetryableStatus(code: u16) bool {
+    return code == 429 or (code >= 500 and code <= 599);
+}
+
+pub fn isRetryableErr(err: anyerror) bool {
+    return switch (err) {
+        error.ConnectionRefused,
+        error.ConnectionResetByPeer,
+        error.NetworkUnreachable,
+        error.HostUnreachable,
+        error.TlsInitializationFailed,
+        error.CertificateBundleLoadFailure,
+        error.EndOfStream,
+        error.BrokenPipe,
+        error.WriteFailed,
+        => true,
+        else => false,
+    };
+}
+
+// Parses the glue's JSON header list ("[[\"h\",\"v\"],...]") into pairs.
+pub fn parseHeaders(arena: Allocator, s: ?[]const u8) ![]const [2][]const u8 {
+    const h = s orelse return &.{};
+    if (h.len == 0) return &.{};
+    return json.parseFromSliceLeaky([][2][]const u8, arena, h, .{ .ignore_unknown_fields = true });
+}
+
+// Spawns `worker` on a thread with a heap copy of `ctx` plus the shared
+// slot, waits up to `timeout_ms`, and returns the worker's result. On
+// timeout the worker's socket is shut down (unblocking its read); see the
+// section comment for the lifecycle. `worker` must be a function of
+// (ctx_type, *WorkerSlot).
+pub fn httpWithDeadline(
+    gpa: Allocator,
+    arena: Allocator,
+    io: std.Io,
+    ctx: anytype,
+    comptime worker: fn (*@TypeOf(ctx), *WorkerSlot) void,
+    timeout_ms: u32,
+) !HttpOutcome {
+    const ctx_type = @TypeOf(ctx);
+    const heap_ctx = try gpa.create(ctx_type);
+    heap_ctx.* = ctx;
+    const slot = try gpa.create(WorkerSlot);
+
+    const thread = std.Thread.spawn(.{}, worker, .{ heap_ctx, slot }) catch |err| {
+        gpa.destroy(heap_ctx);
+        gpa.destroy(slot);
+        return err;
+    };
+
+    const deadline = nowMs() + @as(i64, timeout_ms);
+    while (true) {
+        if (slot.done.load(.acquire)) break;
+        const remaining = deadline - nowMs();
+        if (remaining <= 0) {
+            // Deadline hit: shut down the worker's socket so its blocked read
+            // unblocks, wait for it to finish (it always exits promptly after
+            // the shutdown), then clean up and report the timeout.
+            const fd = slot.fd.load(.monotonic);
+            if (fd >= 0) {
+                const stream: std.Io.net.Stream = .{ .socket = .{ .handle = fd, .address = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = 0 } } } };
+                stream.shutdown(io, .both) catch {};
+            }
+            var waited: i64 = 0;
+            while (!slot.done.load(.acquire) and waited < 1000) : (waited += 10) {
+                std.Io.sleep(io, std.Io.Duration.fromMilliseconds(10), .awake) catch {};
+            }
+            if (slot.done.load(.acquire)) {
+                thread.join();
+                gpa.destroy(heap_ctx);
+                gpa.destroy(slot);
+            }
+            // If the worker is stuck before registering its socket (connect /
+            // TLS handshake), the structs leak; bounded and rare.
+            return error.TimedOut;
+        }
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(@min(remaining, 50)), .awake) catch {};
+    }
+    thread.join();
+
+    const out: HttpOutcome = if (slot.ok)
+        .{ .ok = true, .retryable = false, .text = try arena.dupe(u8, slot.text[0..slot.text_len]), .err = "" }
+    else
+        .{ .ok = false, .retryable = slot.retryable, .text = "", .err = try arena.dupe(u8, slot.err[0..slot.err_len]) };
+    gpa.destroy(heap_ctx);
+    gpa.destroy(slot);
+    return out;
 }

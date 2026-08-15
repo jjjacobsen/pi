@@ -34,8 +34,6 @@ const MAX_LINE = 4 * 1024 * 1024; // hard cap on a single request line
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024; // cap on a source image file
 const FORCE_COMPRESS_BYTES = 10 * 1024 * 1024; // byte cap before forced resize
 const MAX_RESPONSE = 1024 * 1024; // cap on the HTTP response body
-const MAX_RESULT_TEXT = 64 * 1024; // cap on the description passed to the glue
-const MAX_ERR_TEXT = 2048;
 const DEFAULT_TIMEOUT_MS = 60000;
 const RETRY_BACKOFF_MS = 500;
 const MAX_DIMENSION = 1568;
@@ -247,21 +245,10 @@ fn compressImage(arena: Allocator, io: std.Io, src: []const u8, info: ImageInfo,
 
 // ---------------------------------------------------------------------------
 // HTTP call with deadline. The worker owns all allocations (its own arena),
-// writes the result into fixed slot buffers, and signals done. The main
-// thread waits with a deadline; on expiry it shuts down the worker's socket
-// so the worker unblocks, then abandons it (the shared structs leak, a
-// bounded ~200 bytes per timed-out call; the worker always frees its arena).
-
-const WorkerSlot = struct {
-    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(-1),
-    ok: bool = false,
-    retryable: bool = false,
-    text: [MAX_RESULT_TEXT]u8 = undefined,
-    text_len: usize = 0,
-    err: [MAX_ERR_TEXT]u8 = undefined,
-    err_len: usize = 0,
-};
+// writes the result into the shared slot buffers, and signals done; the main
+// thread waits with a deadline and shuts the worker's socket down on expiry.
+// The worker-slot machinery itself (WorkerSlot, workerFinish, retryability,
+// httpWithDeadline) lives in common.zig, shared with pi-search.
 
 const WorkerCtx = struct {
     gpa: Allocator,
@@ -270,7 +257,6 @@ const WorkerCtx = struct {
     api_key: []const u8,
     headers: []const [2][]const u8,
     body: []const u8,
-    slot: *WorkerSlot,
 };
 
 const Completion = struct {
@@ -351,60 +337,24 @@ fn messageText(arena: Allocator, msg: Completion.Message) !?[]const u8 {
     return null;
 }
 
-fn isRetryableStatus(code: u16) bool {
-    return code == 429 or (code >= 500 and code <= 599);
-}
-
-fn isRetryableErr(err: anyerror) bool {
-    return switch (err) {
-        error.ConnectionRefused,
-        error.ConnectionResetByPeer,
-        error.NetworkUnreachable,
-        error.HostUnreachable,
-        error.TlsInitializationFailed,
-        error.CertificateBundleLoadFailure,
-        error.EndOfStream,
-        error.BrokenPipe,
-        error.WriteFailed,
-        => true,
-        else => false,
-    };
-}
-
-fn workerFinish(ctx: *WorkerCtx, ok: bool, retryable: bool, text: []const u8) void {
-    const slot = ctx.slot;
-    slot.ok = ok;
-    slot.retryable = retryable;
-    if (ok) {
-        const n = @min(text.len, MAX_RESULT_TEXT - 1);
-        @memcpy(slot.text[0..n], text[0..n]);
-        slot.text_len = n;
-    } else {
-        const n = @min(text.len, MAX_ERR_TEXT - 1);
-        @memcpy(slot.err[0..n], text[0..n]);
-        slot.err_len = n;
-    }
-    slot.done.store(true, .release);
-}
-
-fn httpWorker(ctx: *WorkerCtx) void {
+fn httpWorker(ctx: *WorkerCtx, slot: *common.WorkerSlot) void {
     var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
     // Dupe the inputs: the caller's request arena is reset on the next loop
     // iteration while a timed-out worker may still be running.
-    const url = arena.dupe(u8, ctx.url) catch return workerFinish(ctx, false, false, "out of memory");
-    const api_key = arena.dupe(u8, ctx.api_key) catch return workerFinish(ctx, false, false, "out of memory");
-    const body = arena.dupe(u8, ctx.body) catch return workerFinish(ctx, false, false, "out of memory");
-    const headers = arena.alloc([2][]const u8, ctx.headers.len) catch return workerFinish(ctx, false, false, "out of memory");
+    const url = arena.dupe(u8, ctx.url) catch return common.workerFinish(slot, false, false, "out of memory");
+    const api_key = arena.dupe(u8, ctx.api_key) catch return common.workerFinish(slot, false, false, "out of memory");
+    const body = arena.dupe(u8, ctx.body) catch return common.workerFinish(slot, false, false, "out of memory");
+    const headers = arena.alloc([2][]const u8, ctx.headers.len) catch return common.workerFinish(slot, false, false, "out of memory");
     for (ctx.headers, 0..) |pair, i| {
-        headers[i][0] = arena.dupe(u8, pair[0]) catch return workerFinish(ctx, false, false, "out of memory");
-        headers[i][1] = arena.dupe(u8, pair[1]) catch return workerFinish(ctx, false, false, "out of memory");
+        headers[i][0] = arena.dupe(u8, pair[0]) catch return common.workerFinish(slot, false, false, "out of memory");
+        headers[i][1] = arena.dupe(u8, pair[1]) catch return common.workerFinish(slot, false, false, "out of memory");
     }
 
-    const res = runFetch(arena, ctx.io, url, api_key, headers, body, ctx.slot) catch |err| {
-        workerFinish(ctx, false, isRetryableErr(err), @errorName(err));
+    const res = runFetch(arena, ctx.io, url, api_key, headers, body, slot) catch |err| {
+        common.workerFinish(slot, false, common.isRetryableErr(err), @errorName(err));
         return;
     };
     const code: u16 = @intFromEnum(res.status);
@@ -413,35 +363,35 @@ fn httpWorker(ctx: *WorkerCtx) void {
             // Surface the raw body (truncated) so unexpected response shapes
             // are diagnosable without packet captures.
             const snippet = res.body[0..@min(res.body.len, 400)];
-            workerFinish(ctx, false, false, std.fmt.allocPrint(arena, "invalid JSON in vision model response: {s}", .{snippet}) catch "invalid JSON in vision model response");
+            common.workerFinish(slot, false, false, std.fmt.allocPrint(arena, "invalid JSON in vision model response: {s}", .{snippet}) catch "invalid JSON in vision model response");
             return;
         };
         if (parsed.choices.len == 0) {
-            workerFinish(ctx, false, false, "vision model returned no content");
+            common.workerFinish(slot, false, false, "vision model returned no content");
             return;
         }
         const msg = parsed.choices[0].message;
         const text = messageText(arena, msg) catch {
-            workerFinish(ctx, false, false, "out of memory");
+            common.workerFinish(slot, false, false, "out of memory");
             return;
         };
         if (text == null or text.?.len == 0) {
-            workerFinish(ctx, false, false, "vision model returned no content");
+            common.workerFinish(slot, false, false, "vision model returned no content");
             return;
         }
-        workerFinish(ctx, true, false, text.?);
+        common.workerFinish(slot, true, false, text.?);
         return;
     }
 
     const parsed = json.parseFromSliceLeaky(Completion, arena, res.body, .{ .ignore_unknown_fields = true }) catch {
-        workerFinish(ctx, false, isRetryableStatus(code), std.fmt.allocPrint(arena, "vision model returned HTTP {d}", .{code}) catch "vision model returned an error");
+        common.workerFinish(slot, false, common.isRetryableStatus(code), std.fmt.allocPrint(arena, "vision model returned HTTP {d}", .{code}) catch "vision model returned an error");
         return;
     };
     const msg_text = if (parsed.@"error") |e| e.message orelse "" else "";
     if (msg_text.len > 0) {
-        workerFinish(ctx, false, isRetryableStatus(code), std.fmt.allocPrint(arena, "vision model returned HTTP {d}: {s}", .{ code, msg_text }) catch "vision model returned an error");
+        common.workerFinish(slot, false, common.isRetryableStatus(code), std.fmt.allocPrint(arena, "vision model returned HTTP {d}: {s}", .{ code, msg_text }) catch "vision model returned an error");
     } else {
-        workerFinish(ctx, false, isRetryableStatus(code), std.fmt.allocPrint(arena, "vision model returned HTTP {d}", .{code}) catch "vision model returned an error");
+        common.workerFinish(slot, false, common.isRetryableStatus(code), std.fmt.allocPrint(arena, "vision model returned HTTP {d}", .{code}) catch "vision model returned an error");
     }
 }
 
@@ -450,7 +400,7 @@ const FetchResult = struct {
     body: []const u8,
 };
 
-fn runFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []const u8, headers: []const [2][]const u8, body: []const u8, slot: *WorkerSlot) !FetchResult {
+fn runFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []const u8, headers: []const [2][]const u8, body: []const u8, slot: *common.WorkerSlot) !FetchResult {
     var client = std.http.Client{ .allocator = arena, .io = io };
     defer client.deinit();
     const uri = try std.Uri.parse(url);
@@ -492,71 +442,8 @@ fn runFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []const u8, 
     return .{ .status = resp.head.status, .body = buf[0..out.end] };
 }
 
-const HttpOutcome = struct {
-    ok: bool,
-    retryable: bool,
-    text: []const u8,
-    err: []const u8,
-};
-
-fn httpPostWithDeadline(gpa: Allocator, arena: Allocator, io: std.Io, url: []const u8, api_key: []const u8, headers: []const [2][]const u8, body: []const u8, timeout_ms: u32) !HttpOutcome {
-    const slot = try gpa.create(WorkerSlot);
-    const ctx = try gpa.create(WorkerCtx);
-    ctx.* = .{ .gpa = gpa, .io = io, .url = url, .api_key = api_key, .headers = headers, .body = body, .slot = slot };
-
-    const thread = std.Thread.spawn(.{}, httpWorker, .{ctx}) catch |err| {
-        gpa.destroy(ctx);
-        gpa.destroy(slot);
-        return err;
-    };
-
-    const deadline = nowMs() + @as(i64, timeout_ms);
-    while (true) {
-        if (slot.done.load(.acquire)) break;
-        const remaining = deadline - nowMs();
-        if (remaining <= 0) {
-            // Deadline hit: shut down the worker's socket so its blocked read
-            // unblocks, wait for it to finish (it always exits promptly after
-            // the shutdown), then clean up and report the timeout.
-            const fd = slot.fd.load(.monotonic);
-            if (fd >= 0) {
-                const stream: std.Io.net.Stream = .{ .socket = .{ .handle = fd, .address = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = 0 } } } };
-                stream.shutdown(io, .both) catch {};
-            }
-            var waited: i64 = 0;
-            while (!slot.done.load(.acquire) and waited < 1000) : (waited += 10) {
-                std.Io.sleep(io, std.Io.Duration.fromMilliseconds(10), .awake) catch {};
-            }
-            if (slot.done.load(.acquire)) {
-                thread.join();
-                gpa.destroy(ctx);
-                gpa.destroy(slot);
-            }
-            // If the worker is stuck before registering its socket (connect /
-            // TLS handshake), the structs leak; bounded and rare.
-            return error.TimedOut;
-        }
-        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(@min(remaining, 50)), .awake) catch {};
-    }
-    thread.join();
-
-    const out: HttpOutcome = if (slot.ok)
-        .{ .ok = true, .retryable = false, .text = try arena.dupe(u8, slot.text[0..slot.text_len]), .err = "" }
-    else
-        .{ .ok = false, .retryable = slot.retryable, .text = "", .err = try arena.dupe(u8, slot.err[0..slot.err_len]) };
-    gpa.destroy(ctx);
-    gpa.destroy(slot);
-    return out;
-}
-
 // ---------------------------------------------------------------------------
 // describe op
-
-fn parseHeaders(arena: Allocator, s: ?[]const u8) ![]const [2][]const u8 {
-    const h = s orelse return &.{};
-    if (h.len == 0) return &.{};
-    return json.parseFromSliceLeaky([][2][]const u8, arena, h, .{ .ignore_unknown_fields = true });
-}
 
 fn opDescribe(gpa: Allocator, arena: Allocator, io: std.Io, req: Request) !Outcome {
     const base = mem.trim(u8, req.base_url orelse "", "/");
@@ -606,14 +493,15 @@ fn opDescribe(gpa: Allocator, arena: Allocator, io: std.Io, req: Request) !Outco
     try common.appendJsonEscaped(&body, prompt);
     try body.appendSlice("\"}]}],\"max_tokens\":4096,\"temperature\":0}");
 
-    const hdrs = parseHeaders(arena, req.headers) catch return failOutcome(arena, "invalid headers json", .{});
+    const hdrs = common.parseHeaders(arena, req.headers) catch return failOutcome(arena, "invalid headers json", .{});
     const url = try std.fmt.allocPrint(arena, "{s}/chat/completions", .{base});
     const timeout_ms = req.timeout_ms orelse DEFAULT_TIMEOUT_MS;
     const api_key = req.api_key orelse "";
 
     var attempt: usize = 0;
     while (true) {
-        const res = httpPostWithDeadline(gpa, arena, io, url, api_key, hdrs, body.items, timeout_ms) catch |err| switch (err) {
+        const ctx = WorkerCtx{ .gpa = gpa, .io = io, .url = url, .api_key = api_key, .headers = hdrs, .body = body.items };
+        const res = common.httpWithDeadline(gpa, arena, io, ctx, httpWorker, timeout_ms) catch |err| switch (err) {
             error.TimedOut => return failOutcome(arena, "vision request timed out after {d}ms", .{timeout_ms}),
             else => return failOutcome(arena, "vision request failed: {s}", .{@errorName(err)}),
         };
