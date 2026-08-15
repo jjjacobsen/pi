@@ -14,7 +14,40 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { createBackend, killOnHostTeardown } from "./lib/backend";
+
+// Animated spinner shown as a widget above the editor while the commit
+// pipeline runs (TUI mode only: RPC mode ignores component factories, print
+// mode has no widgets, so the interval never exists there). The widget is
+// disposed on removal and on TUI teardown, which clears the interval.
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_WIDGET = "commit";
+
+function showSpinner(ctx, label) {
+  try {
+    ctx.ui.setWidget(SPINNER_WIDGET, (tui, theme) => {
+      const text = new Text(theme.fg("dim", `${SPINNER_FRAMES[0]} ${label}`), 0, 0);
+      let frame = 0;
+      const timer = setInterval(() => {
+        frame = (frame + 1) % SPINNER_FRAMES.length;
+        text.setText(theme.fg("dim", `${SPINNER_FRAMES[frame]} ${label}`));
+        tui.requestRender();
+      }, 80);
+      return Object.assign(text, { dispose: () => clearInterval(timer) });
+    });
+  } catch {
+    // headless sessions have no widgets
+  }
+}
+
+function hideSpinner(ctx) {
+  try {
+    ctx.ui.setWidget(SPINNER_WIDGET, undefined);
+  } catch {
+    // headless sessions have no widgets
+  }
+}
 
 const THINKING_LEVEL = "low";
 const MAX_SESSION_TAIL = 4000;
@@ -163,6 +196,7 @@ export default function (pi: ExtensionAPI) {
     description: "Stage all changes and commit them with an AI-generated conventional message",
     handler: async (args, ctx) => {
       const cwd = ctx.cwd;
+      showSpinner(ctx, "analyzing changes");
       try {
         const analyze = await backend.call("analyze", { cwd });
         if (analyze.empty) return notify(ctx, "nothing to commit", "info");
@@ -173,6 +207,7 @@ export default function (pi: ExtensionAPI) {
         const intent = (args ?? "").trim();
         const prompt = buildPrompt(analyze.result, intent, sessionTail(ctx));
 
+        showSpinner(ctx, "writing commit message");
         let message = stripFences(await askModel(model, prompt, cwd));
         let problems = await validate(message);
         if (problems) {
@@ -185,10 +220,13 @@ export default function (pi: ExtensionAPI) {
           message = retry;
         }
 
+        showSpinner(ctx, "creating commit");
         const result = await backend.call("commit", { message, cwd });
         notify(ctx, result.result, "success");
       } catch (err) {
         notify(ctx, err?.message ?? String(err), "error");
+      } finally {
+        hideSpinner(ctx);
       }
     },
   });
