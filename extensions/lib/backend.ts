@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 export function createBackend(binaryName, hooks = {}) {
-  const root = path.resolve(import.meta.dirname, "..");
+  const root = path.resolve(import.meta.dirname, "../.."); // extensions/lib/backend.ts -> repo root
   const bin = path.join(root, "zig-out", "bin", binaryName);
 
   if (!existsSync(bin)) {

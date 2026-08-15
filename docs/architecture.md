@@ -13,7 +13,7 @@ shared parts live in two files:
   and self-check. `goal.zig` aliases `nowRealtimeMs` because its deadlines
   must be comparable to the glue's wall time; the others use the monotonic
   clock.
-- `extensions/backend.ts`: `createBackend(binaryName, hooks)` owns spawning
+- `extensions/lib/backend.ts`: `createBackend(binaryName, hooks)` owns spawning
   the binary (with the auto-build guard), the pending-call map, line
   dispatch, and the unref dance that lets pi exit in print mode while the
   backend self-terminates on stdin EOF. `hooks.onOk` picks the resolved

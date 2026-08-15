@@ -21,7 +21,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createBackend } from "./backend";
+import { createBackend } from "./lib/backend";
 
 const STATUS_KEY = "goal";
 const STATE_ENTRY_TYPE = "goal-state";

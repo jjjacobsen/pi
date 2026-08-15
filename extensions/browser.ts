@@ -11,7 +11,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createBackend } from "./backend";
+import { createBackend } from "./lib/backend";
 
 const T = Type;
 const enumOpt = (values: string[], description: string) =>

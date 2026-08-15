@@ -14,7 +14,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { createBackend } from "./backend";
+import { createBackend } from "./lib/backend";
 
 const THINKING_LEVEL = "low";
 const MAX_SESSION_TAIL = 4000;
