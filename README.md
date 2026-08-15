@@ -8,15 +8,19 @@ house, piece by piece
 
 - `extensions/` - TypeScript extension entry points (pi requires TS modules);
   `extensions/lib/backend.ts` is the shared stdio bridge all of them use.
-  It rebuilds binaries when sources changed (stamped in
-  `zig-out/.pi-build-stamp.json`, so at most once per edit) and kills old
-  backends on host teardown (`session_shutdown` with reason quit/reload via
+  Backends start lazily (importing spawns nothing; the first call starts the
+  binary), rebuild binaries when sources changed (stamped in
+  `zig-out/.pi-build-stamp.json`, so at most once per edit), respawn only
+  after the old child exits (Esc aborts, crashes), and kill old backends on
+  host teardown (`session_shutdown` with reason quit/reload via
   `killOnHostTeardown`), so `/reload` picks up Zig and TS changes with no
   orphaned processes, while
   `/new` keeps the backends alive for the new session
 - `extensions/lib/toolkit.ts` - shared tool glue for the HTTP-delegating
   extensions (search, vision): `withAbort` (Esc kills and respawns the
-  backend) and `toolError` (shape a failure as a tool result)
+  backend), `toolError` (throws, since pi only treats thrown errors as tool
+  failures), and `toToolUsage` (turns backend token accounting into
+  `AgentToolResult.usage` with cost from the model's pricing)
 - `prompts/` - prompt templates (slash commands); served to pi via the package manifest
 - `src/` - Zig backends. One binary per extension, built by `build.zig`;
   `src/common.zig` holds the IO/JSON/process helpers they all share
@@ -38,6 +42,9 @@ context for the "why", strict validation with one retry, thinking level
 `extensions/browser.ts` + `src/browser.zig`. Gives the model 26 `browser_*`
 tools (navigate, read, click, fill, evaluate, waits, extract, search, ...)
 backed by a real headless browser (Lightpanda) with a persistent session.
+Extracted results are capped at 256KB (head/tail kept) so one call cannot
+flood context, and Esc aborts an in-flight call by restarting the backend
+(the loaded page is lost).
 See [docs/architecture.md](docs/architecture.md).
 
 ```sh
@@ -63,7 +70,7 @@ autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 1
 
 ### usage - usage dashboard via /usage
 
-`extensions/usage.ts` + `src/usage.zig`. The `/usage` command shows usage stats for Today / This Week / Last Week / Last 30 Days / All Time across four views: Graphs (braille charts by provider/model/thinking, cumulative toggle), Table (providers to models, filter/hide/expand), Insights (cost advice), and Limits (provider quota: OpenAI Codex subscription and OpenCode Go 5h/weekly/monthly windows with usage bars, reset timers, plan/account info, Codex saved resets). All data collection runs in the Zig backend: session JSONL scanning with a binary cache, aggregation, insights, and the quota fetches. Replaces the third-party `@tmustier/pi-usage-extension`; the limits view is adapted from omp (can1357/oh-my-pi). See [docs/architecture.md](docs/architecture.md).
+`extensions/usage.ts` + `src/usage.zig`. The `/usage` command shows usage stats for Today / This Week / Last Week / Last 30 Days / All Time across four views: Graphs (braille charts by provider/model/thinking, cumulative toggle), Table (providers to models, filter/hide/expand), Insights (cost advice), and Limits (provider quota: OpenAI Codex subscription and OpenCode Go 5h/weekly/monthly windows with usage bars, reset timers, plan/account info, Codex saved resets). All data collection runs in the Zig backend: session JSONL scanning with a binary cache, aggregation, insights, and the quota fetches. Delegated tool usage (describe_image, web_search) is counted under the Tools provider; Codex credentials for the limits fetch come from pi's model registry (no auth.json handling in Zig), and the Limits view fetches only when first opened. Replaces the third-party `@tmustier/pi-usage-extension`; the limits view is adapted from omp (can1357/oh-my-pi). See [docs/architecture.md](docs/architecture.md).
 
 ### footer - custom status footer via /footer
 
@@ -110,7 +117,8 @@ configured vision model: Zig detects the format and dimensions from header
 bytes, compresses oversized images via `sips` (JPEG for opaque, PNG/GIF for
 alpha so transparency survives), base64s, and POSTs to the model's
 OpenAI-compatible
-endpoint with one retry and a hard deadline. Multimodal models never see the
+endpoint with one retry and a hard deadline. The delegated tokens and cost
+are reported as tool-result usage, so /usage counts them. Multimodal models never see the
 tool — pi passes images to them natively. `/vision show` and
 `/vision model <provider/model>` configure the vision model. Replaces the
 third-party @getpipher/vision package. See

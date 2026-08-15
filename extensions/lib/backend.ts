@@ -6,6 +6,11 @@
 // pending-call map, line dispatch, and the unref dance that lets pi exit in
 // print mode while the backend self-terminates on stdin EOF.
 //
+// Lazy start: importing an extension must be cheap — pi imports every
+// extension at startup, so createBackend spawns nothing until the first
+// call (or restart). Ten backends plus Lightpanda only start when actually
+// used.
+//
 // /reload safety (two guarantees):
 // - Stale binaries are rebuilt: before spawning, if any source
 //   (build.zig, build.zig.zon, anything under src/) is newer than the last
@@ -25,6 +30,17 @@
 //   instance's backend. Session replacement ("new", "resume", "fork", /wt
 //   switches) must NOT kill: pi rebinds the same loaded extension instances
 //   without re-importing them, so the backend keeps serving the new session.
+//
+// Child lifecycle:
+// - Pending calls are scoped to their child generation, so a stale child's
+//   late exit or late stdout line can never settle (or reject) a request
+//   sent to the replacement child.
+// - restart() (used when an in-flight call is aborted, e.g. Esc on a slow
+//   vision/search request) kills the child and respawns only after it
+//   exits, so old exit handlers never run against a new generation. Calls
+//   made while the respawn is pending wait for the new child.
+// - An unexpected child exit (crash) marks the backend dead; the next call
+//   spawns a fresh child instead of writing into a dead pipe and hanging.
 //
 // hooks.onOk(msg) picks the resolved value (browser resolves the raw result
 // string); hooks.onError(msg) returns the error message (goal adds a
@@ -93,23 +109,40 @@ export function createBackend(binaryName, hooks = {}) {
   const root = path.resolve(import.meta.dirname, "../.."); // extensions/lib/backend.ts -> repo root
   const bin = path.join(root, "zig-out", "bin", binaryName);
 
-  ensureBuilt(root, bin);
-
-  let child;
-  let rl;
+  let child = null; // current backend child; null until first use or after exit
+  let pending = new Map(); // current child generation's pending calls
   let nextId = 1;
-  const pending = new Map();
-  let killed = false;
+  let killed = false; // kill() ran: terminal, nothing respawns
+  let restarting = false; // restart() ran: respawn when the old child exits
+  let crashed = false; // child exited unexpectedly; the next call respawns
+  let built = false; // ensureBuilt ran for this module instance
+  let waiters = []; // call() promises parked while a restart respawn is pending
+
+  const rejectPending = (map, message) => {
+    for (const p of map.values()) p.reject(new Error(message));
+    map.clear();
+  };
 
   const spawnBackend = () => {
-    child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
+    if (!built) {
+      ensureBuilt(root, bin);
+      built = true;
+    }
+    crashed = false;
+    const genPending = new Map();
+    pending = genPending;
+    const c = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
     // Unref so pi can exit in print mode (and on shutdown) without waiting on
     // the backend's pipes; the backend self-terminates when stdin closes.
-    child.unref();
-    child.stdin.unref();
-    child.stdout.unref();
-    rl = createInterface({ input: child.stdout });
-    rl.on("line", (line) => {
+    c.unref();
+    c.stdin.unref();
+    c.stdout.unref();
+    // A write to a just-dead child's stdin surfaces as an async EPIPE here;
+    // the pending call rejects via the exit handler, so nothing to do.
+    c.stdin.on("error", () => {});
+    child = c;
+    const genRl = createInterface({ input: c.stdout });
+    genRl.on("line", (line) => {
       let msg;
       try {
         msg = JSON.parse(line);
@@ -117,7 +150,7 @@ export function createBackend(binaryName, hooks = {}) {
         console.error(`${binaryName}: non-JSON line from backend: ${line.slice(0, 200)}`);
         return;
       }
-      const entry = pending.get(msg.id);
+      const entry = genPending.get(msg.id);
       if (!entry) {
         // A response for an unknown id can never settle a caller; surface it
         // instead of dropping it silently (that turned protocol bugs into
@@ -125,35 +158,61 @@ export function createBackend(binaryName, hooks = {}) {
         console.error(`${binaryName}: response for unknown id ${msg.id}: ${line.slice(0, 200)}`);
         return;
       }
-      pending.delete(msg.id);
+      genPending.delete(msg.id);
       if (msg.ok) entry.resolve(hooks.onOk ? hooks.onOk(msg) : msg);
       else entry.reject(new Error(hooks.onError ? hooks.onError(msg) : msg.error));
     });
-    child.on("exit", (code) => {
-      for (const p of pending.values()) p.reject(new Error(`${binaryName} backend exited (code ${code})`));
-      pending.clear();
+    c.on("exit", (code) => {
+      genRl.close();
+      rejectPending(genPending, `${binaryName} backend exited (code ${code})`);
+      if (child !== c) return; // a stale generation can never touch the new one
+      child = null;
+      if (restarting && !killed) {
+        // Respawn only now: the old child is gone, so this exit handler (and
+        // any late stdout lines) cannot interfere with the new generation.
+        restarting = false;
+        spawnBackend();
+        const parked = waiters;
+        waiters = [];
+        for (const w of parked) w(null);
+      } else if (!killed) {
+        crashed = true; // unexpected exit; the next call spawns a fresh child
+      }
     });
-    child.on("error", (err) => {
-      for (const p of pending.values()) p.reject(err);
-      pending.clear();
+    c.on("error", (err) => {
+      rejectPending(genPending, `${binaryName} backend error: ${err.message}`);
     });
   };
-  spawnBackend();
 
   return {
     call(op, params) {
       return new Promise((resolve, reject) => {
         if (killed) return reject(new Error(`${binaryName} backend killed`));
-        const id = nextId++;
-        pending.set(id, { resolve, reject });
-        child.stdin.write(JSON.stringify({ id, op, ...params }) + "\n");
+        const send = () => {
+          const id = nextId++;
+          pending.set(id, { resolve, reject });
+          child.stdin.write(JSON.stringify({ id, op, ...params }) + "\n");
+        };
+        if (restarting) {
+          // Parked until the respawned child is up (restart() resolved).
+          waiters.push((err) => (err ? reject(err) : send()));
+        } else if (!child) {
+          // First use (lazy start) or after a crash: spawn, then send.
+          spawnBackend();
+          send();
+        } else {
+          send();
+        }
       });
     },
     kill() {
       if (killed) return;
       killed = true;
-      for (const p of pending.values()) p.reject(new Error(`${binaryName} backend killed (session shutdown)`));
-      pending.clear();
+      rejectPending(pending, `${binaryName} backend killed (session shutdown)`);
+      const parked = waiters;
+      waiters = [];
+      for (const w of parked) w(new Error(`${binaryName} backend killed (session shutdown)`));
+      if (!child) return;
       // EOF on stdin is the backend's self-terminate signal; SIGTERM covers
       // a backend stuck mid-op. Pipes stay unref'd: pi must not wait on them.
       try {
@@ -164,13 +223,20 @@ export function createBackend(binaryName, hooks = {}) {
       } catch {}
     },
     // Kill the backend (used when an in-flight call is aborted, e.g. Esc on a
-    // slow vision request) and spawn a fresh one. Pending calls reject.
+    // slow vision request) and spawn a fresh one once the old child has
+    // exited. Pending calls reject; calls made while the respawn is pending
+    // wait for the new child.
     restart() {
-      child.kill();
-      for (const p of pending.values()) p.reject(new Error(`${binaryName} backend restarted`));
-      pending.clear();
-      rl.close();
-      spawnBackend();
+      if (killed || restarting) return;
+      if (!child) {
+        spawnBackend();
+        return;
+      }
+      restarting = true;
+      rejectPending(pending, `${binaryName} backend restarted`);
+      try {
+        child.kill("SIGTERM");
+      } catch {}
     },
   };
 }

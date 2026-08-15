@@ -116,6 +116,8 @@ export interface BackendData {
 	lastWeek: BackendPeriod;
 	last30Days: BackendPeriod;
 	allTime: BackendPeriod;
+	/** Scan warnings (files that could not be stat/read/parsed; cached rows kept). */
+	warnings?: string[];
 }
 
 export interface LimitInfo {

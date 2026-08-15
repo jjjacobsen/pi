@@ -19,7 +19,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { createBackend, killOnHostTeardown } from "./lib/backend";
-import { toolError, withAbort } from "./lib/toolkit";
+import { resolveCodexAuth, toToolUsage, toolError, withAbort } from "./lib/toolkit";
 
 const TOOL_NAME = "web_search";
 // The Codex subscription endpoint: same server-side web_search pipeline the
@@ -29,36 +29,17 @@ const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_TIMEOUT_MS = 60000;
 const DEFAULT_NUM_RESULTS = 8;
 
-const backend = createBackend("pi-search", { onOk: (msg) => msg.result });
-
-// ---------------------------------------------------------------------------
-// Auth: pick a Codex subscription model, prefer the mid-tier ("terra")
-// like the current search routing does, and resolve its token + headers.
-
-function pickSearchModel(ctx) {
-  const models = ctx.modelRegistry.getAll();
-  const codex = models.filter(
-    (m) => m.provider === "openai-codex" && !m.id.split("-").some((s) => s === "pro" || s === "ultra"),
-  );
-  if (codex.length === 0) return undefined;
-  return codex.find((m) => m.id.includes("terra")) ?? codex[0];
-}
-
-function codexAccountId(token) {
-  try {
-    const payload = JSON.parse(
-      Buffer.from(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"),
-    );
-    return payload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
-  } catch {
-    return undefined;
-  }
-}
+// onOk resolves the full response line: the search result text plus the
+// delegated model's token accounting (usage), which the tool result carries
+// so /usage can count it.
+const backend = createBackend("pi-search", { onOk: (msg) => msg });
 
 // ---------------------------------------------------------------------------
 // Backend bridge with abort support lives in lib/toolkit.ts (shared with
 // pi-vision): Esc during a search kills the backend (it may be blocked in an
-// HTTP request) and spawns a fresh one.
+// HTTP request) and spawns a fresh one. Codex auth (model pick + token +
+// JWT claims) is the shared resolveCodexAuth, also used by the /usage
+// limits fetch.
 
 export default function searchExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
@@ -92,25 +73,21 @@ export default function searchExtension(pi: ExtensionAPI) {
       domainFilter: Type.Optional(Type.Array(Type.String({ description: "Restrict to this domain; prefix with - to exclude (e.g. [\"openai.com\", \"-reddit.com\"])." }))),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const model = pickSearchModel(ctx);
-      if (!model) {
+      const codex = await resolveCodexAuth(ctx);
+      if (!codex) {
         return toolError("web_search needs a Codex subscription (provider openai-codex). Log in with /login and /reload.");
       }
-      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok || !auth.apiKey) {
-        return toolError(`Cannot resolve Codex auth: ${auth.error ?? "no api key"}`);
-      }
+      const { model, apiKey, accountId, headers: authHeaders } = codex;
       const headers = {};
-      for (const [k, v] of Object.entries(auth.headers ?? {})) {
+      for (const [k, v] of Object.entries(authHeaders)) {
         if (v !== null) headers[k] = String(v);
       }
-      headers.Authorization = `Bearer ${auth.apiKey}`;
-      const accountId = codexAccountId(auth.apiKey);
+      headers.Authorization = `Bearer ${apiKey}`;
       if (accountId) headers["chatgpt-account-id"] = accountId;
       headers.originator = "pi";
       headers["OpenAI-Beta"] = "responses=experimental";
       try {
-        const text = await withAbort(
+        const res = await withAbort(
           backend,
           backend.call("search", {
             query: params.query,
@@ -119,7 +96,7 @@ export default function searchExtension(pi: ExtensionAPI) {
             recency: params.recencyFilter,
             domains: params.domainFilter,
             endpoint: CODEX_RESPONSES_URL,
-            api_key: auth.apiKey,
+            api_key: apiKey,
             headers: JSON.stringify(Object.entries(headers).map(([k, v]) => [k, v])),
             model: model.id,
             timeout_ms: DEFAULT_TIMEOUT_MS,
@@ -127,9 +104,10 @@ export default function searchExtension(pi: ExtensionAPI) {
           signal,
           "web_search",
         );
-        return { content: [{ type: "text", text }], details: {} };
+        const usage = toToolUsage(model, res.usage);
+        return { content: [{ type: "text", text: res.result }], details: {}, ...(usage ? { usage } : {}) };
       } catch (e) {
-        return toolError(e.message);
+        return toolError(e instanceof Error ? e.message : String(e));
       }
     },
   });

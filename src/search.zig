@@ -55,7 +55,6 @@ const Request = struct {
 };
 
 const Outcome = common.Outcome;
-const okOutcome = common.okOutcome;
 const failOutcome = common.failOutcome;
 const respondOutcome = common.respondOutcome;
 
@@ -67,6 +66,53 @@ const Source = struct {
     url: []const u8 = "",
     snippet: []const u8 = "",
 };
+
+// Token accounting from the stream (response.completed carries the final
+// usage). All fields default to 0; `present` distinguishes "no usage
+// reported" from a zero usage.
+const SearchUsage = struct {
+    input: u64 = 0,
+    output: u64 = 0,
+    cache_read: u64 = 0,
+    reasoning: u64 = 0,
+    present: bool = false,
+};
+
+fn parseUsageValue(v: json.Value, u: *SearchUsage) void {
+    if (v != .object) return;
+    const obj = v.object;
+    const as_u64 = struct {
+        fn num(x: ?json.Value) ?u64 {
+            const val = x orelse return null;
+            return switch (val) {
+                .integer => |i| if (i >= 0) @intCast(i) else null,
+                .float => |fl| if (fl >= 0 and fl < 9.007199254740992e15) @intFromFloat(fl) else null,
+                else => null,
+            };
+        }
+    }.num;
+    if (as_u64(obj.get("input_tokens"))) |n| u.input = n;
+    if (as_u64(obj.get("output_tokens"))) |n| u.output = n;
+    u.present = true;
+    if (obj.get("input_tokens_details")) |d| {
+        if (d == .object) {
+            if (as_u64(d.object.get("cached_tokens"))) |n| u.cache_read = n;
+        }
+    }
+    if (obj.get("output_tokens_details")) |d| {
+        if (d == .object) {
+            if (as_u64(d.object.get("reasoning_tokens"))) |n| u.reasoning = n;
+        }
+    }
+}
+
+// Serializes the token accounting as a JSON object the glue turns into the
+// tool result's usage field (pi's Usage shape; cost is computed by the glue
+// from the model's pricing).
+fn usageJson(arena: Allocator, u: SearchUsage) ?[]const u8 {
+    if (!u.present) return null;
+    return std.fmt.allocPrint(arena, "{{\"input\":{d},\"output\":{d},\"cacheRead\":{d},\"cacheWrite\":0,\"totalTokens\":{d},\"reasoning\":{d},\"cost\":{{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}}}}", .{ u.input, u.output, u.cache_read, u.input + u.output, u.reasoning }) catch null;
+}
 
 const Citation = struct {
     part: usize,
@@ -81,6 +127,7 @@ const Collected = struct {
     sources: std.ArrayList(Source) = .empty,
     parts: std.ArrayList([]const u8) = .empty,
     citations: std.ArrayList(Citation) = .empty,
+    usage: SearchUsage = .{},
 };
 
 // Normalize a snippet/title for display: collapse whitespace, cap length.
@@ -245,6 +292,26 @@ fn processEvent(arena: Allocator, collected: *Collected, value: json.Value, resu
         .string => |s| s,
         else => "",
     } else "";
+
+    // Some providers emit a dedicated usage event mid-stream.
+    if (mem.eql(u8, ev_type, "response.usage")) {
+        if (obj.get("usage")) |u| parseUsageValue(u, &collected.usage);
+        return;
+    }
+
+    // Terminal events carry "response" (not "item"), so they must be handled
+    // before the item lookup below; otherwise response.completed would be
+    // unreachable and the stream would only end on EOF.
+    if (mem.eql(u8, ev_type, "response.completed") or mem.eql(u8, ev_type, "response.done")) {
+        if (obj.get("response")) |resp| {
+            if (resp == .object) {
+                if (resp.object.get("usage")) |u| parseUsageValue(u, &collected.usage);
+            }
+        }
+        done.* = true;
+        return;
+    }
+
     const item = obj.get("item") orelse return;
 
     if (mem.eql(u8, ev_type, "response.output_item.done")) {
@@ -266,10 +333,6 @@ fn processEvent(arena: Allocator, collected: *Collected, value: json.Value, resu
             done.* = true;
         }
         return;
-    }
-
-    if (mem.eql(u8, ev_type, "response.completed") or mem.eql(u8, ev_type, "response.done")) {
-        done.* = true;
     }
 }
 
@@ -499,6 +562,7 @@ const FetchResult = struct {
     ok: bool,
     retryable: bool,
     text: []const u8,
+    usage: ?[]const u8 = null,
 };
 
 // Stream the SSE response, collecting web_search_call sources and message
@@ -616,7 +680,7 @@ fn runSearchFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []cons
     if (formatted.len == 0) {
         return .{ .ok = false, .retryable = false, .text = "search returned no answer or sources" };
     }
-    return .{ .ok = true, .retryable = false, .text = formatted };
+    return .{ .ok = true, .retryable = false, .text = formatted, .usage = usageJson(arena, collected.usage) };
 }
 
 fn searchWorker(ctx: *WorkerCtx, slot: *common.WorkerSlot) void {
@@ -639,7 +703,7 @@ fn searchWorker(ctx: *WorkerCtx, slot: *common.WorkerSlot) void {
         common.workerFinish(slot, false, common.isRetryableErr(err), @errorName(err));
         return;
     };
-    common.workerFinish(slot, res.ok, res.retryable, res.text);
+    common.workerFinishUsage(slot, res.ok, res.retryable, res.text, res.usage);
 }
 
 // ---------------------------------------------------------------------------
@@ -671,7 +735,7 @@ fn opSearch(gpa: Allocator, arena: Allocator, io: std.Io, req: Request) !Outcome
             error.TimedOut => return failOutcome(arena, "search timed out after {d}ms", .{timeout_ms}),
             else => return failOutcome(arena, "search request failed: {s}", .{@errorName(err)}),
         };
-        if (res.ok) return okOutcome(res.text);
+        if (res.ok) return .{ .ok = true, .text = res.text, .usage = res.usage };
         if (!res.retryable or attempt == 1) return failOutcome(arena, "{s}", .{res.err});
         attempt += 1;
         std.Io.sleep(io, std.Io.Duration.fromMilliseconds(RETRY_BACKOFF_MS), .awake) catch {};
@@ -688,7 +752,7 @@ const SSE_EVENT_SEARCH = "event: response.output_item.done\ndata: {\"type\":\"re
 const SSE_EVENT_MESSAGE = "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"content\":[{\"type\":\"output_text\",\"text\":\"The answer is alpha.\",\"annotations\":[{\"type\":\"url_citation\",\"url\":\"https://example.com/alpha\",\"title\":\"Alpha Example\",\"start_index\":14,\"end_index\":19}]}]}}\n\n";
 const SSE_EVENT_MESSAGE_TWO = "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"content\":[{\"type\":\"output_text\",\"text\":\"Alpha and beta both matter.\",\"annotations\":[{\"type\":\"url_citation\",\"url\":\"https://example.com/alpha\",\"title\":\"Alpha Example\",\"start_index\":0,\"end_index\":5},{\"type\":\"url_citation\",\"url\":\"https://example.com/beta\",\"title\":\"Beta Example\",\"start_index\":10,\"end_index\":14}]}]}}\n\n";
 const SSE_EVENT_MESSAGE_ADDED = "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"status\":\"in_progress\",\"content\":[]}}\n\n";
-const SSE_EVENT_COMPLETED = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"output\":[]}}\n\n";
+const SSE_EVENT_COMPLETED = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"output\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150,\"input_tokens_details\":{\"cached_tokens\":10},\"output_tokens_details\":{\"reasoning_tokens\":20}}}}\n\n";
 const SSE_STREAM_FULL = SSE_EVENT_SEARCH ++ SSE_EVENT_MESSAGE ++ SSE_EVENT_COMPLETED;
 
 const SELFCHECK_REQUESTS = 7;
@@ -797,6 +861,9 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     fail(mem.indexOf(u8, r1.text, "The answer is alpha[1].") != null, "citation marker [1] is inserted after the cited span");
     fail(mem.indexOf(u8, r1.text, "1. Alpha Example (https://example.com/alpha)") != null, "source list has the numbered entry");
     fail(mem.indexOf(u8, r1.text, "Alpha results here") != null, "source snippet is included");
+    fail(r1.usage != null, "answer mode reports usage");
+    fail(r1.usage != null and mem.indexOf(u8, r1.usage.?, "\"input\":100") != null, "usage carries input tokens");
+    fail(r1.usage != null and mem.indexOf(u8, r1.usage.?, "\"cacheRead\":10") != null, "usage carries cached tokens");
     const b1 = sctx.bodies[0][0..sctx.body_lens[0]];
     fail(mem.indexOf(u8, b1, "\"model\":\"gpt-5.6-terra\"") != null, "body carries the model");
     fail(mem.indexOf(u8, b1, "\"type\":\"web_search\"") != null, "body enables the web_search tool");

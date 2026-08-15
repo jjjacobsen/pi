@@ -25,6 +25,7 @@ import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { CancellableLoader, Container, Spacer, matchesKey, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { resolveCodexAuth } from "./lib/toolkit";
 import type { BackendData, BaseStats, Insight, LimitsData, PeriodBounds, ProviderLimits, TabName, TotalStats, UsageData } from "./lib/usage/types";
 import { convertBackendData, TAB_ORDER } from "./lib/usage/types";
 import {
@@ -50,6 +51,22 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const backend = createBackend("pi-usage");
+
+// ---------------------------------------------------------------------------
+// Codex auth for the limits fetch: resolved through pi's model registry via
+// the shared resolveCodexAuth (same helper pi-search uses), so refresh and
+// auth.json rewriting stay in pi. The backend receives the access token and
+// account id per request.
+
+async function resolveLimitsArgs(ctx) {
+	const codex = await resolveCodexAuth(ctx);
+	if (!codex) return {};
+	return {
+		codex_access: codex.apiKey,
+		codex_account_id: codex.accountId ?? undefined,
+		codex_email: codex.email ?? undefined,
+	};
+}
 
 type ViewMode = "graph" | "table" | "insights" | "limits";
 
@@ -401,7 +418,8 @@ class UsageComponent {
 	private theme: Theme;
 	private requestRender: () => void;
 	private done: () => void;
-	private refreshLimits: () => void;
+	private resolveLimitsArgs: () => Promise<Record<string, string | undefined>>;
+	private warnings: string[] = [];
 
 	// Graph explorer state.
 	private graphMetric: GraphMetric = "cost";
@@ -414,16 +432,23 @@ class UsageComponent {
 	private graphHidden = new Set<string>();
 	private graphLegendIndex = 0;
 
-	// Provider limits state.
+	// Provider limits state. The quota fetch starts on the first Limits view,
+	// runs at most one request at a time, and its result is dropped after
+	// dispose(), so closing the panel never leaves a fetch mutating a dead
+	// component or rendering after the panel is gone.
 	private limits: LimitsData | null = null;
 	private limitsError: string | null = null;
+	private limitsRequested = false;
+	private limitsInFlight = false;
+	private disposed = false;
 
-	constructor(theme: Theme, data: UsageData, requestRender: () => void, done: () => void, refreshLimits: () => void) {
+	constructor(theme: Theme, data: UsageData, requestRender: () => void, done: () => void, resolveLimitsArgs: () => Promise<Record<string, string | undefined>>, warnings: string[]) {
 		this.theme = theme;
 		this.requestRender = requestRender;
 		this.done = done;
 		this.data = data;
-		this.refreshLimits = refreshLimits;
+		this.resolveLimitsArgs = resolveLimitsArgs;
+		this.warnings = warnings;
 		this.updateProviderOrder();
 	}
 
@@ -440,6 +465,38 @@ class UsageComponent {
 	setLimitsError(error: string): void {
 		this.limits = null;
 		this.limitsError = error;
+	}
+
+	/** Fetch the provider quotas, but only once per panel and never twice at once. */
+	private ensureLimits(): void {
+		if (!this.limitsRequested) this.fetchLimits();
+	}
+
+	private fetchLimits(): void {
+		if (this.disposed || this.limitsInFlight) return;
+		this.limitsRequested = true;
+		this.limitsInFlight = true;
+		this.setLimitsLoading();
+		this.requestRender();
+		this.resolveLimitsArgs()
+			.then((args) => backend.call("limits", args))
+			.then((res: { result: string }) => {
+				if (this.disposed) return;
+				try {
+					this.setLimits(JSON.parse(res.result));
+				} catch {
+					this.setLimitsError("invalid limits response");
+				}
+				this.requestRender();
+			})
+			.catch((err: unknown) => {
+				if (this.disposed) return;
+				this.setLimitsError(err instanceof Error ? err.message : String(err));
+				this.requestRender();
+			})
+			.finally(() => {
+				this.limitsInFlight = false;
+			});
 	}
 
 	private updateProviderOrder(): void {
@@ -542,13 +599,14 @@ class UsageComponent {
 			const idx = VIEW_CYCLE.indexOf(this.viewMode);
 			this.viewMode = VIEW_CYCLE[(idx + 1) % VIEW_CYCLE.length]!;
 			this.exportNote = null;
+			if (this.viewMode === "limits") this.ensureLimits();
 			this.requestRender();
 			return;
 		}
 
 		if (this.viewMode === "limits") {
 			if (matchesKey(data, "r")) {
-				this.refreshLimits();
+				this.fetchLimits();
 			}
 			return;
 		}
@@ -757,7 +815,14 @@ class UsageComponent {
 			`${title}   ${activeOnly}  ${th.fg("dim", "[v]")}`,
 			`${title} ${activeOnly}`,
 		]);
-		return [line, ""];
+		const lines = [line];
+		// Scan warnings (files that could not be read/parsed; cached data was
+		// kept), so a partial scan is never shown as clean totals.
+		for (const w of this.warnings) {
+			lines.push(th.fg("warning", `⚠ ${w}`));
+		}
+		lines.push("");
+		return lines;
 	}
 
 	private renderGraph(width: number): string[] {
@@ -1136,7 +1201,11 @@ class UsageComponent {
 	}
 
 	invalidate(): void {}
-	dispose(): void {}
+	dispose(): void {
+		// Drop any in-flight limits fetch: its result must not touch this
+		// component or request renders after the panel closed.
+		this.disposed = true;
+	}
 }
 
 // =============================================================================
@@ -1202,27 +1271,16 @@ export default function (pi: ExtensionAPI) {
 				container.addChild(new DynamicBorder((s: string) => theme.fg("border", s)));
 				container.addChild(new Spacer(1));
 
-				let usage: UsageComponent;
-				const refreshLimits = (): void => {
-					usage.setLimitsLoading();
-					tui.requestRender();
-					(backend.call("limits", {}) as Promise<{ result: string }>)
-						.then((res: { result: string }) => {
-							try {
-								usage.setLimits(JSON.parse(res.result));
-							} catch {
-								usage.setLimitsError("invalid limits response");
-							}
-							tui.requestRender();
-						})
-						.catch((err: unknown) => {
-							usage.setLimitsError(err instanceof Error ? err.message : String(err));
-							tui.requestRender();
-						});
-				};
-				usage = new UsageComponent(theme, data, () => tui.requestRender(), () => done(), refreshLimits);
-				// Kick off the provider-limits fetch; it lands in the background.
-				refreshLimits();
+				const usage = new UsageComponent(
+					theme,
+					data,
+					() => tui.requestRender(),
+					() => done(),
+					() => resolveLimitsArgs(ctx),
+					Array.isArray(raw.warnings) ? raw.warnings : []
+				);
+				// The provider-limits fetch starts on the first Limits view, not
+				// at panel open (Graphs is the default view).
 
 				return {
 					render: (w: number) => {
@@ -1233,7 +1291,7 @@ export default function (pi: ExtensionAPI) {
 					},
 					invalidate: () => container.invalidate(),
 					handleInput: (input: string) => usage.handleInput(input),
-					dispose: () => {},
+					dispose: () => usage.dispose(),
 				};
 			});
 		},

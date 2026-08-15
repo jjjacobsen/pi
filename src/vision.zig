@@ -57,7 +57,6 @@ const Request = struct {
 };
 
 const Outcome = common.Outcome;
-const okOutcome = common.okOutcome;
 const failOutcome = common.failOutcome;
 const respondOutcome = common.respondOutcome;
 
@@ -252,6 +251,7 @@ const WorkerCtx = struct {
 
 const Completion = struct {
     choices: []const Choice = &.{},
+    usage: ?CompletionUsage = null,
     @"error": ?CompletionError = null,
 
     const Choice = struct {
@@ -269,6 +269,22 @@ const Completion = struct {
         message: ?[]const u8 = null,
     };
 };
+
+const CompletionUsage = struct {
+    prompt_tokens: ?u64 = null,
+    completion_tokens: ?u64 = null,
+    total_tokens: ?u64 = null,
+};
+
+// Serializes the token accounting as a JSON object the glue turns into the
+// tool result's usage field (pi's Usage shape; cost is computed by the glue
+// from the model's pricing).
+fn usageJson(arena: Allocator, u: CompletionUsage) ?[]const u8 {
+    const pt = u.prompt_tokens orelse 0;
+    const ct = u.completion_tokens orelse 0;
+    const tt = u.total_tokens orelse (pt + ct);
+    return std.fmt.allocPrint(arena, "{{\"input\":{d},\"output\":{d},\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":{d},\"cost\":{{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}}}}", .{ pt, ct, tt }) catch null;
+}
 
 // Extract the assistant text from a message field, accepting either a plain
 // string or a content-blocks array. Text blocks are joined with newlines;
@@ -370,7 +386,7 @@ fn httpWorker(ctx: *WorkerCtx, slot: *common.WorkerSlot) void {
             common.workerFinish(slot, false, false, "vision model returned no content");
             return;
         }
-        common.workerFinish(slot, true, false, text.?);
+        common.workerFinishUsage(slot, true, false, text.?, if (parsed.usage) |u| usageJson(arena, u) else null);
         return;
     }
 
@@ -496,7 +512,7 @@ fn opDescribe(gpa: Allocator, arena: Allocator, io: std.Io, req: Request) !Outco
             error.TimedOut => return failOutcome(arena, "vision request timed out after {d}ms", .{timeout_ms}),
             else => return failOutcome(arena, "vision request failed: {s}", .{@errorName(err)}),
         };
-        if (res.ok) return okOutcome(res.text);
+        if (res.ok) return .{ .ok = true, .text = res.text, .usage = res.usage };
         if (!res.retryable or attempt == 1) return failOutcome(arena, "{s}", .{res.err});
         attempt += 1;
         std.Io.sleep(io, std.Io.Duration.fromMilliseconds(RETRY_BACKOFF_MS), .awake) catch {};

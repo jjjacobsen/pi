@@ -140,11 +140,14 @@ pub fn gitRoot(arena: Allocator, io: std.Io, cwd: []const u8) !?[]const u8 {
 
 // Result of a one-shot backend op. The wt/search/vision-style backends
 // return one of these from every op and dispatch on ok/text/err in the main
-// loop (respondOutcome).
+// loop (respondOutcome). `usage` is an optional pre-serialized JSON object
+// appended to the success response line (vision/search report the delegated
+// model's token accounting there).
 pub const Outcome = struct {
     ok: bool = false,
     err: []const u8 = "",
     text: []const u8 = "",
+    usage: ?[]const u8 = null,
 };
 
 pub fn okOutcome(text: []const u8) Outcome {
@@ -156,7 +159,18 @@ pub fn failOutcome(arena: Allocator, comptime fmt: []const u8, args: anytype) !O
 }
 
 // Main-loop response dispatch for an Outcome: ok -> result text, else error.
+// A non-null usage is appended to the ok response line as "","usage":<json>.
 pub fn respondOutcome(arena: Allocator, io: std.Io, id: i64, outcome: Outcome) void {
+    if (outcome.usage) |u| {
+        var buf = List.init(arena);
+        buf.print("{{\"id\":{d},\"ok\":true,\"result\":\"", .{id}) catch {};
+        appendJsonEscaped(&buf, outcome.text) catch {};
+        buf.appendSlice("\",\"usage\":") catch {};
+        buf.appendSlice(u) catch {};
+        buf.appendSlice("}\n") catch {};
+        writeAllIo(io, std.Io.File.stdout(), buf.items) catch {};
+        return;
+    }
     if (outcome.ok) {
         respond(arena, io, id, true, outcome.text) catch {};
     } else {
@@ -194,20 +208,30 @@ pub fn selfCheckDir(arena: Allocator, io: std.Io, name: []const u8) ![]const u8 
 // (it must dupe any caller-arena strings before use), writes the result into
 // the shared slot's fixed buffers, and signals done. The main thread waits
 // with a deadline; on expiry it shuts down the worker's socket (slot.fd) so
-// the worker unblocks, waits up to 1s for it to exit, and only then frees
-// the heap structs. If the worker is stuck before registering its socket
-// (connect/TLS handshake), the structs leak; bounded and rare.
+// the worker unblocks, waits up to 1s for it to exit, and joins. If the
+// worker is still stuck (connect/TLS handshake before registering its
+// socket), the main thread abandons it: the wrapper frees the heap structs
+// itself when the worker eventually finishes, so repeated slow connections
+// cannot accumulate threads or allocations.
 
 pub const MAX_RESULT_TEXT = 64 * 1024; // cap on the result copied out of the slot
 pub const MAX_ERR_TEXT = 2048; // cap on the error text copied out of the slot
+pub const MAX_USAGE_TEXT = 2048; // cap on the usage JSON copied out of the slot
 
 pub const WorkerSlot = struct {
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Set by the main thread only when it abandons the worker on a deadline
+    // (worker stuck before registering its socket); the worker then frees its
+    // own heap structs. Never set on the join path, so the worker only frees
+    // when the main thread is guaranteed not to.
+    abandoned: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     fd: std.atomic.Value(posix.fd_t) = std.atomic.Value(posix.fd_t).init(-1),
     ok: bool = false,
     retryable: bool = false,
     text: [MAX_RESULT_TEXT]u8 = undefined,
     text_len: usize = 0,
+    usage: [MAX_USAGE_TEXT]u8 = undefined,
+    usage_len: usize = 0,
     err: [MAX_ERR_TEXT]u8 = undefined,
     err_len: usize = 0,
 };
@@ -217,15 +241,29 @@ pub const HttpOutcome = struct {
     retryable: bool,
     text: []const u8,
     err: []const u8,
+    usage: ?[]const u8 = null, // pre-serialized JSON object, when the worker reported one
 };
 
 pub fn workerFinish(slot: *WorkerSlot, ok: bool, retryable: bool, text: []const u8) void {
+    workerFinishUsage(slot, ok, retryable, text, null);
+}
+
+// Same as workerFinish, with an optional pre-serialized usage JSON object
+// (e.g. the provider's token accounting) carried alongside a successful
+// result.
+pub fn workerFinishUsage(slot: *WorkerSlot, ok: bool, retryable: bool, text: []const u8, usage: ?[]const u8) void {
     slot.ok = ok;
     slot.retryable = retryable;
+    slot.usage_len = 0;
     if (ok) {
         const n = @min(text.len, MAX_RESULT_TEXT - 1);
         @memcpy(slot.text[0..n], text[0..n]);
         slot.text_len = n;
+        if (usage) |u| {
+            const un = @min(u.len, MAX_USAGE_TEXT - 1);
+            @memcpy(slot.usage[0..un], u[0..un]);
+            slot.usage_len = un;
+        }
     } else {
         const n = @min(text.len, MAX_ERR_TEXT - 1);
         @memcpy(slot.err[0..n], text[0..n]);
@@ -261,6 +299,19 @@ pub fn parseHeaders(arena: Allocator, s: ?[]const u8) ![]const [2][]const u8 {
     return json.parseFromSliceLeaky([][2][]const u8, arena, h, .{ .ignore_unknown_fields = true });
 }
 
+// Spawned wrapper around the user worker: after it finishes, the wrapper
+// frees the heap structs when the main thread abandoned us (deadline expiry
+// while we were stuck before registering the socket). The main thread never
+// frees in that path, so there is exactly one owner. On the join path the
+// flag is never set and the main thread frees after join.
+fn workerMain(comptime Ctx: type, comptime userWorker: fn (*Ctx, *WorkerSlot) void, heap_ctx: *Ctx, slot: *WorkerSlot, gpa: Allocator) void {
+    userWorker(heap_ctx, slot);
+    if (slot.abandoned.load(.acquire)) {
+        gpa.destroy(heap_ctx);
+        gpa.destroy(slot);
+    }
+}
+
 // Spawns `worker` on a thread with a heap copy of `ctx` plus the shared
 // slot, waits up to `timeout_ms`, and returns the worker's result. On
 // timeout the worker's socket is shut down (unblocking its read); see the
@@ -279,7 +330,7 @@ pub fn httpWithDeadline(
     heap_ctx.* = ctx;
     const slot = try gpa.create(WorkerSlot);
 
-    const thread = std.Thread.spawn(.{}, worker, .{ heap_ctx, slot }) catch |err| {
+    const thread = std.Thread.spawn(.{}, workerMain, .{ ctx_type, worker, heap_ctx, slot, gpa }) catch |err| {
         gpa.destroy(heap_ctx);
         gpa.destroy(slot);
         return err;
@@ -291,8 +342,11 @@ pub fn httpWithDeadline(
         const remaining = deadline - nowMs();
         if (remaining <= 0) {
             // Deadline hit: shut down the worker's socket so its blocked read
-            // unblocks, wait for it to finish (it always exits promptly after
-            // the shutdown), then clean up and report the timeout.
+            // unblocks, wait up to 1s for it to exit, and clean up when it
+            // does. If it is still stuck (connect/TLS handshake before the
+            // socket was registered), hand ownership to it: the worker frees
+            // the heap structs when it eventually finishes, so repeated slow
+            // connections cannot accumulate threads or allocations.
             const fd = slot.fd.load(.monotonic);
             if (fd >= 0) {
                 const stream: std.Io.net.Stream = .{ .socket = .{ .handle = fd, .address = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = 0 } } } };
@@ -306,9 +360,13 @@ pub fn httpWithDeadline(
                 thread.join();
                 gpa.destroy(heap_ctx);
                 gpa.destroy(slot);
+            } else {
+                // The worker is stuck pre-socket; it frees its own memory on
+                // exit (workerMain), so this path joins nothing and frees
+                // nothing.
+                slot.abandoned.store(true, .release);
+                thread.detach();
             }
-            // If the worker is stuck before registering its socket (connect /
-            // TLS handshake), the structs leak; bounded and rare.
             return error.TimedOut;
         }
         std.Io.sleep(io, std.Io.Duration.fromMilliseconds(@min(remaining, 50)), .awake) catch {};
@@ -316,7 +374,7 @@ pub fn httpWithDeadline(
     thread.join();
 
     const out: HttpOutcome = if (slot.ok)
-        .{ .ok = true, .retryable = false, .text = try arena.dupe(u8, slot.text[0..slot.text_len]), .err = "" }
+        .{ .ok = true, .retryable = false, .text = try arena.dupe(u8, slot.text[0..slot.text_len]), .err = "", .usage = if (slot.usage_len > 0) try arena.dupe(u8, slot.usage[0..slot.usage_len]) else null }
     else
         .{ .ok = false, .retryable = slot.retryable, .text = "", .err = try arena.dupe(u8, slot.err[0..slot.err_len]) };
     gpa.destroy(heap_ctx);

@@ -26,6 +26,12 @@ const respond = common.respond;
 
 const MAX_LINE = 64 * 1024 * 1024; // hard cap on a single message line
 
+// Cap on the extracted text returned to the glue. The protocol limit is
+// 64MB, but one html/tree/evaluate result at that size would flood the
+// model's context and bloat the session file, so extractions are truncated
+// to a small default with the head and tail preserved.
+const MAX_RESULT = 256 * 1024;
+
 // Backstop for a single MCP tool call. Lightpanda runs its own (far shorter)
 // timeouts for navigation, waits, and evaluate, so this only fires when a
 // transfer stalls. We disable lightpanda's http timeout (--http-timeout 0)
@@ -42,6 +48,15 @@ const Request = struct {
     op: []const u8, // MCP tool name, e.g. "goto"; the shared glue sends `op`
     params: []const u8, // JSON string containing the raw arguments object
 };
+
+// Truncates extracted text over MAX_RESULT to its head and tail with an
+// explicit marker, so the model still sees the start and end of the page.
+fn capResult(arena: Allocator, text: []const u8) ![]const u8 {
+    if (text.len <= MAX_RESULT) return text;
+    const head_len = MAX_RESULT * 3 / 4;
+    const tail_len = MAX_RESULT - head_len;
+    return std.fmt.allocPrint(arena, "{s}\n\n… [{d} bytes truncated] …\n\n{s}", .{ text[0..head_len], text.len - MAX_RESULT, text[text.len - tail_len ..] });
+}
 
 const CallResult = struct {
     ok: bool,
@@ -133,7 +148,7 @@ const Browser = struct {
                 return .{ .ok = false, .text = msg.string };
             }
             const result = obj.get("result") orelse return error.McpBadResponse;
-            if (result == .string) return .{ .ok = true, .text = result.string };
+            if (result == .string) return .{ .ok = true, .text = try capResult(alloc, result.string) };
 
             const ro = result.object;
             const is_err = if (ro.get("isError")) |v| v.bool else false;
@@ -147,7 +162,7 @@ const Browser = struct {
                     if (io.get("text")) |text| try out.appendSlice(text.string);
                 }
             }
-            return .{ .ok = !is_err, .text = out.items };
+            return .{ .ok = !is_err, .text = try capResult(alloc, out.items) };
         }
         return error.McpClosed;
     }

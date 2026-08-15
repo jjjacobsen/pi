@@ -10,7 +10,8 @@
 // Protocol (one JSON request line on stdin, one JSON response line on stdout):
 //   -> {"id":1,"op":"collect","bounds":{"todayMs":..,"weekStartMs":..,
 //       "lastWeekStartMs":..,"last30DaysStartMs":..,"nowMs":..}}
-//   -> {"id":2,"op":"limits"}
+//   -> {"id":2,"op":"limits","codex_access":"...","codex_account_id":"...",
+//       "codex_email":"..."}
 //   <- {"id":1,"ok":true,"result":"<json>"} | {"id":1,"ok":false,"error":"..."}
 //
 // The collect op is local-only: it scans ~/.pi/agent/sessions for .jsonl
@@ -18,7 +19,11 @@
 // cache (~/.pi/agent/pi-usage-cache.bin), aggregates the five period views
 // plus hourly buckets, and computes insights. The limits op fetches provider
 // quota over HTTPS; it runs on a worker thread so a slow network can never
-// block the main loop, and the main loop abandons it after a deadline.
+// block the main loop, and the main loop abandons it after a deadline. The
+// Codex credentials (access token, account id, email) are resolved by the
+// glue through pi's model registry — refresh and auth.json rewriting stay in
+// pi — and passed per request; this backend never touches the credential
+// file.
 //
 // Unix-only by design (posix pipes and threads); pi itself is Unix-first.
 
@@ -107,16 +112,6 @@ fn strEq(v: ?json.Value, comptime s: []const u8) bool {
         else => false,
     };
 }
-
-/// Escape a string as a JSON string literal (with surrounding quotes).
-fn jsonString(arena: Allocator, s: []const u8) ![]const u8 {
-    var buf = List.init(arena);
-    try buf.append('"');
-    try appendJsonEscaped(&buf, s);
-    try buf.append('"');
-    return buf.items;
-}
-
 // =============================================================================
 // ISO-8601 timestamps ("2026-08-14T00:44:30.692Z" or with a ±HH:MM offset)
 // =============================================================================
@@ -230,6 +225,8 @@ fn parseUsage(v: ?json.Value) ?UsageAmount {
 
 const PAT_ASSISTANT_C = "\"role\":\"assistant\"";
 const PAT_ASSISTANT_S = "\"role\": \"assistant\"";
+const PAT_TOOLRESULT_C = "\"role\":\"toolResult\"";
+const PAT_TOOLRESULT_S = "\"role\": \"toolResult\"";
 const PAT_SESSION_C = "\"type\":\"session\"";
 const PAT_SESSION_S = "\"type\": \"session\"";
 const PAT_THINKING_C = "\"type\":\"thinking_level_change\"";
@@ -240,12 +237,15 @@ const PAT_BRANCH_C = "\"type\":\"branch_summary\"";
 const PAT_BRANCH_S = "\"type\": \"branch_summary\"";
 
 /// Cheap pre-filter: only lines that could carry accounting are JSON-parsed.
-/// Tool results are never relevant here — nested-agent reconciliation is not
-/// ported (no subagent records in practice), so multi-megabyte tool output is
-/// skipped without ever being decoded.
+/// Tool results are skipped unless they carry usage: delegated model calls
+/// (describe_image, web_search) report their token accounting on the tool
+/// result, and that usage appears nowhere else, so it must be aggregated;
+/// plain tool output (multi-megabyte reads, browser dumps) has no usage and
+/// is skipped without ever being decoded. The usage key is serialized after
+/// the content, so a whole-line check is required, not just the head.
 fn lineMightBeRelevant(line: []const u8) bool {
     const head = line[0..@min(line.len, 1024)];
-    return mem.indexOf(u8, head, PAT_ASSISTANT_C) != null or
+    if (mem.indexOf(u8, head, PAT_ASSISTANT_C) != null or
         mem.indexOf(u8, head, PAT_ASSISTANT_S) != null or
         mem.indexOf(u8, head, PAT_SESSION_C) != null or
         mem.indexOf(u8, head, PAT_SESSION_S) != null or
@@ -254,7 +254,11 @@ fn lineMightBeRelevant(line: []const u8) bool {
         mem.indexOf(u8, head, PAT_COMPACTION_C) != null or
         mem.indexOf(u8, head, PAT_COMPACTION_S) != null or
         mem.indexOf(u8, head, PAT_BRANCH_C) != null or
-        mem.indexOf(u8, head, PAT_BRANCH_S) != null;
+        mem.indexOf(u8, head, PAT_BRANCH_S) != null) return true;
+    if (mem.indexOf(u8, head, PAT_TOOLRESULT_C) != null or mem.indexOf(u8, head, PAT_TOOLRESULT_S) != null) {
+        return mem.lastIndexOf(u8, line, "\"usage\":") != null;
+    }
+    return false;
 }
 
 fn parseSessionBuffer(arena: Allocator, buffer: []const u8) !ParsedFile {
@@ -298,26 +302,50 @@ fn parseSessionBuffer(arena: Allocator, buffer: []const u8) !ParsedFile {
             const msg = e.get("message") orelse continue;
             if (msg != .object) continue;
             const m = msg.object;
-            if (!strEq(m.get("role"), "assistant")) continue;
-            const provider = asStr(m.get("provider")) orelse continue;
-            const model = asStr(m.get("model")) orelse continue;
-            const usage = parseUsage(m.get("usage")) orelse continue;
-            var timestamp = asNum(m.get("timestamp"));
-            if (timestamp == 0) timestamp = parseIsoMs(asStr(e.get("timestamp")) orelse "");
-            try messages.append(.{
-                .provider = provider,
-                .model = model,
-                .level = thinking_level,
-                .cost = usage.cost,
-                .input = usage.input,
-                .output = usage.output,
-                .cache_read = usage.cache_read,
-                .cache_write = usage.cache_write,
-                .timestamp = timestamp,
-                .reasoning = usage.reasoning,
-                .after_compaction = compaction_pending,
-            });
-            compaction_pending = false;
+            if (strEq(m.get("role"), "assistant")) {
+                const provider = asStr(m.get("provider")) orelse continue;
+                const model = asStr(m.get("model")) orelse continue;
+                const usage = parseUsage(m.get("usage")) orelse continue;
+                var timestamp = asNum(m.get("timestamp"));
+                if (timestamp == 0) timestamp = parseIsoMs(asStr(e.get("timestamp")) orelse "");
+                try messages.append(.{
+                    .provider = provider,
+                    .model = model,
+                    .level = thinking_level,
+                    .cost = usage.cost,
+                    .input = usage.input,
+                    .output = usage.output,
+                    .cache_read = usage.cache_read,
+                    .cache_write = usage.cache_write,
+                    .timestamp = timestamp,
+                    .reasoning = usage.reasoning,
+                    .after_compaction = compaction_pending,
+                });
+                compaction_pending = false;
+            } else if (strEq(m.get("role"), "toolResult")) {
+                // Delegated model calls report their usage on the tool result
+                // (describe_image, web_search); it appears nowhere else, so it
+                // is aggregated as auxiliary provider cost under the tool name.
+                const usage = parseUsage(m.get("usage")) orelse continue;
+                const tool_name = asStr(m.get("toolName")) orelse "tool";
+                var timestamp = asNum(m.get("timestamp"));
+                if (timestamp == 0) timestamp = parseIsoMs(asStr(e.get("timestamp")) orelse "");
+                try messages.append(.{
+                    .provider = AUXILIARY_PROVIDER,
+                    .model = tool_name,
+                    .level = AUXILIARY_THINKING_LEVEL,
+                    .source_id = asStr(e.get("id")) orelse "",
+                    .cost = usage.cost,
+                    .input = usage.input,
+                    .output = usage.output,
+                    .cache_read = usage.cache_read,
+                    .cache_write = usage.cache_write,
+                    .timestamp = timestamp,
+                    .reasoning = usage.reasoning,
+                    .after_compaction = compaction_pending,
+                    .auxiliary = true,
+                });
+            }
         }
     }
     result.messages = try messages.toOwnedSlice();
@@ -1213,39 +1241,6 @@ fn wkey(o: *Out, s: []const u8) !void {
     try o.buf.append(':');
 }
 
-/// Compact serialization of an arbitrary json.Value (used to preserve
-/// unrelated provider entries when rewriting auth.json).
-fn writeJsonValue(o: *Out, v: json.Value) !void {
-    switch (v) {
-        .null => try o.buf.appendSlice("null"),
-        .bool => |b| try o.buf.appendSlice(if (b) "true" else "false"),
-        .integer => |i| try o.buf.print("{d}", .{i}),
-        .float => |f| try o.buf.print("{d}", .{f}),
-        .number_string => |s| try o.buf.appendSlice(s),
-        .string => |s| try wstr(o, s),
-        .array => |a| {
-            try o.buf.append('[');
-            for (a.items, 0..) |item, i| {
-                if (i > 0) try o.buf.append(',');
-                try writeJsonValue(o, item);
-            }
-            try o.buf.append(']');
-        },
-        .object => |obj| {
-            try o.buf.append('{');
-            var first = true;
-            var it = obj.iterator();
-            while (it.next()) |e| {
-                if (!first) try o.buf.append(',');
-                first = false;
-                try wkey(o, e.key_ptr.*);
-                try writeJsonValue(o, e.value_ptr.*);
-            }
-            try o.buf.append('}');
-        },
-    }
-}
-
 fn writeTokens(o: *Out, t: TokenStats) !void {
     try o.buf.appendSlice("{\"total\":");
     try wnum(o, t.total);
@@ -1342,7 +1337,7 @@ fn writePeriod(o: *Out, p: *const Period) !void {
     try o.buf.appendSlice("]}}");
 }
 
-fn buildUsageJson(arena: Allocator, agg: *Aggregated, bounds: Bounds) ![]const u8 {
+fn buildUsageJson(arena: Allocator, agg: *Aggregated, bounds: Bounds, warnings: []const []const u8) ![]const u8 {
     var buf = List.init(arena);
     var o = Out{ .buf = &buf };
     try buf.appendSlice("{\"bounds\":{\"todayMs\":");
@@ -1405,6 +1400,14 @@ fn buildUsageJson(arena: Allocator, agg: *Aggregated, bounds: Bounds) ![]const u
     try writePeriod(&o, &agg.periods[3]);
     try buf.appendSlice(",\"allTime\":");
     try writePeriod(&o, &agg.periods[4]);
+    // Scan warnings: files that could not be stat/read/parsed (their cached
+    // rows were retained), so a partial scan is never reported as clean.
+    try buf.appendSlice(",\"warnings\":[");
+    for (warnings, 0..) |w, i| {
+        if (i > 0) try buf.append(',');
+        try wstr(&o, w);
+    }
+    try buf.appendSlice("]");
     try buf.append('}');
     return buf.items;
 }
@@ -1415,8 +1418,6 @@ fn buildUsageJson(arena: Allocator, agg: *Aggregated, bounds: Bounds) ![]const u
 
 const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const CODEX_WHAM_PATH = "wham/usage";
-const CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token";
-const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 const USER_AGENT = "pi-usage/1.0";
 
@@ -1440,68 +1441,6 @@ fn httpGet(arena: Allocator, io: std.Io, url: []const u8, auth: ?[]const u8, ext
     if (result.status != .ok) return error.HttpStatus;
     const body = aw.toArrayList();
     return body.items;
-}
-
-fn httpPostForm(arena: Allocator, io: std.Io, url: []const u8, form_body: []const u8) ![]const u8 {
-    var client: std.http.Client = .{ .allocator = arena, .io = io };
-    defer client.deinit();
-    var body_list: std.ArrayList(u8) = .empty;
-    var aw = std.Io.Writer.Allocating.fromArrayList(arena, &body_list);
-    const result = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
-        .payload = form_body,
-        .headers = .{
-            .content_type = .{ .override = "application/x-www-form-urlencoded" },
-            .user_agent = .{ .override = USER_AGENT },
-        },
-        .response_writer = &aw.writer,
-    });
-    if (result.status != .ok) return error.HttpStatus;
-    const body = aw.toArrayList();
-    return body.items;
-}
-
-fn base64UrlDecode(arena: Allocator, input: []const u8) ![]u8 {
-    var clean = ManagedList(u8).init(arena);
-    for (input) |c| {
-        if (c == '=') continue;
-        try clean.append(c);
-    }
-    const decoder = std.base64.url_safe_no_pad.Decoder;
-    const out_len = decoder.calcSizeForSlice(clean.items) catch return error.BadBase64;
-    const out = try arena.alloc(u8, out_len);
-    decoder.decode(out, clean.items) catch return error.BadBase64;
-    return out;
-}
-
-const JwtInfo = struct { account_id: ?[]const u8, email: ?[]const u8 };
-
-/// Extract the account id and email from a Codex OAuth JWT's claims.
-fn jwtAccountInfo(arena: Allocator, token: []const u8) JwtInfo {
-    var result: JwtInfo = .{ .account_id = null, .email = null };
-    var parts = std.mem.splitScalar(u8, token, '.');
-    _ = parts.next() orelse return result; // header
-    const payload_b64 = parts.next() orelse return result;
-    const payload_bytes = base64UrlDecode(arena, payload_b64) catch return result;
-    const parsed = json.parseFromSlice(json.Value, arena, payload_bytes, .{}) catch return result;
-    if (parsed.value != .object) return result;
-    const obj = parsed.value.object;
-    if (obj.get("https://api.openai.com/auth")) |auth| {
-        if (auth == .object) {
-            if (auth.object.get("chatgpt_account_id")) |id| {
-                if (id == .string) result.account_id = id.string;
-            }
-        }
-    }
-    if (obj.get("https://api.openai.com/profile")) |profile| {
-        if (profile == .object) {
-            if (profile.object.get("email")) |email| {
-                if (email == .string) result.email = email.string;
-            }
-        }
-    }
-    return result;
 }
 
 const LimitWindow = struct {
@@ -1862,144 +1801,30 @@ fn additionalDisplayName(arena: Allocator, slug: []const u8, limit_name: ?[]cons
     return out.items;
 }
 
-fn buildCodexLimits(arena: Allocator, io: std.Io, auth_path: []const u8, now: f64) !ProviderLimits {
+fn buildCodexLimits(arena: Allocator, io: std.Io, access_token: ?[]const u8, account_id: ?[]const u8, email: ?[]const u8, now: f64) !ProviderLimits {
     var result = ProviderLimits{ .provider = "openai-codex" };
 
-    // --- Read the stored OAuth credential ---
-    const auth_data = std.Io.Dir.readFileAlloc(.cwd(), io, auth_path, arena, .limited(16 * 1024 * 1024)) catch {
-        result.err = "no auth.json found";
+    // The access token and account id are resolved by the glue through pi's
+    // model registry (getApiKeyAndHeaders), which owns refresh and auth.json
+    // rewriting; this backend never touches the credential file.
+    const token = mem.trim(u8, access_token orelse "", " \t\r\n");
+    if (token.len == 0) {
+        result.err = "no openai-codex credentials; log in with /login";
         return result;
-    };
-    const auth_parsed = json.parseFromSlice(json.Value, arena, auth_data, .{}) catch {
-        result.err = "auth.json was not valid JSON";
-        return result;
-    };
-    if (auth_parsed.value != .object) {
-        result.err = "auth.json had no credentials";
-        return result;
-    }
-    const auth_obj = auth_parsed.value.object;
-    const codex = auth_obj.get("openai-codex") orelse {
-        result.err = "no openai-codex oauth credentials in auth.json";
-        return result;
-    };
-    if (codex != .object) {
-        result.err = "openai-codex credentials were malformed";
-        return result;
-    }
-    const codex_obj = codex.object;
-    const access_token = asStr(codex_obj.get("access")) orelse {
-        result.err = "openai-codex credentials have no access token";
-        return result;
-    };
-    if (access_token.len == 0) {
-        result.err = "openai-codex credentials have no access token";
-        return result;
-    }
-    const refresh_token: ?[]const u8 = asStr(codex_obj.get("refresh"));
-    const expires = asNum(codex_obj.get("expires"));
-    var account_id: ?[]const u8 = asStr(codex_obj.get("accountId"));
-    var email: ?[]const u8 = asStr(codex_obj.get("email"));
-    const jwt_info = jwtAccountInfo(arena, access_token);
-    if (account_id == null) account_id = jwt_info.account_id;
-    if (email == null) email = jwt_info.email;
-    var active_access = access_token;
-    var active_refresh = refresh_token;
-
-    // --- Refresh when the access token has expired ---
-    if (expires > 0 and now >= expires) {
-        const rt = refresh_token orelse {
-            result.err = "openai-codex token expired and no refresh token is stored";
-            return result;
-        };
-        if (rt.len == 0) {
-            result.err = "openai-codex token expired and no refresh token is stored";
-            return result;
-        }
-        const body = std.fmt.allocPrint(arena, "grant_type=refresh_token&refresh_token={s}&client_id={s}", .{ rt, CODEX_CLIENT_ID }) catch {
-            result.err = "token refresh failed";
-            return result;
-        };
-        const token_resp = httpPostForm(arena, io, CODEX_TOKEN_URL, body) catch |err| {
-            result.err = try std.fmt.allocPrint(arena, "token refresh failed ({s})", .{@errorName(err)});
-            return result;
-        };
-        const token_parsed = json.parseFromSlice(json.Value, arena, token_resp, .{}) catch {
-            result.err = "token refresh returned invalid JSON";
-            return result;
-        };
-        if (token_parsed.value != .object) {
-            result.err = "token refresh returned no payload";
-            return result;
-        }
-        const token_obj = token_parsed.value.object;
-        const new_access = asStr(token_obj.get("access_token")) orelse {
-            result.err = "token refresh returned no access_token";
-            return result;
-        };
-        const new_refresh = asStr(token_obj.get("refresh_token")) orelse rt;
-        const expires_in = asNum(token_obj.get("expires_in"));
-        const new_expires = now + expires_in * 1000;
-        const jwt_new = jwtAccountInfo(arena, new_access);
-        if (jwt_new.account_id) |aid| account_id = aid;
-        if (jwt_new.email) |em| email = em;
-        active_access = new_access;
-        active_refresh = new_refresh;
-
-        // Rewrite auth.json preserving every other provider entry, keeping the
-        // original file mode (auth.json holds credentials; pi writes it 0600).
-        var final_auth = List.init(arena);
-        var ao = Out{ .buf = &final_auth };
-        try final_auth.append('{');
-        var first = true;
-        var ait = auth_obj.iterator();
-        while (ait.next()) |e| {
-            if (mem.eql(u8, e.key_ptr.*, "openai-codex")) continue;
-            if (!first) try final_auth.append(',');
-            first = false;
-            try wkey(&ao, e.key_ptr.*);
-            try writeJsonValue(&ao, e.value_ptr.*);
-        }
-        if (!first) try final_auth.append(',');
-        try wkey(&ao, "openai-codex");
-        try final_auth.appendSlice("{\"type\":\"oauth\",\"access\":");
-        try final_auth.appendSlice(try jsonString(arena, new_access));
-        try final_auth.appendSlice(",\"refresh\":");
-        try final_auth.appendSlice(try jsonString(arena, new_refresh));
-        try final_auth.appendSlice(",\"expires\":");
-        try final_auth.print("{d}", .{@as(i64, @intFromFloat(new_expires))});
-        try final_auth.appendSlice(",\"accountId\":");
-        try final_auth.appendSlice(try jsonString(arena, account_id orelse ""));
-        try final_auth.appendSlice(",\"email\":");
-        try final_auth.appendSlice(try jsonString(arena, email orelse ""));
-        try final_auth.appendSlice("}}");
-
-        const original_permissions = blk: {
-            const st = std.Io.Dir.statFile(.cwd(), io, auth_path, .{}) catch break :blk null;
-            break :blk st.permissions;
-        };
-        const tmp_path = try std.fmt.allocPrint(arena, "{s}.tmp", .{auth_path});
-        {
-            const file = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch null;
-            if (file) |f| {
-                defer f.close(io);
-                writeAllIo(io, f, final_auth.items) catch {};
-                if (original_permissions) |m| f.setPermissions(io, m) catch {};
-            }
-        }
-        std.Io.Dir.renameAbsolute(tmp_path, auth_path, io) catch {};
     }
 
     // --- Fetch wham/usage ---
-    const auth_header = std.fmt.allocPrint(arena, "Bearer {s}", .{active_access}) catch {
+    const auth_header = std.fmt.allocPrint(arena, "Bearer {s}", .{token}) catch {
         result.err = "usage fetch failed";
         return result;
     };
     var extra: [1]http.Header = undefined;
     var extra_count: usize = 0;
     if (account_id) |aid| {
-        extra[0] = .{ .name = "ChatGPT-Account-Id", .value = aid };
-        extra_count = 1;
+        if (aid.len > 0) {
+            extra[0] = .{ .name = "ChatGPT-Account-Id", .value = aid };
+            extra_count = 1;
+        }
     }
     const url = std.fmt.allocPrint(arena, "{s}/{s}", .{ CODEX_BASE_URL, CODEX_WHAM_PATH }) catch {
         result.err = "usage fetch failed";
@@ -2089,12 +1914,11 @@ fn buildCodexLimits(arena: Allocator, io: std.Io, auth_path: []const u8, now: f6
     return result;
 }
 
-fn buildLimitsJson(arena: Allocator, io: std.Io, agent_dir: []const u8, environ: *std.process.Environ.Map) ![]const u8 {
+fn buildLimitsJson(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, codex_access: ?[]const u8, codex_account_id: ?[]const u8, codex_email: ?[]const u8) ![]const u8 {
     const now = @as(f64, @floatFromInt(nowRealtimeMs()));
     const api_key = environ.get("OPENCODE_API_KEY");
-    const auth_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{agent_dir});
 
-    const codex = buildCodexLimits(arena, io, auth_path, now) catch |err| blk: {
+    const codex = buildCodexLimits(arena, io, codex_access, codex_account_id, codex_email, now) catch |err| blk: {
         var p = ProviderLimits{ .provider = "openai-codex" };
         p.err = @errorName(err);
         break :blk p;
@@ -2115,12 +1939,28 @@ fn buildLimitsJson(arena: Allocator, io: std.Io, agent_dir: []const u8, environ:
 // Worker thread for the limits op (keeps slow network off the main loop)
 // =============================================================================
 
+// The context is heap-owned and the worker frees it (strings included) when
+// it finishes: the main loop's arena is reset on the next request while the
+// worker may still be running, and a timed-out request abandons the worker
+// (the read end closes, its next write fails, and it cleans itself up). The
+// worker can therefore never read reused stack memory or write into a later
+// request's pipe.
 const LimitsThreadCtx = struct {
     gpa: Allocator,
     io: std.Io,
-    agent_dir: []const u8, // gpa-owned copy; the arena is reset while we wait
     environ: *std.process.Environ.Map,
-    write_fd: posix.fd_t,
+    write_fd: posix.fd_t = -1,
+    codex_access: ?[]const u8 = null, // gpa-owned copies of the request fields
+    codex_account_id: ?[]const u8 = null,
+    codex_email: ?[]const u8 = null,
+
+    fn deinit(self: *LimitsThreadCtx) void {
+        const gpa = self.gpa;
+        if (self.codex_access) |s| gpa.free(s);
+        if (self.codex_account_id) |s| gpa.free(s);
+        if (self.codex_email) |s| gpa.free(s);
+        gpa.destroy(self);
+    }
 };
 
 fn writeAllFd(fd: posix.fd_t, bytes: []const u8) void {
@@ -2140,12 +1980,15 @@ fn limitsThreadFn(ctx: *LimitsThreadCtx) void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var out = List.init(arena);
-    const result = buildLimitsJson(arena, ctx.io, ctx.agent_dir, ctx.environ) catch |err|
+    const result = buildLimitsJson(arena, ctx.io, ctx.environ, ctx.codex_access, ctx.codex_account_id, ctx.codex_email) catch |err|
         std.fmt.allocPrint(arena, "{{\"error\":\"{s}\"}}", .{@errorName(err)}) catch "";
     out.appendSlice(result) catch {};
     out.append('\n') catch {};
     writeAllFd(ctx.write_fd, out.items);
     _ = posix.system.close(ctx.write_fd);
+    // The worker owns the context and frees it on every exit path (success,
+    // write failure after the main thread abandoned us, or a build error).
+    ctx.deinit();
 }
 
 fn closeFd(fd: posix.fd_t) void {
@@ -2172,14 +2015,21 @@ fn getAgentDir(arena: Allocator, environ: *std.process.Environ.Map) ![]const u8 
     return std.fmt.allocPrint(arena, "{s}/.pi/agent", .{home});
 }
 
-fn collectJsonlFiles(io: std.Io, arena: Allocator, dir_path: []const u8, out: *ManagedList([]const u8)) !void {
-    var dir = std.Io.Dir.openDir(.cwd(), io, dir_path, .{ .iterate = true }) catch return;
+fn collectJsonlFiles(io: std.Io, arena: Allocator, dir_path: []const u8, out: *ManagedList([]const u8), warnings: *ManagedList([]const u8)) !void {
+    var dir = std.Io.Dir.openDir(.cwd(), io, dir_path, .{ .iterate = true }) catch {
+        // An unreadable sessions dir would otherwise surface as zero usage.
+        try warnings.append(try std.fmt.allocPrint(arena, "could not open {s}", .{dir_path}));
+        return;
+    };
     defer dir.close(io);
     var it = dir.iterate();
-    while (it.next(io) catch null) |entry| {
+    while (it.next(io) catch |err| blk: {
+        try warnings.append(try std.fmt.allocPrint(arena, "session scan error in {s} ({s})", .{ dir_path, @errorName(err) }));
+        break :blk null;
+    }) |entry| {
         const full = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.name });
         switch (entry.kind) {
-            .directory => try collectJsonlFiles(io, arena, full, out),
+            .directory => try collectJsonlFiles(io, arena, full, out, warnings),
             .file => {
                 if (std.mem.endsWith(u8, entry.name, ".jsonl")) try out.append(full);
             },
@@ -2192,6 +2042,9 @@ const Request = struct {
     id: i64,
     op: []const u8,
     bounds: ?Bounds = null,
+    codex_access: ?[]const u8 = null, // resolved by the glue via the model registry
+    codex_account_id: ?[]const u8 = null,
+    codex_email: ?[]const u8 = null,
 };
 
 fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, bounds: Bounds) ![]const u8 {
@@ -2202,19 +2055,32 @@ fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, b
 
     // 1. Discover and stat session files.
     var file_paths = ManagedList([]const u8).init(arena);
-    try collectJsonlFiles(io, arena, sessions_dir, &file_paths);
+    var warnings = ManagedList([]const u8).init(arena);
+    try collectJsonlFiles(io, arena, sessions_dir, &file_paths, &warnings);
     std.mem.sort([]const u8, file_paths.items, {}, struct {
         fn lt(_: void, a: []const u8, b: []const u8) bool {
             return mem.lessThan(u8, a, b);
         }
     }.lt);
 
-    // 2. Load the cache and decide which files need parsing.
+    // 2. Load the cache and decide which files need parsing. A file that
+    //    fails to stat, read, or parse keeps its cached rows (stale but
+    //    better than silently missing) and is reported in the warnings, so a
+    //    partial scan is never persisted as success.
     const previous = try loadCache(io, arena, cache_path);
     var current = ManagedList(CachedFile).init(arena);
     var dirty = false;
+    const appendCachedFallback = struct {
+        fn f(current2: *ManagedList(CachedFile), previous2: *const Cache, path: []const u8) !void {
+            if (previous2.files.get(path)) |cached| try current2.append(cached);
+        }
+    }.f;
     for (file_paths.items) |path| {
-        const st = std.Io.Dir.statFile(.cwd(), io, path, .{}) catch continue;
+        const st = std.Io.Dir.statFile(.cwd(), io, path, .{}) catch {
+            try warnings.append(try std.fmt.allocPrint(arena, "could not stat {s} (cached data kept)", .{path}));
+            try appendCachedFallback(&current, &previous, path);
+            continue;
+        };
         const size: u64 = @intCast(st.size);
         const mtime_ms: i64 = st.mtime.toMilliseconds();
         if (previous.files.get(path)) |cached| {
@@ -2224,8 +2090,16 @@ fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, b
             }
         }
         dirty = true;
-        const data = std.Io.Dir.readFileAlloc(.cwd(), io, path, arena, .limited(1024 * 1024 * 1024)) catch continue;
-        const parsed = parseSessionBuffer(arena, data) catch continue;
+        const data = std.Io.Dir.readFileAlloc(.cwd(), io, path, arena, .limited(1024 * 1024 * 1024)) catch {
+            try warnings.append(try std.fmt.allocPrint(arena, "could not read {s} (cached data kept)", .{path}));
+            try appendCachedFallback(&current, &previous, path);
+            continue;
+        };
+        const parsed = parseSessionBuffer(arena, data) catch {
+            try warnings.append(try std.fmt.allocPrint(arena, "could not parse {s} (cached data kept)", .{path}));
+            try appendCachedFallback(&current, &previous, path);
+            continue;
+        };
         try current.append(.{
             .path = path,
             .size = size,
@@ -2263,7 +2137,7 @@ fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, b
     for (0..5) |pi| {
         agg.periods[pi].insights = try computeInsights(arena, &agg.periods[pi].raw, agg.trend);
     }
-    return buildUsageJson(arena, &agg, bounds);
+    return buildUsageJson(arena, &agg, bounds, warnings.items);
 }
 
 // =============================================================================
@@ -2279,13 +2153,16 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     std.Io.Dir.createDirPath(.cwd(), io, tmp_root) catch {};
     defer std.Io.Dir.deleteTree(.cwd(), io, tmp_root) catch {};
 
-    // A tiny session file exercising session/thinking/assistant/compaction entries.
+    // A tiny session file exercising session/thinking/assistant/toolResult/
+    // compaction entries. The toolResult carries delegated-model usage
+    // (describe_image/web_search report their tokens there).
     const session = try std.fmt.allocPrint(arena, "{{\"type\":\"session\",\"id\":\"sc-session-1\",\"timestamp\":\"2026-08-10T10:00:00.000Z\",\"cwd\":\"{s}\"}}\n" ++
         "{{\"type\":\"thinking_level_change\",\"id\":\"t1\",\"timestamp\":\"2026-08-10T10:00:01.000Z\",\"thinkingLevel\":\"max\"}}\n" ++
         "{{\"type\":\"message\",\"id\":\"m1\",\"timestamp\":\"2026-08-10T10:00:02.000Z\",\"message\":{{\"role\":\"assistant\",\"provider\":\"opencode-go\",\"model\":\"deepseek-v4-flash\",\"timestamp\":1786400002000,\"usage\":{{\"input\":1000,\"output\":200,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.01}}}}}}}}\n" ++
         "{{\"type\":\"message\",\"id\":\"m2\",\"timestamp\":\"2026-08-10T10:00:03.000Z\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"x\"}}]}}}}\n" ++
         "{{\"type\":\"compaction\",\"id\":\"c1\",\"timestamp\":\"2026-08-10T10:00:04.000Z\",\"usage\":{{\"input\":500,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.005}}}}}}\n" ++
-        "{{\"type\":\"message\",\"id\":\"m3\",\"timestamp\":\"2026-08-10T10:00:05.000Z\",\"message\":{{\"role\":\"assistant\",\"provider\":\"opencode-go\",\"model\":\"deepseek-v4-flash\",\"timestamp\":1786400005000,\"usage\":{{\"input\":900,\"output\":100,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.002}}}}}}}}\n", .{tmp_root});
+        "{{\"type\":\"message\",\"id\":\"m3\",\"timestamp\":\"2026-08-10T10:00:05.000Z\",\"message\":{{\"role\":\"assistant\",\"provider\":\"opencode-go\",\"model\":\"deepseek-v4-flash\",\"timestamp\":1786400005000,\"usage\":{{\"input\":900,\"output\":100,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.002}}}}}}}}\n" ++
+        "{{\"type\":\"message\",\"id\":\"m4\",\"timestamp\":\"2026-08-10T10:00:06.000Z\",\"message\":{{\"role\":\"toolResult\",\"toolName\":\"describe_image\",\"timestamp\":1786400006000,\"usage\":{{\"input\":300,\"output\":40,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.003}}}}}}}}\n", .{tmp_root});
 
     const sessions_dir = try std.fmt.allocPrint(arena, "{s}/sessions", .{tmp_root});
     std.Io.Dir.createDirPath(.cwd(), io, sessions_dir) catch {};
@@ -2319,24 +2196,22 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     const reloaded = try loadCache(io, arena, cache_path);
     common.expect(reloaded.files.count() == 1, "cache holds the session file");
     const cached = reloaded.files.get(session_file).?;
-    common.expect(cached.messages.len == 3, "cache holds all three messages");
+    common.expect(cached.messages.len == 4, "cache holds all four messages");
 
     // Verify the aggregated payload shape.
     common.expect(std.mem.indexOf(u8, json_out, "\"allTime\"") != null, "payload has allTime");
     common.expect(std.mem.indexOf(u8, json_out, "\"opencode-go\"") != null, "payload has opencode-go");
     common.expect(std.mem.indexOf(u8, json_out, "\"Tools\"") != null, "payload has auxiliary provider");
     common.expect(std.mem.indexOf(u8, json_out, "\"deepseek-v4-flash\"") != null, "payload has the model");
+    common.expect(std.mem.indexOf(u8, json_out, "\"describe_image\"") != null, "payload aggregates the tool-result usage under the tool name");
+    common.expect(std.mem.indexOf(u8, json_out, "\"warnings\":[]") != null, "payload has an empty warnings list on a clean scan");
 
-    // Limits op must fail gracefully with no credentials (no network in self-check).
-    const auth_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{tmp_root});
-    {
-        const f = try std.Io.Dir.createFileAbsolute(io, auth_path, .{});
-        defer f.close(io);
-        try writeAllIo(io, f, "{\"openai-codex\":{\"type\":\"oauth\",\"access\":\"\",\"refresh\":\"\",\"expires\":0}}\n");
-    }
-    const limits_json = try buildLimitsJson(arena, io, tmp_root, &environ);
+    // Limits op must fail gracefully with no credentials (no network in
+    // self-check); the glue passes Codex credentials through the request.
+    const limits_json = try buildLimitsJson(arena, io, &environ, null, null, null);
     common.expect(std.mem.indexOf(u8, limits_json, "\"opencode-go\"") != null, "limits payload has opencode-go");
     common.expect(std.mem.indexOf(u8, limits_json, "OPENCODE_API_KEY") != null, "limits payload reports the missing key");
+    common.expect(std.mem.indexOf(u8, limits_json, "log in with /login") != null, "limits payload reports missing codex credentials");
 
     std.debug.print("PASS: pi-usage self-check ok\n", .{});
 }
@@ -2386,33 +2261,43 @@ pub fn main(init: std.process.Init) !void {
             };
             respond(arena, io, req.value.id, true, result) catch {};
         } else if (mem.eql(u8, req.value.op, "limits")) {
-            const agent_dir = getAgentDir(arena, init.environ_map) catch {
-                respond(arena, io, req.value.id, false, "no agent dir") catch {};
-                continue;
-            };
-            // The thread reads agent_dir while the main loop waits, and the
-            // arena is reset on the next iteration, so hand the thread its own
-            // gpa-owned copy. It leaks only when the fetch times out.
-            const agent_dir_owned = gpa.dupe(u8, agent_dir) catch {
+            // The context is heap-owned and the worker frees it on exit, so a
+            // timed-out request (or a next-iteration arena reset) can never
+            // leave the worker reading reused stack memory or writing into a
+            // later request's pipe.
+            const ctx = gpa.create(LimitsThreadCtx) catch {
                 respond(arena, io, req.value.id, false, "out of memory") catch {};
                 continue;
             };
+            ctx.* = .{ .gpa = gpa, .io = io, .environ = init.environ_map };
+            var alloc_ok = true;
+            if (req.value.codex_access) |s| {
+                ctx.codex_access = gpa.dupe(u8, s) catch null;
+                if (ctx.codex_access == null) alloc_ok = false;
+            }
+            if (req.value.codex_account_id) |s| {
+                ctx.codex_account_id = gpa.dupe(u8, s) catch null;
+                if (ctx.codex_account_id == null) alloc_ok = false;
+            }
+            if (req.value.codex_email) |s| {
+                ctx.codex_email = gpa.dupe(u8, s) catch null;
+                if (ctx.codex_email == null) alloc_ok = false;
+            }
+            if (!alloc_ok) {
+                ctx.deinit();
+                respond(arena, io, req.value.id, false, "out of memory") catch {};
+                continue;
+            }
             const pipe = makePipe() catch |err| {
-                gpa.free(agent_dir_owned);
+                ctx.deinit();
                 respond(arena, io, req.value.id, false, @errorName(err)) catch {};
                 continue;
             };
-            var ctx = LimitsThreadCtx{
-                .gpa = gpa,
-                .io = io,
-                .agent_dir = agent_dir_owned,
-                .environ = init.environ_map,
-                .write_fd = pipe.fds[1],
-            };
-            const thread = std.Thread.spawn(.{}, limitsThreadFn, .{&ctx}) catch {
+            ctx.write_fd = pipe.fds[1];
+            const thread = std.Thread.spawn(.{}, limitsThreadFn, .{ctx}) catch {
                 closeFd(pipe.fds[0]);
                 closeFd(pipe.fds[1]);
-                gpa.free(agent_dir_owned);
+                ctx.deinit();
                 respond(arena, io, req.value.id, false, "could not spawn limits thread") catch {};
                 continue;
             };
@@ -2421,7 +2306,9 @@ pub fn main(init: std.process.Init) !void {
             const deadline = nowRealtimeMs() + LIMITS_TIMEOUT_MS;
             const result = readLine(pipe.fds[0], &pipe_buf, MAX_LINE, arena, deadline) catch {
                 // Abandon the fetch; closing the read end makes the thread's
-                // next write fail and it cleans itself up.
+                // next write fail, and the worker then frees the context
+                // itself (the success path also frees it, so the main loop
+                // never touches the context after spawn).
                 closeFd(pipe.fds[0]);
                 respond(arena, io, req.value.id, false, "limits fetch timed out") catch {};
                 thread.detach();
@@ -2429,7 +2316,6 @@ pub fn main(init: std.process.Init) !void {
             } orelse "";
             closeFd(pipe.fds[0]);
             _ = thread.join();
-            gpa.free(agent_dir_owned);
             respond(arena, io, req.value.id, true, result) catch {};
         } else {
             respond(arena, io, req.value.id, false, "unknown op") catch {};

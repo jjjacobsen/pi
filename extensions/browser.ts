@@ -11,11 +11,13 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { withAbort } from "./lib/toolkit";
 
 const T = Type;
 const enumOpt = (values: string[], description: string) =>
-  T.Optional(T.Union(values.map((v) => T.Literal(v)), { description }));
+  T.Optional(StringEnum(values, { description }));
 const intOpt = (description: string) => T.Optional(T.Integer({ description }));
 const strOpt = (description: string) => T.Optional(T.String({ description }));
 
@@ -53,7 +55,7 @@ const TOOLS = [
   { name: "browser_wait_script", mcp: "waitForScript", description: "Wait until a JS expression evaluates truthy.",
     params: { script: T.String({ description: "JS expression (not a statement) re-evaluated until truthy." }), timeout: intOpt("Timeout in ms. Default 5000.") } },
   { name: "browser_wait_state", mcp: "waitForState", description: "Wait for the page to reach a load state.",
-    params: { state: T.Union([T.Literal("load"), T.Literal("domcontentloaded"), T.Literal("networkalmostidle"), T.Literal("networkidle"), T.Literal("done")], { description: "Load state to wait for. 'networkidle' is the usual choice for dynamic pages." }), timeout: intOpt("Timeout in ms. Default 5000.") } },
+    params: { state: StringEnum(["load", "domcontentloaded", "networkalmostidle", "networkidle", "done"], { description: "Load state to wait for. 'networkidle' is the usual choice for dynamic pages." }), timeout: intOpt("Timeout in ms. Default 5000.") } },
   { name: "browser_extract", mcp: "extract", description: "Extract structured data from the page using a schema mapping field names to CSS-selector specs.",
     params: { schema: T.String({ description: "JSON object literal mapping output field names to CSS-selector specs, e.g. {\"title\":\"h1\",\"price\":\".price\"}." }), save: strOpt("Bridge-store key for later evaluates.") } },
   { name: "browser_structured", mcp: "structuredData", description: "Extract structured data (JSON-LD, OpenGraph, etc) from the loaded page.",
@@ -88,7 +90,10 @@ export default function (pi: ExtensionAPI) {
       parameters: T.Object(t.params),
       async execute(_toolCallId, params, signal) {
         if (signal?.aborted) throw new Error("aborted");
-        const result = await backend.call(t.mcp, { params: JSON.stringify(params) });
+        // Esc mid-call kills and respawns the backend (it may be blocked in
+        // an MCP call that can wait 120s); the loaded page is lost, matching
+        // vision/search abort semantics.
+        const result = await withAbort(backend, backend.call(t.mcp, { params: JSON.stringify(params) }), signal, t.name);
         return { content: [{ type: "text", text: result }], details: {} };
       },
     });

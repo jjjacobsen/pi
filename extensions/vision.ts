@@ -22,14 +22,17 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { createBackend, killOnHostTeardown } from "./lib/backend";
-import { toolError, withAbort } from "./lib/toolkit";
+import { toToolUsage, toolError, withAbort } from "./lib/toolkit";
 
 const TOOL_NAME = "describe_image";
 const DEFAULT_MAX_DIMENSION = 1568;
 const DEFAULT_JPEG_QUALITY = 85;
 const TIMEOUT_MS = 60000;
 
-const backend = createBackend("pi-vision", { onOk: (msg) => msg.result });
+// onOk resolves the full response line: the description text plus the
+// delegated model's token accounting (usage), which the tool result carries
+// so /usage can count it.
+const backend = createBackend("pi-vision", { onOk: (msg) => msg });
 
 // ---------------------------------------------------------------------------
 // Config (~/.pi/agent/vision.json). Unknown keys from older configs are
@@ -139,7 +142,7 @@ export default function visionExtension(pi: ExtensionAPI) {
           ? JSON.stringify(Object.entries(auth.headers).map(([k, v]) => [k, String(v)]))
           : "";
       try {
-        const text = await withAbort(
+        const res = await withAbort(
           backend,
           backend.call("describe", {
             path: params.image_path,
@@ -156,9 +159,10 @@ export default function visionExtension(pi: ExtensionAPI) {
           signal,
           "describe_image",
         );
-        return { content: [{ type: "text", text }], details: {} };
+        const usage = toToolUsage(visionModel, res.usage);
+        return { content: [{ type: "text", text: res.result }], details: {}, ...(usage ? { usage } : {}) };
       } catch (e) {
-        return toolError(e.message);
+        return toolError(e instanceof Error ? e.message : String(e));
       }
     },
   });

@@ -184,6 +184,24 @@ extensions/ as a hk step.
   to what you had. The /wt dirty-worktree reporting work in src/wt.zig makes
   the error friendlier but cannot fix the underlying refusal.
 
+## 2026-08-21 — backend lifecycle hardening
+
+- `gpa.create(T)` returns uninitialized memory: adding a field to a struct
+  that a worker thread writes via `workerFinish` must initialize it on
+  every path (including the "field absent" path), or the first read of the
+  unset field is garbage. Adding `usage_len` to `common.WorkerSlot` without
+  zeroing it on the no-usage path panicked pi-search with an out-of-bounds
+  index of ~2^63. Zero defaults only apply to struct literals, not
+  `gpa.create`.
+- Bun's `node:child_process` lacks `child.stdin.unref()` (only real node
+  has it; pi itself runs under `/opt/homebrew/bin/node`). Any test harness
+  for `extensions/lib/backend.ts` must run under node, not bun — under bun
+  the unref dance throws at spawn.
+- `std.Io.File.MultiReader` buffers each stream unboundedly (there is no
+  per-stream cap); `toOwnedSlice(i)` hands over the accumulated bytes, and
+  the caller must cap afterward. Fine for small outputs (git commit), wrong
+  for unbounded streams.
+
 ## 2026-08-21
 
 - Zig 0.16 `std.http.Client` streaming reads: the socket reader buffers

@@ -13,7 +13,8 @@ shared parts live in two files:
   (`httpWithDeadline`, `WorkerSlot`, `workerFinish`, `isRetryableStatus` /
   `isRetryableErr`, `parseHeaders`): each backend keeps its own fetch
   worker and response parsing, and the worker-slot lifecycle (socket
-  shutdown on deadline, bounded leak on a stuck pre-socket worker) lives
+  shutdown on deadline, abandoned-worker self-cleanup when a worker is
+  stuck before registering its socket) lives
   once. Each backend aliases only what it
   needs and keeps its own request parsing, op dispatch, protocol structs,
   and self-check. `goal.zig` aliases `nowRealtimeMs` because its deadlines
@@ -22,13 +23,20 @@ shared parts live in two files:
 - `extensions/lib/backend.ts`: `createBackend(binaryName, hooks)` owns spawning
   the binary, the pending-call map, line dispatch, and the unref dance that
   lets pi exit in print mode while the backend self-terminates on stdin EOF.
-  It is also what makes `/reload` trustworthy: before spawning it rebuilds
-  with `zig build` when the source tree (build.zig, build.zig.zon, everything
+  Backends start lazily: importing an extension spawns nothing, so pi's
+  startup (which imports every extension) does not start ten binaries plus
+  Lightpanda until they are actually used. It is also what makes `/reload`
+  trustworthy: before spawning it rebuilds with `zig build` when the source
+  tree (build.zig, build.zig.zon, everything
   under src/, including @embedFile assets) is newer than the last successful
   build recorded in `zig-out/.pi-build-stamp.json`, and a failed build throws
   instead of running a stale binary. The stamp is project-wide and written
   once per successful build, so the rebuild runs at most once per source
-  change and a launch with no source edits never invokes zig at all. `createBackend` returns `{call, kill}`; every
+  change and a launch with no source edits never invokes zig at all. Pending
+  calls are scoped to their child generation, `restart()` (Esc abort on
+  vision/search/browser) respawns only after the old child exits, an
+  unexpected exit marks the backend dead and the next call respawns it, and
+  `kill()` is terminal. `createBackend` returns `{call, kill, restart}`; every
   extension registers `pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event))`,
   which kills only on host teardown (quit, reload) and lets the backend
   survive session replacement (new, resume, fork, /wt switches): pi rebinds
@@ -36,8 +44,9 @@ shared parts live in two files:
   would leave the new session with a permanently dead backend. Teardown is
   stdin EOF with SIGTERM insurance, instead of orphaning the process until
   pi exits.
-  `hooks.onOk` picks the resolved value (browser resolves the raw result
-  string); `hooks.onError` returns the error message (goal adds a fallback).
+  `hooks.onOk` picks the resolved value (vision and search resolve the full
+  response line so the glue can forward the delegated model's `usage`);
+  `hooks.onError` returns the error message (goal adds a fallback).
 
 Per-backend protocol details are documented in each extension's section
 below; the wire format is identical everywhere: one JSON request line on
@@ -143,6 +152,10 @@ matched by id; unrelated notifications are skipped.
   shorter and unaffected.
 - The main loop reads requests from our own stdin (fd 0); the Browser's
   line reader is used for the child's stdout only.
+- Extracted tool results are capped at 256KB with head/tail truncation
+  ("… [N bytes truncated] …"), so one html/tree/evaluate call cannot flood
+  the model's context or bloat the session file below the 64MB protocol
+  limit.
 
 ## Self-check
 
@@ -162,6 +175,11 @@ exercises the whole stack and is the gate for `mise check`.
   process spawned by this backend. `lightpanda mcp` supports sessions
   (session_new/list/close) and script saving (`save`, PandaScript); the
   glue does not expose them yet.
+- **Esc aborts an in-flight call**: browser tools use the shared `withAbort`
+  path like vision/search, so Esc during a call that can wait 120s kills and
+  respawns the backend. The loaded page is lost (the lightpanda process goes
+  down with the backend), matching the abort semantics of the other
+  HTTP-delegating tools.
 - **/reload**: the glue rebuilds stale binaries and extensions kill their
   backend on `session_shutdown` only when the host is torn down (quit or
   reload), so a reload after editing Zig or TS code runs the new build with
@@ -237,7 +255,9 @@ Why this split:
   feed them back to the model for one retry.
 - `commit` re-checks that something is staged, runs `git commit -F -` with
   the message on stdin, and returns `<short-hash> <header>`. Pre-commit hooks
-  run as normal.
+  run as normal. The child's stdout and stderr are drained concurrently via
+  `std.Io.File.MultiReader`, so a verbose pre-commit hook that fills stderr
+  cannot deadlock the drain (reading one pipe to EOF before the other would).
 - `--self-check` builds a scratch repo under /tmp and exercises analyze,
   validate, and commit end to end. It is the gate for `mise check`.
 
@@ -765,8 +785,8 @@ Why this split:
 
 ```json
 {"id":1,"op":"collect","bounds":{"todayMs":..,"weekStartMs":..,"lastWeekStartMs":..,"last30DaysStartMs":..,"nowMs":..}}
-{"id":1,"ok":true,"result":"{\"bounds\":..,\"hourly\":..,\"today\":..,\"thisWeek\":..,\"lastWeek\":..,\"last30Days\":..,\"allTime\":..}"}
-{"id":2,"op":"limits"}
+{"id":1,"ok":true,"result":"{\"bounds\":..,\"hourly\":..,\"today\":..,\"thisWeek\":..,\"lastWeek\":..,\"last30Days\":..,\"allTime\":..,\"warnings\":[...]}"}
+{"id":2,"op":"limits","codex_access":"...","codex_account_id":"...","codex_email":"..."}
 {"id":2,"ok":true,"result":"{\"fetchedAt\":..,\"providers\":[...]}"}
 ```
 
@@ -774,31 +794,39 @@ Why this split:
   midnights; Zig has no portable local-timezone API). The backend scans
   `~/.pi/agent/sessions` for `.jsonl` files, re-parses only files whose
   (size, mtime) changed since the binary cache (`~/.pi/agent/pi-usage-cache.bin`),
-  aggregates, computes insights, and returns one JSON payload.
+  aggregates, computes insights, and returns one JSON payload. A file that
+  fails to stat/read/parse keeps its cached rows and adds a warning to the
+  payload, so a partial scan is never persisted as success or reported as
+  clean.
 - `limits` fetches quota over HTTPS on a worker thread; the main loop polls
   the result pipe with a 20s deadline so a hung network can never block the
   backend. OpenCode Go uses `GET https://opencode.ai/zen/go/v1/usage` with
   `Bearer $OPENCODE_API_KEY` (env). Codex uses
-  `GET https://chatgpt.com/backend-api/wham/usage` with the OAuth bearer and
-  `ChatGPT-Account-Id` from `~/.pi/agent/auth.json`; when the access token
-  is expired it refreshes via `https://auth.openai.com/oauth/token`
-  (`grant_type=refresh_token`, `client_id=app_EMoamEEZ73f0CkXaXp7hrann`) and
-  rewrites auth.json atomically, preserving other provider entries and the
-  original file mode. Account id/email come from JWT claims.
+  `GET https://chatgpt.com/backend-api/wham/usage` with the bearer and
+  `ChatGPT-Account-Id` from the request: the glue resolves the access token
+  (and JWT account id/email) through pi's model registry
+  (`getApiKeyAndHeaders` on an openai-codex model), so OAuth refresh and
+  `auth.json` rewriting stay in pi and this backend never touches the
+  credential file.
 
 ## Zig behavior
 
 - The JSONL parser pre-filters lines by byte patterns (assistant/session/
-  thinking/compaction/branch_summary) so multi-megabyte tool results are
-  never decoded. Tool-result usage is deliberately ignored: the original
-  extension only used it for nested-agent reconciliation, and there are no
-  subagent records in practice.
+  thinking/compaction/branch_summary/toolResult-with-usage) so
+  multi-megabyte tool results are never decoded. Tool-result usage
+  (describe_image, web_search) is aggregated as auxiliary provider cost
+  under the tool name: those delegated calls report their tokens nowhere
+  else, so skipping them understated totals.
 - The cache is a binary little-endian format: magic `PIUC`, version 1, an
   interned string table, then per file a fixed-size message record set
   (74 bytes per message). Writes go through a temp file + rename.
 - Dedupe of copied branch history uses a hash of (auxiliary, sourceId,
   timestamp, token fingerprint); insights text and thresholds are ported
   verbatim from the original extension (data.ts computeInsights).
+- The limits worker's context is heap-owned and the worker frees it on every
+  exit path (success, or a write failure after the main loop abandons a
+  timed-out request), so it can never read reused stack memory, write into a
+  later request's pipe, or leak.
 - **Self-check**: `zig build run -- --self-check` builds a scratch session
   tree, runs the real parse/aggregate/cache pipeline with
   `PI_CODING_AGENT_DIR` pointed at it, verifies the payload and cache round
@@ -807,13 +835,19 @@ Why this split:
 
 ## Notes
 
+- The glue resolves the Codex credentials for the limits op through pi's
+  model registry and forwards them per request; the Limits view fetches
+  quotas on first view (not at panel open), enforces one in-flight request,
+  and drops the result when the panel closes. Scan warnings from the
+  collect payload render under the title, so a partial scan is visible.
 - The original JSON cache (`usage-extension-cache.json`) is left in place
   but unused; the extension never reads it.
 - The cache path differs from the tmuster one, so the two extensions cannot
   corrupt each other's data even if both are installed.
-- The worker thread's `agent_dir` string is copied to the gpa before
-  spawning; the main loop's arena is reset on the next request. On timeout
-  the copy leaks (~50 bytes, rare) rather than risking a use-after-free.
+- The worker thread's context and its string fields are gpa-owned and freed
+  by the worker itself on every exit path; the main loop's arena is reset on
+  the next request. A timed-out request abandons the worker (closes the read
+  end, its next write fails, and it cleans itself up) rather than leaking.
 - Zig 0.16 API notes: `std.posix` no longer exposes `pipe`/`close`/`write`/
   `getpid`; use `posix.system.pipe(&fds)` / `posix.system.close(fd)` /
   `posix.system.write(fd, ...)` / `posix.system.getpid()` with
@@ -996,11 +1030,16 @@ Why this split:
 - **Deadline**: the HTTP call runs on a worker thread so a hung provider
   cannot stall the backend. The main thread waits with the deadline (60s
   default, passed per call); on expiry it shuts down the worker's socket
-  (unblocking its read), waits up to 1s for it to exit, joins, and reports
-  the timeout. If the worker is stuck before registering its socket
-  (connect/TLS handshake), the shared structs leak; bounded (~200 bytes)
-  and rare. The glue additionally kills the backend on user abort (Esc), so
-  no request can outlive its turn.
+  (unblocking its read), waits up to 1s for it to exit, and joins. If the
+  worker is stuck before registering its socket (connect/TLS handshake), it
+  is abandoned and frees its own heap structs when it finishes, so repeated
+  slow connections cannot accumulate threads or allocations. The glue
+  additionally kills the backend on user abort (Esc), so no request can
+  outlive its turn.
+- **Usage**: the chat/completions `usage` object (prompt/completion tokens)
+  is returned on the response line; the glue computes cost from the vision
+  model's pricing and reports it as `AgentToolResult.usage`, so delegated
+  describe_image tokens and cost appear in pi's footer and /usage totals.
 - TLS uses the std lib's system CA bundle, which on macOS reads the system
   keychains directly; no cert file handling.
 - **Self-check**: `zig build run -- --self-check` spins up an in-process
@@ -1028,9 +1067,9 @@ Why this split:
   config; `/vision model <provider/model>` validates against the registry
   (must exist and have image input) and saves; bare `/vision model` opens a
   picker over vision-capable models.
-- `createBackend` gained a `restart()` method (kill + respawn, pending calls
-  reject) used when an in-flight describe call is aborted; other extensions
-  are unaffected.
+- `createBackend` `restart()` (kill now, respawn after the old child exits,
+  pending calls reject) is used when an in-flight describe call is aborted;
+  other extensions are unaffected.
 
 ## Flow
 
@@ -1119,7 +1158,10 @@ pi-web-access surface so the model's habits carry over.
   (`output`, `action.sources`, `sources`, `results`; url falls back to
   `source_website_url`, title to `caption`), deduped by url. A `message`
   item yields content parts plus `url_citation` annotations
-  (start/end indexes). `response.completed`/`response.done` ends the stream.
+  (start/end indexes). Terminal events (`response.completed`/`response.done`)
+  are handled before the item lookup — they carry `response`, not `item` —
+  and their `response.usage` object (input/output/cached/reasoning tokens)
+  is captured for the tool result.
 - **Citation markers**: annotations resolve to the 1-based position in the
   source list; a `[n]` marker is inserted right after the cited span.
   Annotation urls missing from the web_search_call list are appended as
@@ -1144,7 +1186,9 @@ pi-web-access surface so the model's habits carry over.
   "no answer or sources" fail immediately. The HTTP call runs on a worker
   thread with a 60s deadline (the shared `httpWithDeadline` machinery in
   `common.zig`, same as pi-vision), so a hung endpoint cannot stall the
-  backend.
+  backend. The glue computes cost from the Codex model's pricing and
+  reports the tokens as `AgentToolResult.usage`, so web_search usage lands
+  in pi's footer and /usage totals.
 - **Self-check**: `zig build run -- --self-check` spins up an in-process
   HTTP server (no network) and exercises the whole pipeline: a full
   answer-mode stream (marker placement, source list, snippet, and body

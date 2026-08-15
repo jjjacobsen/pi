@@ -24,7 +24,6 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const List = common.List;
-const CHUNK = common.CHUNK;
 const readLine = common.readLine;
 const writeAllIo = common.writeAllIo;
 const respond = common.respond;
@@ -67,20 +66,6 @@ const CommitOutcome = struct {
 // ---------------------------------------------------------------------------
 // analyze
 
-// Drains a pipe into buf, keeping at most max bytes. Keeps reading past max so
-// a chatty child never blocks on a full pipe.
-fn drainInto(fd: posix.fd_t, buf: *List, max: usize) !void {
-    var chunk: [CHUNK]u8 = undefined;
-    while (true) {
-        const n = try posix.read(fd, &chunk);
-        if (n == 0) return;
-        if (buf.items.len < max) {
-            const room = max - buf.items.len;
-            try buf.appendSlice(chunk[0..@min(n, room)]);
-        }
-    }
-}
-
 fn respondEmpty(alloc: Allocator, io: std.Io, id: i64) !void {
     try writeAllIo(io, std.Io.File.stdout(), try std.fmt.allocPrint(alloc, "{{\"id\":{d},\"ok\":true,\"empty\":true,\"result\":\"\"}}\n", .{id}));
 }
@@ -102,21 +87,31 @@ fn runGitWithInput(arena: Allocator, io: std.Io, argv: []const []const u8, input
         in.close(io);
         child.stdin = null;
     }
-    var out = List.init(arena);
-    var err = List.init(arena);
-    if (child.stdout) |o| {
-        drainInto(o.handle, &out, MAX_GIT_OUT) catch {};
-        o.close(io);
-        child.stdout = null;
-    }
-    if (child.stderr) |e| {
-        drainInto(e.handle, &err, 16 * 1024) catch {};
-        e.close(io);
-        child.stderr = null;
-    }
+    const stdout_file = child.stdout orelse return error.PipeFailed;
+    const stderr_file = child.stderr orelse return error.PipeFailed;
+    // Drain stdout and stderr concurrently: reading one pipe to EOF before
+    // the other deadlocks when a verbose pre-commit hook fills stderr while
+    // git's stdout is still being read. MultiReader batches reads across all
+    // streams. The buffers grow unbounded (commit output is small in
+    // practice), so the results are capped after the drain.
+    var stream_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var mr: std.Io.File.MultiReader = undefined;
+    mr.init(arena, io, stream_buffer.toStreams(), &[_]std.Io.File{ stdout_file, stderr_file });
+    defer mr.deinit();
+    mr.fillRemaining(.none) catch {};
+    const out = mr.toOwnedSlice(0) catch &[_]u8{};
+    const err = mr.toOwnedSlice(1) catch &[_]u8{};
+    stdout_file.close(io);
+    stderr_file.close(io);
+    child.stdout = null;
+    child.stderr = null;
     const term = child.wait(io) catch return error.WaitFailed;
     const ok = term == .exited and term.exited == 0;
-    return .{ .ok = ok, .stdout = out.items, .stderr = err.items };
+    return .{
+        .ok = ok,
+        .stdout = out[0..@min(out.len, MAX_GIT_OUT)],
+        .stderr = err[0..@min(err.len, 16 * 1024)],
+    };
 }
 
 // ---------------------------------------------------------------------------
