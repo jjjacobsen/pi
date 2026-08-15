@@ -12,7 +12,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
-import { createBackend } from "./lib/backend";
+import { createBackend, killOnHostTeardown } from "./lib/backend";
 
 const backend = createBackend("pi-peon", {
   onOk: (msg) => msg.config, // resolve the config op with its config payload
@@ -133,7 +133,7 @@ function registerPeonCommand(pi) {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", () => backend.kill());
+  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
   registerLifecycle(pi);
   registerPeonCommand(pi);
 }

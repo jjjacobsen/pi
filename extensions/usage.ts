@@ -24,7 +24,7 @@ import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-wor
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { CancellableLoader, Container, Spacer, matchesKey, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
-import { createBackend } from "./lib/backend";
+import { createBackend, killOnHostTeardown } from "./lib/backend";
 import type { BackendData, BaseStats, Insight, LimitsData, PeriodBounds, ProviderLimits, TabName, TotalStats, UsageData } from "./lib/usage/types";
 import { convertBackendData, TAB_ORDER } from "./lib/usage/types";
 import {
@@ -1146,7 +1146,7 @@ function getAgentDir(): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.on("session_shutdown", () => backend.kill());
+	pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
 	pi.registerCommand("usage", {
 		description: "Show usage statistics dashboard",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {

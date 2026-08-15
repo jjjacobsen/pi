@@ -21,7 +21,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createBackend } from "./lib/backend";
+import { createBackend, killOnHostTeardown } from "./lib/backend";
 
 const STATUS_KEY = "goal";
 const STATE_ENTRY_TYPE = "goal-state";
@@ -666,7 +666,7 @@ function registerGoalLifecycle(pi) {
 // ----- entry point -----
 
 export default function goal(pi: ExtensionAPI) {
-  pi.on("session_shutdown", () => backend.kill());
+  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
   registerGoalCommand(pi);
   registerTools(pi);
   registerGoalLifecycle(pi);

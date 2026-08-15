@@ -20,9 +20,13 @@ shared parts live in two files:
   with `zig build` whenever any source (build.zig, build.zig.zon,
   src/**/*.zig) is newer than the binary, and a failed build throws instead
   of running a stale binary. `createBackend` returns `{call, kill}`; every
-  extension registers `pi.on("session_shutdown", () => backend.kill())`, so
-  reloads, session switches, forks, and quits tear the old backend down
-  (stdin EOF, SIGTERM insurance) instead of orphaning it until pi exits.
+  extension registers `pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event))`,
+  which kills only on host teardown (quit, reload) and lets the backend
+  survive session replacement (new, resume, fork, /wt switches): pi rebinds
+  the loaded extension instances without re-importing them, so killing there
+  would leave the new session with a permanently dead backend. Teardown is
+  stdin EOF with SIGTERM insurance, instead of orphaning the process until
+  pi exits.
   `hooks.onOk` picks the resolved value (browser resolves the raw result
   string); `hooks.onError` returns the error message (goal adds a fallback).
 
@@ -149,11 +153,14 @@ exercises the whole stack and is the gate for `mise check`.
   process spawned by this backend. `lightpanda mcp` supports sessions
   (session_new/list/close) and script saving (`save`, PandaScript); the
   glue does not expose them yet.
-- **/reload**: the glue rebuilds stale binaries and every extension kills
-  its backend on `session_shutdown`, so a reload after editing Zig or TS
-  code runs the new build with no orphaned processes. In-flight backend
-  calls during a reload fail fast ("backend killed"), which is intended:
-  reload is terminal for the old instance.
+- **/reload**: the glue rebuilds stale binaries and extensions kill their
+  backend on `session_shutdown` only when the host is torn down (quit or
+  reload), so a reload after editing Zig or TS code runs the new build with
+  no orphaned processes. In-flight backend calls during a reload fail fast
+  ("backend killed"), which is intended: reload is terminal for the old
+  instance. Session replacement (`/new`, `/resume`, `/fork`) does NOT kill:
+  pi reuses the loaded extension instances there, so the backend must stay
+  alive for the new session.
 - **Lightpanda is early-stage**: its own JS engine is not Chromium-complete;
   heavy sites may misrender. Lightpanda nightly is installed via
   `brew install lightpanda-io/browser/lightpanda`.
@@ -436,8 +443,11 @@ backend decides: continue (repeat until the floors are satisfied), stop
   command handler but never processes the follow-up prompt, so `/goal` in
   print mode is a no-op.
 - Pi reloading extensions kills the old backend via `session_shutdown`
-  (shared `createBackend` kill), and the glue rebuilds stale binaries, so
-  `/reload` runs current code with no orphaned processes.
+  (shared `killOnHostTeardown`), and the glue rebuilds stale binaries, so
+  `/reload` runs current code with no orphaned processes. Session
+  replacement (`/new`, `/resume`, `/fork`) keeps the backend running: pi
+  reuses the loaded extension instances, and killing it there would break
+  every command in the new session.
 
 # Repo audit skill (pi-repo-audit)
 

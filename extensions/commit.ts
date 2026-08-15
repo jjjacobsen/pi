@@ -14,7 +14,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { createBackend } from "./lib/backend";
+import { createBackend, killOnHostTeardown } from "./lib/backend";
 
 const THINKING_LEVEL = "low";
 const MAX_SESSION_TAIL = 4000;
@@ -158,7 +158,7 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", () => backend.kill());
+  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
   pi.registerCommand("commit", {
     description: "Stage all changes and commit them with an AI-generated conventional message",
     handler: async (args, ctx) => {

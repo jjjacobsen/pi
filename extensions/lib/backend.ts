@@ -13,12 +13,16 @@
 //   binary, so a reload after a Zig edit either runs the new code or tells
 //   you why not. A successful build stamps the binary, so mtime-only source
 //   changes (touch, git checkout) don't trigger repeat builds.
-// - Old processes are killed on session shutdown: call the returned kill()
-//   from a pi.on("session_shutdown") handler. kill() closes stdin (EOF is
-//   the backend's self-terminate signal) and SIGTERMs as insurance, rejects
-//   pending calls, and makes later calls fail fast. The kill closure holds
-//   only its own child, so a reloaded extension instance can never kill the
-//   new instance's backend.
+// - Old processes are killed on host teardown: use the exported
+//   killOnHostTeardown(backend, event) from a pi.on("session_shutdown")
+//   handler, which kills only when the host actually goes away (reason
+//   "quit" or "reload"). kill() closes stdin (EOF is the backend's
+//   self-terminate signal) and SIGTERMs as insurance, rejects pending
+//   calls, and makes later calls fail fast. The kill closure holds only its
+//   own child, so a reloaded extension instance can never kill the new
+//   instance's backend. Session replacement ("new", "resume", "fork", /wt
+//   switches) must NOT kill: pi rebinds the same loaded extension instances
+//   without re-importing them, so the backend keeps serving the new session.
 //
 // hooks.onOk(msg) picks the resolved value (browser resolves the raw result
 // string); hooks.onError(msg) returns the error message (goal adds a
@@ -66,6 +70,10 @@ function ensureBuilt(root, bin) {
   // passes on the next load; content-wise it is current.
   const now = new Date();
   utimesSync(bin, now, now);
+}
+
+export function killOnHostTeardown(backend, event) {
+  if (event.reason === "quit" || event.reason === "reload") backend.kill();
 }
 
 export function createBackend(binaryName, hooks = {}) {

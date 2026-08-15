@@ -25,7 +25,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { createBackend } from "./lib/backend";
+import { createBackend, killOnHostTeardown } from "./lib/backend";
 
 const backend = createBackend("pi-wt");
 
@@ -70,7 +70,7 @@ async function switchToWorktree(ctx, worktreePath, branch, base) {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", () => backend.kill());
+  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
   pi.registerCommand("wt", {
     description: "Create a git worktree and switch to a fresh pi session in it (/wt list, /wt merge <topic>, /wt prune <topic>)",
     getArgumentCompletions: (prefix) => {

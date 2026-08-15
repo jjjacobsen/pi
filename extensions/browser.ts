@@ -11,7 +11,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createBackend } from "./lib/backend";
+import { createBackend, killOnHostTeardown } from "./lib/backend";
 
 const T = Type;
 const enumOpt = (values: string[], description: string) =>
@@ -79,7 +79,7 @@ const TOOLS = [
 const backend = createBackend("pi-browser", { onOk: (msg) => msg.result });
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", () => backend.kill());
+  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
   for (const t of TOOLS) {
     pi.registerTool({
       name: t.name,

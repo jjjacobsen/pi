@@ -29,7 +29,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Input } from "@earendil-works/pi-tui";
-import { createBackend } from "./lib/backend";
+import { createBackend, killOnHostTeardown } from "./lib/backend";
 
 const backend = createBackend("pi-btw");
 
@@ -499,7 +499,7 @@ function registerBtwMessageRenderer(pi) {
 }
 
 export default function btw(pi: ExtensionAPI) {
-  pi.on("session_shutdown", () => backend.kill());
+  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
   registerBtwCommand(pi);
   registerBtwMessageRenderer(pi);
 }
