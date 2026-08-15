@@ -98,3 +98,16 @@ brings the worktree branch into your current branch (fast-forward when
 possible, conflicts left for normal resolution) and auto-prunes unless
 `--keep`, `/wt prune <topic>` removes a worktree and its branch. See
 [docs/architecture.md](docs/architecture.md).
+
+### vision - image analysis via a configured vision model
+
+`extensions/vision.ts` + `src/vision.zig`. The `describe_image` tool lets a
+text-only primary (like deepseek-v4-flash) analyze images by delegating to a
+configured vision model: Zig detects the format and dimensions from header
+bytes, compresses oversized images via `sips` (JPEG for opaque, original
+format for alpha), base64s, and POSTs to the model's OpenAI-compatible
+endpoint with one retry and a hard deadline. Multimodal models never see the
+tool — pi passes images to them natively. `/vision show` and
+`/vision model <provider/model>` configure the vision model. Replaces the
+third-party @getpipher/vision package. See
+[docs/architecture.md](docs/architecture.md).

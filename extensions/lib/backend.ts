@@ -26,12 +26,8 @@ export function createBackend(binaryName, hooks = {}) {
     }
   }
 
-  const child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
-  // Unref so pi can exit in print mode (and on shutdown) without waiting on
-  // the backend's pipes; the backend self-terminates when stdin closes.
-  child.unref();
-  child.stdin.unref();
-  child.stdout.unref();
+  let child;
+  let rl;
   let nextId = 1;
   const pending = new Map();
   const settle = (id, fn) => {
@@ -42,22 +38,31 @@ export function createBackend(binaryName, hooks = {}) {
     }
   };
 
-  const rl = createInterface({ input: child.stdout });
-  rl.on("line", (line) => {
-    try {
-      const msg = JSON.parse(line);
-      if (msg.ok) settle(msg.id, (p) => p.resolve(hooks.onOk ? hooks.onOk(msg) : msg));
-      else settle(msg.id, (p) => p.reject(new Error(hooks.onError ? hooks.onError(msg) : msg.error)));
-    } catch {}
-  });
-  child.on("exit", (code) => {
-    for (const p of pending.values()) p.reject(new Error(`${binaryName} backend exited (code ${code})`));
-    pending.clear();
-  });
-  child.on("error", (err) => {
-    for (const p of pending.values()) p.reject(err);
-    pending.clear();
-  });
+  const spawnBackend = () => {
+    child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
+    // Unref so pi can exit in print mode (and on shutdown) without waiting on
+    // the backend's pipes; the backend self-terminates when stdin closes.
+    child.unref();
+    child.stdin.unref();
+    child.stdout.unref();
+    rl = createInterface({ input: child.stdout });
+    rl.on("line", (line) => {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.ok) settle(msg.id, (p) => p.resolve(hooks.onOk ? hooks.onOk(msg) : msg));
+        else settle(msg.id, (p) => p.reject(new Error(hooks.onError ? hooks.onError(msg) : msg.error)));
+      } catch {}
+    });
+    child.on("exit", (code) => {
+      for (const p of pending.values()) p.reject(new Error(`${binaryName} backend exited (code ${code})`));
+      pending.clear();
+    });
+    child.on("error", (err) => {
+      for (const p of pending.values()) p.reject(err);
+      pending.clear();
+    });
+  };
+  spawnBackend();
 
   return {
     call(op, params) {
@@ -66,6 +71,15 @@ export function createBackend(binaryName, hooks = {}) {
         pending.set(id, { resolve, reject });
         child.stdin.write(JSON.stringify({ id, op, ...params }) + "\n");
       });
+    },
+    // Kill the backend (used when an in-flight call is aborted, e.g. Esc on a
+    // slow vision request) and spawn a fresh one. Pending calls reject.
+    restart() {
+      child.kill();
+      for (const p of pending.values()) p.reject(new Error(`${binaryName} backend restarted`));
+      pending.clear();
+      rl.close();
+      spawnBackend();
     },
   };
 }

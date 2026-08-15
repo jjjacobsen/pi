@@ -99,3 +99,26 @@ extensions/ as a hk step.
   goal, peon, wt), not just wt. TUI mode is fine
 - Workaround: guard commands that need the backend with `ctx.mode !== "tui"`
   and refuse before touching the backend, which is what `/wt` does
+
+## 2026-08-15: Zig 0.16 std.net/http API traps while building pi-vision
+
+- `std.Io.net.listen`/`connect` are methods on `Io.net.IpAddress`
+  (`IpAddress.listen(&addr, io, opts)`), not on `Io.net`. They also take
+  `*const IpAddress`, and `listen` returns a `var` (deinit takes `*Server`)
+- `std.Io.Clock` has no `.monotonic`: members are `.real`, `.awake`, `.boot`
+  (use `.awake` for sleeps)
+- `mem.trimRight` is gone; `mem.trim` trims both ends
+- `std.ArrayList(T)` is unmanaged: `.empty` + `append(alloc, item)`
+- `std.http.Client.fetch` DISCARDS the body unless you pass a
+  `response_writer`; `Io.Writer.fixed(buf)` + `writer.end` gives the written
+  length. There is no request deadline anywhere in the client
+- `std.Thread.Condition` no longer exists (no `timedWait` anywhere in std);
+  the new `Io.Mutex`/`Io.Condition` have no timed wait either. For a
+  request deadline, spawn a worker thread + poll an atomic with
+  `Io.sleep`, and unblock a hung read with `stream.shutdown(io, .both)`
+  from the main thread (macOS wakes the blocked reader)
+- `http.Server.Request.readerExpectNone` returns `*Reader` (no error union)
+- Debug allocator prints leaks at exit; the first deadline design leaked the
+  worker structs on every timeout, which showed up as noise in self-check
+  output. Fixed by main-thread-only freeing after join, with a bounded
+  wait for the worker post-shutdown
