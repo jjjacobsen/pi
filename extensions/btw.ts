@@ -23,7 +23,7 @@
 //   -> {"id":2,"op":"ask","question":"..."}   <- {"id":2,"ok":true,"messages":[...]}
 //   -> {"id":3,"op":"answer","answer":"..."}  <- {"id":3,"ok":true,"turns":2}
 //   -> {"id":4,"op":"abort"}                  <- {"id":4,"ok":true,"turns":1}
-//   -> {"id":5,"op":"format"}                 <- {"id":5,"ok":true,"text":"Q: ...\nA: ..."}
+//   -> {"id":5,"op":"format"}                 <- {"id":5,"ok":true,"text":"..."}
 //   -> {"id":6,"op":"copy"}                   <- {"id":6,"ok":true,"chars":123}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -158,11 +158,11 @@ class SideChatWindow {
     const turns = this.state.turns;
     for (let ti = 0; ti < turns.length; ti++) {
       const turn = turns[ti];
-      for (const line of wrapQ(`Q: ${turn.question}`, contentWidth)) {
+      for (const line of wrapText(turn.question, contentWidth)) {
         body.push(theme.fg("userMessageText", line));
       }
       if (turn.answer != null) {
-        for (const line of wrapQ(`A: ${turn.answer}`, contentWidth)) {
+        for (const line of wrapText(turn.answer, contentWidth)) {
           body.push(line);
         }
       } else if (this.state.error && ti === turns.length - 1) {
@@ -173,7 +173,7 @@ class SideChatWindow {
     }
     // Streaming partial answer replaces the trailing placeholder.
     if (this.state.answering && this.state.partial) {
-      const wrapped = wrapQ(`A: ${this.state.partial}`, contentWidth);
+      const wrapped = wrapText(this.state.partial, contentWidth);
       if (wrapped.length > 0) {
         if (body.length > 0) body.pop();
         for (let i = 0; i < wrapped.length; i++) {
@@ -184,7 +184,7 @@ class SideChatWindow {
     }
     // Queued follow-ups.
     for (const q of this.state.pending) {
-      const qLines = wrapQ(`Q: ${q}`, contentWidth);
+      const qLines = wrapText(q, contentWidth);
       for (let i = 0; i < qLines.length; i++) {
         const line = i === qLines.length - 1 ? `${qLines[i]}${theme.fg("dim", " · queued")}` : qLines[i];
         body.push(theme.fg("userMessageText", line));
@@ -222,7 +222,7 @@ class SideChatWindow {
   }
 }
 
-function wrapQ(text, width) {
+function wrapText(text, width) {
   return wrapTextWithAnsi(text, width);
 }
 

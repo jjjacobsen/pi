@@ -825,7 +825,7 @@ thread has content, so draft text is never hijacked.
 {"id":2,"op":"ask","question":"follow-up"}        <- {"id":2,"ok":true,"messages":[...]}
 {"id":3,"op":"answer","answer":"model text"}      <- {"id":3,"ok":true,"turns":2}
 {"id":4,"op":"abort"}                             <- {"id":4,"ok":true,"turns":1}
-{"id":5,"op":"format"}                            <- {"id":5,"ok":true,"text":"Q: ...\nA: ..."}
+{"id":5,"op":"format"}                            <- {"id":5,"ok":true,"text":"..."}
 {"id":6,"op":"copy"}                              <- {"id":6,"ok":true,"chars":123}
 ```
 
@@ -845,8 +845,8 @@ thread has content, so draft text is never hijacked.
 - `answer` fills the last unanswered turn. `abort` drops it (the glue calls
   abort on Esc and on stream errors, so history only ever builds on answered
   turns).
-- `format` renders the answered thread as plain `Q: ... / A: ...` blocks for
-  copy and branch-to-chat. `copy` pipes that text into `pbcopy` (macOS);
+- `format` renders the answered thread as plain conversation text (question
+  and answer without Q/A labels) for copy and branch-to-chat. `copy` pipes that text into `pbcopy` (macOS);
   a missing pbcopy is reported, never fatal. The `bin` request field
   overrides the binary for the self-check's fake pbcopy.
 - Thread state lives in a dedicated arena reset on `open`; request parsing

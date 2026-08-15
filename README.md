@@ -114,9 +114,10 @@ side-chat window that stays inside the session TUI (the transcript remains
 visible above it) and answers questions with the current model at `low`
 thinking, ELI15-style, without touching the main conversation. Multiple
 questions work: type one while an answer streams and it queues. In the
-window: `enter` send, `c` copy the Q&A thread to the clipboard, `b` bring
-the Q&A into the main chat, `esc` dismiss (main chat untouched). All thread
-logic lives in the Zig backend: the ELI15 system prompt with the main-chat
-excerpt embedded, history assembly, Q&A formatting, and pbcopy. Replaces
+window: `enter` send, `c` copy the thread to the clipboard, `b` bring
+the thread into the main chat, `esc` dismiss (main chat untouched). All
+thread logic lives in the Zig backend: the ELI15 system prompt with the
+main-chat excerpt embedded, history assembly, thread formatting, and
+pbcopy. Replaces
 the third-party `@narumitw/pi-btw` package (removed from settings). See
 [docs/architecture.md](docs/architecture.md).

@@ -18,7 +18,7 @@
 //                {"id":2,"ok":true,"messages":[...]}
 //                {"id":3,"ok":true,"turns":2}
 //                {"id":4,"ok":true,"turns":1}
-//                {"id":5,"ok":true,"text":"Q: ...\nA: ..."}
+//                {"id":5,"ok":true,"text":"..."}
 //                {"id":6,"ok":true,"chars":123}
 //                {"id":N,"ok":false,"error":"..."}
 //
@@ -28,7 +28,7 @@
 // (system prompt plus the answered history plus the new question). `answer`
 // fills the last unanswered turn. `abort` drops an unanswered turn (the glue
 // calls it when the user cancels a streaming answer). `format` renders the
-// thread as plain Q/A text; `copy` formats and pipes it into pbcopy.
+// thread as plain conversation text; `copy` formats and pipes it into pbcopy.
 
 const std = @import("std");
 const mem = std.mem;
@@ -239,9 +239,8 @@ fn opFormat(alloc: Allocator, resp: *Response) !void {
     for (turns.items) |turn| {
         const answer = turn.answer orelse continue; // unanswered turns are not part of the record
         if (buf.items.len > 0) try buf.appendSlice("\n\n");
-        try buf.appendSlice("Q: ");
         try buf.appendSlice(turn.question);
-        try buf.appendSlice("\nA: ");
+        try buf.appendSlice("\n");
         try buf.appendSlice(answer);
         if (buf.items.len > MAX_FORMAT) {
             try buf.appendSlice("\n\n(thread truncated)");
@@ -341,8 +340,8 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     // format renders the answered thread
     resp = Response{ .id = 5, .ok = true };
     try opFormat(arena, &resp);
-    check(resp.text != null and mem.indexOf(u8, resp.text.?, "Q: what is a monad?") != null, "format has the question");
-    check(resp.text != null and mem.indexOf(u8, resp.text.?, "A: a box that wraps") != null, "format has the answer");
+    check(resp.text != null and mem.indexOf(u8, resp.text.?, "what is a monad?") != null, "format has the question");
+    check(resp.text != null and mem.indexOf(u8, resp.text.?, "a box that wraps") != null, "format has the answer");
 
     // copy pipes the formatted text into a fake pbcopy that saves stdin
     const dir = try std.fmt.allocPrint(arena, "/tmp/pi-btw-selfcheck-{d}", .{common.nowMs()});
@@ -376,7 +375,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
         std.debug.print("FAIL: read clip: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
-    check(mem.indexOf(u8, clip, "Q: what is a monad?") != null, "pbcopy received the formatted thread");
+    check(mem.indexOf(u8, clip, "what is a monad?") != null, "pbcopy received the formatted thread");
 
     std.debug.print("PASS: pi-btw self-check ok\n", .{});
 }
