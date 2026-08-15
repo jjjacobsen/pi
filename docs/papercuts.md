@@ -174,3 +174,15 @@ extensions/ as a hk step.
   auto-merges the local diff back in, and the working tree ends up identical
   to what you had. The /wt dirty-worktree reporting work in src/wt.zig makes
   the error friendlier but cannot fix the underlying refusal.
+
+## 2026-08-21
+
+- Zig 0.16 `std.http.Client` streaming reads: the socket reader buffers
+  internally, and when response head + body arrive in one TCP segment (the
+  norm on loopback), the leftover bytes sit in `reader.buffered()` and a
+  `readVec` call that refills that buffer returns 0. Treating 0 as EOF
+  (or blocking on the next readVec) silently loses the buffered events.
+  Fix in src/search.zig's SSE loop: drain `reader.buffered()` before each
+  read, `toss()` what was consumed, and re-check it after any 0-return
+  readVec. The flake only showed up as an intermittent results-mode timeout
+  in the self-check, ~50% of runs.

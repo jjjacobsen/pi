@@ -139,3 +139,16 @@ tool — pi passes images to them natively. `/vision show` and
 `/vision model <provider/model>` configure the vision model. Replaces the
 third-party @getpipher/vision package. See
 [docs/architecture.md](docs/architecture.md).
+
+### search - web search via the Codex subscription
+
+`extensions/search.ts` + `src/search.zig`. The `web_search` tool runs the
+same server-side OpenAI web search pipeline the Codex CLI uses, free with a
+Codex subscription: the model plans queries, OpenAI's index searches, and
+the answer comes back grounded with `[n]` citation markers into a numbered
+source list. Mode `answer` (default) returns the cited answer plus sources;
+mode `results` stops streaming once the searches complete and returns only
+the sources, cutting most of the latency. One retry on transient failures,
+a hard deadline, Esc aborts, and no config file: auth comes from pi's model
+registry. Replaces the third-party pi-web-access package (uninstalled). See
+[docs/architecture.md](docs/architecture.md).
