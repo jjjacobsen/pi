@@ -1,4 +1,6 @@
 // pi-commit: /commit command glue for the Zig commit backend.
+// Inspired by tmonk/pi-committer (https://github.com/tmonk/pi-committer), adapted
+// to a Zig backend for git logic and message validation.
 //
 // Thin TS: registers the /commit command, bridges to the Zig backend
 // (src/commit.zig) over a newline-delimited JSON pipe, calls the current
