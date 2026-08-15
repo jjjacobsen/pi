@@ -301,3 +301,105 @@ because /dev/tty is the whole point of the run op.
 - **Generalizable to other TUIs**: the same backend shape runs any TUI tool;
   a `tool` field on run (lazygit default) would cover jj, tig, etc. Not
   implemented (YAGNI).
+
+# Goal extension (pi-goal)
+
+## Goal
+
+In-house `/goal` command: run the agent autonomously for long stretches and
+step away from the computer. It asks questions only at start (if needed),
+never midway, and it respects time and token boundaries ("run for at least an
+hour", "use at least 1M tokens"). `--no-ask` removes even the start-time
+questions for full automation.
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/goal.ts     TS glue: /goal command, lifecycle wiring, persistence, UI
+       └─ src/goal.zig      Zig backend: goal state machine, boundaries, prompts, tool validation
+```
+
+Why this split:
+
+- The glue is the only code inside the pi process, so it owns the pi event
+  wiring (`session_start`, `input`, `before_agent_start`, `agent_end`,
+  `agent_settled`, compaction, `session_shutdown`), persistence (goal state
+  in custom session entries, so it survives compaction and reload), and UI
+  (status line, notifications).
+- The backend owns every decision: what a goal is, when it continues, when it
+  stops, what the model is told, and whether `goal_complete` /
+  `goal_blocked` / `goal_wait` calls are valid. The glue never decides goal
+  policy.
+
+## Protocol (newline-delimited JSON on stdin/stdout)
+
+```json
+{"id":1,"op":"parse","args":"fix bug --min-time 1h"}             -> Zig
+{"id":2,"op":"start","objective":"...","min_time":"1h",...}      ->
+{"id":3,"op":"event","event":"agent_end","state":{...},...}      ->
+{"id":4,"op":"complete","state":{...},"goal_id":"...","summary":"..."}
+{"id":5,"op":"blocked","state":{...},"goal_id":"...","reason":"...","evidence":"...","repeated_turns":3}
+{"id":6,"op":"wait","state":{...},"goal_id":"...","reason":"...","resume_after_ms":300000}
+{"id":7,"op":"pause","state":{...}}
+{"id":8,"op":"resume","state":{...},"max_time":"2h"}
+{"id":9,"op":"clear","state":{...}}
+{"id":10,"op":"status","state":{...}}
+{"id":11,"op":"restore","state":{...},"tokens":12345}
+```
+
+Events (op `event`): `input` (user message), `agent_start` (may inject the
+goal system prompt), `agent_end` (per-turn accounting and next-step
+decision), `settled` (pi idle; dispatches the pending continuation or a due
+wait deadline), `compact` (post-compaction resume). Responses carry
+`action`: `none` (nothing to do), `continue` (store the continuation prompt),
+`send` (deliver the prompt as a message now), `stop` (goal stopped, notify
+with `text`), and for `agent_start` additionally `inject` (return the prompt
+as a system-prompt addition).
+
+## Zig behavior
+
+- **Boundaries**: `--min-time` / `--max-time` (1h, 30m, 45s suffixes) and
+  `--min-tokens` / `--max-tokens` (k/m suffixes). Floors make the goal keep
+  going even when the model reports done early; ceilings stop it with
+  `stop_cause` `time_limit` / `token_limit`. Token accounting subtracts the
+  baseline captured at start from the glue's cumulative session tokens.
+- **No-progress guard**: assistant output is fingerprinted (normalized text);
+  three consecutive identical turns stop the goal with `stop_cause`
+  `no_progress`. Any user input, tool call, or output change resets the
+  counter.
+- **goal_complete**: stale-turn guard via the `goal_id` shown in the goal
+  prompt; a second completion is rejected with "goal is complete, not
+  active".
+- **goal_blocked**: only accepted after the same blocker recurs for at least
+  three consecutive goal turns (`repeated_turns >= 3`), sets status
+  `blocked`. Resuming starts a fresh three-turn audit.
+- **goal_wait**: quiet waiting for an external event; no polling. An optional
+  `resume_after_ms` deadline (clamped to >= 10s) wakes the goal, or a
+  non-goal wake message does.
+- **--no-ask**: the goal prompt tells the model the user is unavailable, to
+  make reasonable assumptions, and to never ask questions.
+- **Self-check**: `zig build run -- --self-check` exercises parse, start,
+  event decisions, complete, blocked, wait, pause, resume, clear, status,
+  restore, and the inject action. It is the gate for `mise check`.
+
+## Flow
+
+`/goal <objective> [flags]` -> parse -> start -> inject the goal-mode system
+prompt (objective, goal_id, rules) -> the agent works -> `agent_end` ->
+backend decides: continue (repeat until the floors are satisfied), stop
+(complete / blocked / ceiling / no progress), or send (a follow-up prompt) ->
+`agent_settled` dispatches the pending continuation or a due wait deadline ->
+`goal_complete` ends the loop -> status line and notification.
+
+## Notes
+
+- The glue unrefs the backend child and its stdin/stdout so pi can exit in
+  print mode and on shutdown; the backend self-terminates when stdin closes
+  (EOF), so no orphans linger.
+- Goal loops need an interactive session: print mode (`pi -p`) runs the
+  command handler but never processes the follow-up prompt, so `/goal` in
+  print mode is a no-op.
+- Pi reloading extensions may leave the old backend process alive if pi keeps
+  the pipe fds open. Harmless (idle), cleaned up when pi exits and the pipe
+  closes.

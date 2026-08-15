@@ -38,3 +38,18 @@
   caught: it returns an error union, and on error the stdout/stderr buffers
   are freed. Treat it as a `GitResult.ok == false` with the error name as
   the message.
+
+## 2026-08-15 (goal extension)
+
+- pi's `getArgumentCompletions` must return `AutocompleteItem[]`
+  (`{value, label, description?}`), not plain strings. Strings crash the
+  TUI with an uncaught `TypeError: Cannot read properties of undefined
+  (reading 'length')` in pi-tui's select-list `visibleWidth`. The docs
+  example shows the shape but the crash message gives no hint.
+- GNU `timeout` is not on macOS. Shell tests that rely on it fail with
+  `command not found`; use a background process + `sleep` + `ps` + `kill`
+  instead.
+- Extensions that spawn a backend child with piped stdio keep pi's event
+  loop alive: `pi -p` never exits after print mode (browser.ts, commit.ts,
+  lazygit.ts, goal.ts all had this). Unref the child and its stdin/stdout
+  so pi can exit; the backend self-terminates on stdin EOF.

@@ -41,6 +41,11 @@ over nvim: it validates the target is a git repo and lazygit is on PATH, stops
 pi's renderer, spawns lazygit on `/dev/tty`, then resumes and reports the exit
 status. See [docs/architecture.md](docs/architecture.md).
 
+### goal - autonomous goal loop via /goal
+
+`extensions/goal.ts` + `src/goal.zig`. The `/goal` command runs the agent
+autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 100k] [--max-tokens 100k] [--no-ask]`, plus `/goal status | pause | resume | clear`. The Zig backend owns the whole state machine: min/max time and token boundaries, automatic continuation turns, a no-progress guard, stale-turn-safe goal_complete / goal_blocked / goal_wait tools, and it never asks questions mid-run. `--no-ask` removes even start-time questions for full automation. See [docs/architecture.md](docs/architecture.md).
+
 ## Prompts
 
 ### q - question only
