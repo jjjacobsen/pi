@@ -1637,7 +1637,10 @@ fn buildOpenCodeLimits(arena: Allocator, io: std.Io, api_key: ?[]const u8) !Prov
         result.err = "OPENCODE_API_KEY is not set";
         return result;
     }
-    const auth = std.fmt.allocPrint(arena, "Bearer {s}", .{key}) catch return result;
+    const auth = std.fmt.allocPrint(arena, "Bearer {s}", .{key}) catch {
+        result.err = "out of memory";
+        return result;
+    };
     const body = httpGet(arena, io, OPENCODE_USAGE_URL, auth, &.{}) catch |err| {
         result.err = try std.fmt.allocPrint(arena, "usage fetch failed ({s})", .{@errorName(err)});
         return result;
