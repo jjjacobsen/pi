@@ -827,8 +827,11 @@ thread has content, so draft text is never hijacked.
   first question it records the turn and returns the message list.
 - `ask` appends a question (replacing a trailing unanswered turn after an
   error/abort race) and returns the full message list: system prompt plus
-  every answered turn as user/assistant pairs plus the new question. The
-  glue sends exactly this to `streamSimple`.
+  every answered turn as user/assistant pairs plus the new question. Message
+  content is always `[{type:"text",text:...}]` blocks: pi's contract
+  requires assistant content to be an array of blocks, and its token
+  estimator iterates blocks and crashes on a plain string. The glue sends
+  exactly this to `streamSimple`.
 - `answer` fills the last unanswered turn. `abort` drops it (the glue calls
   abort on Esc and on stream errors, so history only ever builds on answered
   turns).
@@ -868,4 +871,5 @@ follow-ups: `ask` op, queue while streaming, one at a time -> `c` copy /
 - Esc always dismisses the window and aborts any in-flight stream; the
   backend thread is dropped on the next `open`.
 - The glue unrefs the backend child and its pipes (shared `createBackend`),
-  and the backend self-terminates on stdin EOF like the other backends.
+  registers `session_shutdown` to kill it, and the backend self-terminates
+  on stdin EOF like the other backends.

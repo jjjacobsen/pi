@@ -26,7 +26,7 @@
 //   -> {"id":5,"op":"format"}                 <- {"id":5,"ok":true,"text":"Q: ...\nA: ..."}
 //   -> {"id":6,"op":"copy"}                   <- {"id":6,"ok":true,"chars":123}
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Input } from "@earendil-works/pi-tui";
 import { createBackend } from "./lib/backend";
@@ -132,6 +132,9 @@ class SideChatWindow {
       }
     }
     this.input.handleInput(data);
+    // The TUI re-renders after every keystroke; invalidate so the render
+    // cache never serves a stale frame without the typed text.
+    this.invalidate();
   }
 
   invalidate() {
@@ -380,6 +383,7 @@ function registerBtwCommand(pi) {
         return askQuestion(q, messagesOverride).then(() => {
           if (dismissed || pending.length === 0) return;
           const next = pending.shift();
+          while (turns.length > 0 && turns[turns.length - 1].answer == null) turns.pop();
           turns.push({ question: next });
           startAsk(next);
         });
@@ -396,6 +400,9 @@ function registerBtwCommand(pi) {
           windowRef?.requestRender();
           return;
         }
+        // A failed answer leaves a ghost turn (the backend dropped it via
+        // abort); drop it too so the window matches the backend history.
+        while (turns.length > 0 && turns[turns.length - 1].answer == null) turns.pop();
         turns.push({ question: q });
         startAsk(q);
       };
@@ -492,6 +499,7 @@ function registerBtwMessageRenderer(pi) {
 }
 
 export default function btw(pi: ExtensionAPI) {
+  pi.on("session_shutdown", () => backend.kill());
   registerBtwCommand(pi);
   registerBtwMessageRenderer(pi);
 }

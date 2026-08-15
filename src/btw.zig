@@ -54,9 +54,18 @@ const Turn = struct {
     answer: ?[]const u8 = null, // null while the answer is pending/streaming
 };
 
+// One content block of a message. Content is always `[{type:"text",text:...}]`:
+// pi's message contract requires assistant content to be an array of blocks,
+// not a plain string (pi's token estimator iterates blocks and crashes on
+// string content).
+const MessageBlock = struct {
+    type: []const u8,
+    text: []const u8,
+};
+
 const Message = struct {
     role: []const u8,
-    content: []const u8,
+    content: []const MessageBlock,
 };
 
 const Request = struct {
@@ -148,14 +157,20 @@ fn buildSystemPrompt(alloc: Allocator, context: []const u8) ![]const u8 {
 // Messages to send for the model call: system prompt (owned separately by
 // the glue) plus every answered turn as user/assistant pairs, plus the new
 // question as the final user message.
+fn textBlocks(alloc: Allocator, text: []const u8) ![]const MessageBlock {
+    var blocks = std.ArrayListUnmanaged(MessageBlock).empty;
+    try blocks.append(alloc, .{ .type = "text", .text = text });
+    return blocks.items;
+}
+
 fn buildMessages(alloc: Allocator, with_question: ?[]const u8) ![]const Message {
     var out = std.ArrayListUnmanaged(Message).empty;
     for (turns.items) |turn| {
-        try out.append(alloc, .{ .role = "user", .content = turn.question });
-        if (turn.answer) |answer| try out.append(alloc, .{ .role = "assistant", .content = answer });
+        try out.append(alloc, .{ .role = "user", .content = try textBlocks(alloc, turn.question) });
+        if (turn.answer) |answer| try out.append(alloc, .{ .role = "assistant", .content = try textBlocks(alloc, answer) });
     }
     if (with_question) |question| {
-        try out.append(alloc, .{ .role = "user", .content = question });
+        try out.append(alloc, .{ .role = "user", .content = try textBlocks(alloc, question) });
     }
     return out.items;
 }
@@ -301,6 +316,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     check(resp.system_prompt != null and mem.indexOf(u8, resp.system_prompt.?, "15 years old") != null, "system prompt carries the ELI15 rule");
     check(resp.system_prompt != null and mem.indexOf(u8, resp.system_prompt.?, "debugging a Zig compile error") != null, "system prompt embeds the context");
     check(resp.messages.?.len == 1 and mem.eql(u8, resp.messages.?[0].role, "user"), "open with question returns one user message");
+    check(resp.messages.?[0].content.len == 1 and mem.eql(u8, resp.messages.?[0].content[0].type, "text"), "messages carry text content blocks");
     check(mem.eql(u8, resp.thinking.?, "low"), "thinking is low for speed");
 
     // answer + follow-up: history is included as user/assistant pairs
@@ -315,6 +331,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     check(resp.ok, "ask succeeds");
     check(resp.messages.?.len == 3, "ask returns history plus the new question");
     check(mem.eql(u8, resp.messages.?[1].role, "assistant"), "history has the assistant answer");
+    check(mem.eql(u8, resp.messages.?[1].content[0].text, "a box that wraps a value and chains operations"), "assistant content is a text block");
 
     // abort drops the unanswered follow-up
     resp = Response{ .id = 4, .ok = true };
