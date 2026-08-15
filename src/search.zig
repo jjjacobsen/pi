@@ -366,6 +366,24 @@ fn formatResult(arena: Allocator, collected: *Collected, results_mode: bool) ![]
 // ---------------------------------------------------------------------------
 // Request body
 
+const Domain = struct {
+    value: []const u8, // trimmed, '-' prefix stripped for blocked domains
+    blocked: bool,
+};
+
+// One domain filter entry: "example.com" -> allowed, "-bad.com" -> blocked.
+// Empty entries and a bare "-" yield null.
+fn classifyDomain(raw: []const u8) ?Domain {
+    const d = mem.trim(u8, raw, " \t\r\n");
+    if (d.len == 0) return null;
+    if (d[0] == '-') {
+        const rest = mem.trim(u8, d[1..], " \t\r\n");
+        if (rest.len == 0) return null;
+        return .{ .value = rest, .blocked = true };
+    }
+    return .{ .value = d, .blocked = false };
+}
+
 fn buildInstructions(arena: Allocator, num_results: u32, recency: ?[]const u8, domains: ?[]const []const u8) ![]const u8 {
     var ins = List.init(arena);
     try ins.appendSlice("Search the web and return a concise answer grounded only in the web results. Include clickable source citations in the response text when possible.");
@@ -389,17 +407,13 @@ fn buildInstructions(arena: Allocator, num_results: u32, recency: ?[]const u8, d
         var allowed = List.init(arena);
         var blocked = List.init(arena);
         for (ds) |raw| {
-            const d = mem.trim(u8, raw, " \t\r\n");
-            if (d.len == 0) continue;
-            if (d[0] == '-') {
-                const rest = mem.trim(u8, d[1..], " \t\r\n");
-                if (rest.len > 0) {
-                    if (blocked.items.len > 0) try blocked.appendSlice(", ");
-                    try blocked.appendSlice(rest);
-                }
+            const d = classifyDomain(raw) orelse continue;
+            if (d.blocked) {
+                if (blocked.items.len > 0) try blocked.appendSlice(", ");
+                try blocked.appendSlice(d.value);
             } else {
                 if (allowed.items.len > 0) try allowed.appendSlice(", ");
-                try allowed.appendSlice(d);
+                try allowed.appendSlice(d.value);
             }
         }
         if (allowed.items.len > 0) {
@@ -422,16 +436,12 @@ fn buildInstructions(arena: Allocator, num_results: u32, recency: ?[]const u8, d
 fn appendJsonStringArray(buf: *List, domains: []const []const u8, blocked: bool) !void {
     var first = true;
     for (domains) |raw| {
-        const d = mem.trim(u8, raw, " \t\r\n");
-        if (d.len == 0) continue;
-        const is_blocked = d[0] == '-';
-        if (blocked != is_blocked) continue;
-        const v = if (is_blocked) mem.trim(u8, d[1..], " \t\r\n") else d;
-        if (v.len == 0) continue;
+        const d = classifyDomain(raw) orelse continue;
+        if (blocked != d.blocked) continue;
         if (!first) try buf.appendSlice(",");
         first = false;
         try buf.append('"');
-        try common.appendJsonEscaped(buf, v);
+        try common.appendJsonEscaped(buf, d.value);
         try buf.append('"');
     }
 }
