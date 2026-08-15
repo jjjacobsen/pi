@@ -101,11 +101,8 @@ const WorktreeEntry = struct {
     branch: ?[]const u8 = null, // short name, e.g. "wt/angry-aardvark"
 };
 
-const WorktreeOp = struct {
-    ok: bool = false,
-    err: []const u8 = "",
-    text: []const u8 = "",
-};
+const WorktreeOp = common.Outcome;
+const respondOutcome = common.respondOutcome;
 
 // ---------------------------------------------------------------------------
 // Name generation
@@ -436,14 +433,6 @@ fn opFind(arena: Allocator, io: std.Io, cwd: []const u8, topic: []const u8) !Wor
 // ---------------------------------------------------------------------------
 // main-loop response dispatch (shared by every op: outcome.ok -> result
 // text, otherwise the error text)
-
-fn respondOutcome(arena: Allocator, io: std.Io, id: i64, outcome: WorktreeOp) void {
-    if (outcome.ok) {
-        respond(arena, io, id, true, outcome.text) catch {};
-    } else {
-        respond(arena, io, id, false, outcome.err) catch {};
-    }
-}
 
 // ---------------------------------------------------------------------------
 // merge

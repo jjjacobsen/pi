@@ -138,6 +138,32 @@ pub fn gitRoot(arena: Allocator, io: std.Io, cwd: []const u8) !?[]const u8 {
 // ---------------------------------------------------------------------------
 // Self-check helpers (shared by every backend's --self-check)
 
+// Result of a one-shot backend op. The wt/search/vision-style backends
+// return one of these from every op and dispatch on ok/text/err in the main
+// loop (respondOutcome).
+pub const Outcome = struct {
+    ok: bool = false,
+    err: []const u8 = "",
+    text: []const u8 = "",
+};
+
+pub fn okOutcome(text: []const u8) Outcome {
+    return .{ .ok = true, .text = text };
+}
+
+pub fn failOutcome(arena: Allocator, comptime fmt: []const u8, args: anytype) !Outcome {
+    return .{ .ok = false, .err = try std.fmt.allocPrint(arena, fmt, args) };
+}
+
+// Main-loop response dispatch for an Outcome: ok -> result text, else error.
+pub fn respondOutcome(arena: Allocator, io: std.Io, id: i64, outcome: Outcome) void {
+    if (outcome.ok) {
+        respond(arena, io, id, true, outcome.text) catch {};
+    } else {
+        respond(arena, io, id, false, outcome.err) catch {};
+    }
+}
+
 // Fails the self-check with a message; every backend's self-check aliases
 // this as fail/check/expect and calls it per assertion.
 pub fn expect(cond: bool, msg: []const u8) void {

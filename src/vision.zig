@@ -56,19 +56,10 @@ const Request = struct {
     timeout_ms: ?u32 = null,
 };
 
-const Outcome = struct {
-    ok: bool,
-    err: []const u8 = "",
-    text: []const u8 = "",
-};
-
-fn okOutcome(text: []const u8) Outcome {
-    return .{ .ok = true, .text = text };
-}
-
-fn failOutcome(arena: Allocator, comptime fmt: []const u8, args: anytype) !Outcome {
-    return .{ .ok = false, .err = try std.fmt.allocPrint(arena, fmt, args) };
-}
+const Outcome = common.Outcome;
+const okOutcome = common.okOutcome;
+const failOutcome = common.failOutcome;
+const respondOutcome = common.respondOutcome;
 
 // ---------------------------------------------------------------------------
 // Image detection (header bytes only, no decode)
@@ -800,7 +791,7 @@ pub fn main(init: std.process.Init) !void {
                 respond(arena, io, id, false, @errorName(err)) catch {};
                 continue;
             };
-            if (outcome.ok) respond(arena, io, id, true, outcome.text) catch {} else respond(arena, io, id, false, outcome.err) catch {};
+            respondOutcome(arena, io, id, outcome);
         } else {
             respond(arena, io, id, false, "unknown op") catch {};
         }
