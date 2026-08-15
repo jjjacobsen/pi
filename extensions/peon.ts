@@ -133,6 +133,7 @@ function registerPeonCommand(pi) {
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.on("session_shutdown", () => backend.kill());
   registerLifecycle(pi);
   registerPeonCommand(pi);
 }

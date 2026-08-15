@@ -79,6 +79,7 @@ const TOOLS = [
 const backend = createBackend("pi-browser", { onOk: (msg) => msg.result });
 
 export default function (pi: ExtensionAPI) {
+  pi.on("session_shutdown", () => backend.kill());
   for (const t of TOOLS) {
     pi.registerTool({
       name: t.name,

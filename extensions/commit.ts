@@ -158,6 +158,7 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.on("session_shutdown", () => backend.kill());
   pi.registerCommand("commit", {
     description: "Stage all changes and commit them with an AI-generated conventional message",
     handler: async (args, ctx) => {

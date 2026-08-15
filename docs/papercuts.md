@@ -99,3 +99,15 @@ extensions/ as a hk step.
   goal, peon, wt), not just wt. TUI mode is fine
 - Workaround: guard commands that need the backend with `ctx.mode !== "tui"`
   and refuse before touching the backend, which is what `/wt` does
+
+## 2026-08-16
+
+- Fixed the /reload staleness trap in `extensions/lib/backend.ts`: pi's
+  `/reload` re-imports extension TS but never touched Zig binaries, and old
+  backend processes were orphaned until pi exited (they only self-terminate
+  on stdin EOF, which pi's held pipe fds prevented). The glue now rebuilds
+  with `zig build` whenever any source is newer than the binary (failed
+  builds throw instead of running stale code), and every extension registers
+  `pi.on("session_shutdown", () => backend.kill())` to close stdin and
+  SIGTERM the old child. Verified: `zig build` is skipped when current, so
+  plain startup latency is unchanged.

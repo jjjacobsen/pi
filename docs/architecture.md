@@ -14,11 +14,17 @@ shared parts live in two files:
   must be comparable to the glue's wall time; the others use the monotonic
   clock.
 - `extensions/lib/backend.ts`: `createBackend(binaryName, hooks)` owns spawning
-  the binary (with the auto-build guard), the pending-call map, line
-  dispatch, and the unref dance that lets pi exit in print mode while the
-  backend self-terminates on stdin EOF. `hooks.onOk` picks the resolved
-  value (browser resolves the raw result string); `hooks.onError` returns
-  the error message (goal adds a fallback).
+  the binary, the pending-call map, line dispatch, and the unref dance that
+  lets pi exit in print mode while the backend self-terminates on stdin EOF.
+  It is also what makes `/reload` trustworthy: before spawning it rebuilds
+  with `zig build` whenever any source (build.zig, build.zig.zon,
+  src/**/*.zig) is newer than the binary, and a failed build throws instead
+  of running a stale binary. `createBackend` returns `{call, kill}`; every
+  extension registers `pi.on("session_shutdown", () => backend.kill())`, so
+  reloads, session switches, forks, and quits tear the old backend down
+  (stdin EOF, SIGTERM insurance) instead of orphaning it until pi exits.
+  `hooks.onOk` picks the resolved value (browser resolves the raw result
+  string); `hooks.onError` returns the error message (goal adds a fallback).
 
 Per-backend protocol details are documented in each extension's section
 below; the wire format is identical everywhere: one JSON request line on
@@ -143,9 +149,11 @@ exercises the whole stack and is the gate for `mise check`.
   process spawned by this backend. `lightpanda mcp` supports sessions
   (session_new/list/close) and script saving (`save`, PandaScript); the
   glue does not expose them yet.
-- **/reload**: pi reloading extensions may leave the old backend process
-  alive if pi keeps the pipe fds open. Harmless (idle), cleaned up when pi
-  exits and the pipe closes.
+- **/reload**: the glue rebuilds stale binaries and every extension kills
+  its backend on `session_shutdown`, so a reload after editing Zig or TS
+  code runs the new build with no orphaned processes. In-flight backend
+  calls during a reload fail fast ("backend killed"), which is intended:
+  reload is terminal for the old instance.
 - **Lightpanda is early-stage**: its own JS engine is not Chromium-complete;
   heavy sites may misrender. Lightpanda nightly is installed via
   `brew install lightpanda-io/browser/lightpanda`.
@@ -427,9 +435,9 @@ backend decides: continue (repeat until the floors are satisfied), stop
 - Goal loops need an interactive session: print mode (`pi -p`) runs the
   command handler but never processes the follow-up prompt, so `/goal` in
   print mode is a no-op.
-- Pi reloading extensions may leave the old backend process alive if pi keeps
-  the pipe fds open. Harmless (idle), cleaned up when pi exits and the pipe
-  closes.
+- Pi reloading extensions kills the old backend via `session_shutdown`
+  (shared `createBackend` kill), and the glue rebuilds stale binaries, so
+  `/reload` runs current code with no orphaned processes.
 
 # Repo audit skill (pi-repo-audit)
 

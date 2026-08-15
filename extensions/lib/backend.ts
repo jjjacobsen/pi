@@ -6,25 +6,73 @@
 // pending-call map, line dispatch, and the unref dance that lets pi exit in
 // print mode while the backend self-terminates on stdin EOF.
 //
+// /reload safety (two guarantees):
+// - Stale binaries are rebuilt: before spawning, if any source
+//   (build.zig, build.zig.zon, src/**/*.zig) is newer than the binary, run
+//   `zig build`. A failed build throws instead of silently running the old
+//   binary, so a reload after a Zig edit either runs the new code or tells
+//   you why not. A successful build stamps the binary, so mtime-only source
+//   changes (touch, git checkout) don't trigger repeat builds.
+// - Old processes are killed on session shutdown: call the returned kill()
+//   from a pi.on("session_shutdown") handler. kill() closes stdin (EOF is
+//   the backend's self-terminate signal) and SIGTERMs as insurance, rejects
+//   pending calls, and makes later calls fail fast. The kill closure holds
+//   only its own child, so a reloaded extension instance can never kill the
+//   new instance's backend.
+//
 // hooks.onOk(msg) picks the resolved value (browser resolves the raw result
 // string); hooks.onError(msg) returns the error message (goal adds a
 // fallback when the backend omits "error").
 
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync, utimesSync } from "node:fs";
 import path from "node:path";
+
+// Newest mtime across everything a backend build depends on. Project-wide
+// on purpose: all backends share common.zig and build.zig, and `zig build`
+// compiles every binary in one step.
+function newestSourceMtime(root) {
+  let newest = 0;
+  for (const rel of ["build.zig", "build.zig.zon"]) {
+    const p = path.join(root, rel);
+    if (existsSync(p)) {
+      const m = statSync(p).mtimeMs;
+      if (m > newest) newest = m;
+    }
+  }
+  for (const name of readdirSync(path.join(root, "src"), { recursive: true })) {
+    if (typeof name === "string" && name.endsWith(".zig")) {
+      const m = statSync(path.join(root, "src", name)).mtimeMs;
+      if (m > newest) newest = m;
+    }
+  }
+  return newest;
+}
+
+// Rebuild when the binary is missing or older than any source. A failed
+// build throws: silently running a stale binary after /reload is worse than
+// refusing to start.
+function ensureBuilt(root, bin) {
+  const stale = !existsSync(bin) || newestSourceMtime(root) > statSync(bin).mtimeMs;
+  if (!stale) return;
+  const r = spawnSync("zig", ["build"], { cwd: root, stdio: "inherit" });
+  if (r.status !== 0 || !existsSync(bin)) {
+    throw new Error(`zig build failed (status ${r.status}) in ${root}; fix the build and /reload again`);
+  }
+  // Zig's cache is content-addressed: a build is a no-op when file contents
+  // are unchanged (e.g. a touch or git checkout), so the binary keeps its old
+  // mtime and would look stale forever. Stamp it so the staleness check
+  // passes on the next load; content-wise it is current.
+  const now = new Date();
+  utimesSync(bin, now, now);
+}
 
 export function createBackend(binaryName, hooks = {}) {
   const root = path.resolve(import.meta.dirname, "../.."); // extensions/lib/backend.ts -> repo root
   const bin = path.join(root, "zig-out", "bin", binaryName);
 
-  if (!existsSync(bin)) {
-    const r = spawnSync("zig", ["build"], { cwd: root, stdio: "inherit" });
-    if (r.status !== 0 || !existsSync(bin)) {
-      throw new Error(`${binaryName} binary missing; run \`zig build\` in ${root}`);
-    }
-  }
+  ensureBuilt(root, bin);
 
   const child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
   // Unref so pi can exit in print mode (and on shutdown) without waiting on
@@ -34,6 +82,7 @@ export function createBackend(binaryName, hooks = {}) {
   child.stdout.unref();
   let nextId = 1;
   const pending = new Map();
+  let killed = false;
   const settle = (id, fn) => {
     const p = pending.get(id);
     if (p) {
@@ -62,10 +111,25 @@ export function createBackend(binaryName, hooks = {}) {
   return {
     call(op, params) {
       return new Promise((resolve, reject) => {
+        if (killed) return reject(new Error(`${binaryName} backend killed`));
         const id = nextId++;
         pending.set(id, { resolve, reject });
         child.stdin.write(JSON.stringify({ id, op, ...params }) + "\n");
       });
+    },
+    kill() {
+      if (killed) return;
+      killed = true;
+      for (const p of pending.values()) p.reject(new Error(`${binaryName} backend killed (session shutdown)`));
+      pending.clear();
+      // EOF on stdin is the backend's self-terminate signal; SIGTERM covers
+      // a backend stuck mid-op. Pipes stay unref'd: pi must not wait on them.
+      try {
+        child.stdin.end();
+      } catch {}
+      try {
+        child.kill("SIGTERM");
+      } catch {}
     },
   };
 }

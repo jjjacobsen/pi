@@ -70,6 +70,7 @@ async function switchToWorktree(ctx, worktreePath, branch, base) {
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.on("session_shutdown", () => backend.kill());
   pi.registerCommand("wt", {
     description: "Create a git worktree and switch to a fresh pi session in it (/wt list, /wt merge <topic>, /wt prune <topic>)",
     handler: async (args, ctx) => {

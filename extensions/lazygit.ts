@@ -27,6 +27,7 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.on("session_shutdown", () => backend.kill());
   pi.registerCommand("lg", {
     description: "Open lazygit full-screen over the pi TUI (esc to quit and return)",
     handler: async (args, ctx) => {
