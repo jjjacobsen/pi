@@ -608,10 +608,12 @@ Why this split:
 {"id":3,"ok":true,"result":"{\"merged\":true,\"up_to_date\":false,\"branch\":...,\"text\":...}"}
 {"id":4,"op":"prune","cwd":"/path","topic":"x"}                ->
 {"id":4,"ok":true,"result":"removed ... , deleted branch ..."} <-
+{"id":5,"op":"find","cwd":"/path","topic":"x"}               ->
+{"id":5,"ok":true,"result":"{\"path\":...,\"branch\":...,\"topic\":...}"} <-
 ```
 
-create and merge return a JSON object string in `result` that the glue
-parses. All other ops return plain text.
+create, find, and merge return a JSON object string in `result` that the
+glue parses. All other ops return plain text.
 
 ## Zig behavior
 
@@ -621,14 +623,23 @@ parses. All other ops return plain text.
   topics error on collision; generated names re-roll up to 25 times. It then
   writes `.wt/` into `.git/info/exclude` (a local, never-committed file, so
   worktrees never show as untracked noise) and runs
-  `git worktree add -b wt/<topic> <root>/.wt/<topic> HEAD`. The response
-  carries the absolute worktree path, branch, topic, and the base branch
-  label. The name generator is seeded from the monotonic clock mixed with a
-  stack address; collision re-rolls guard against repeats.
+  `git worktree add -b wt/<topic> <root>/.wt/<topic> <head>`. Worktrees
+  always land under the main checkout, and the new branch starts from the
+  caller's checkout head (a plain `HEAD` would branch from the main
+  checkout), so `/wt <topic>` also works from inside a worktree. The
+  response carries the absolute worktree path, branch, topic, and the base
+  branch label. The name generator is seeded from the monotonic clock mixed
+  with a stack address; collision re-rolls guard against repeats.
 - `list` parses `git worktree list --porcelain` and reports branch (or
-  `(detached)`), path relative to the repo root, and clean/dirty via a
+  `(detached)`), path relative to the main checkout, and clean/dirty via a
   `status --porcelain` probe per worktree. The worktree containing the
-  caller's cwd gets a `*` marker.
+  caller's cwd gets a `*` marker. The display base is the main checkout
+  (parent of the shared `--git-common-dir`), not `git rev-parse
+  --show-toplevel`: from inside a linked worktree that command returns the
+  worktree itself, which would render every other entry as a full absolute
+  path. Column padding uses saturating subtraction, so very long topics or
+  out-of-root worktrees cannot overflow (Zig debug builds panic on integer
+  overflow).
 - `merge` finds the worktree for a topic (branch `wt/<topic>`, branch
   `<topic>`, or path ending in `/.<topic>`), refuses to merge a worktree into
   itself, and runs `git merge --no-edit` in the caller's checkout. One rule:
@@ -645,26 +656,43 @@ parses. All other ops return plain text.
   A dirty worktree is reported with the offending files (git's own error
   suggests `--force`, which would delete the user's work); a leftover
   branch is reported, never force-deleted.
+- `find` resolves a topic to an existing worktree (same matching as
+  `merge`: branch `wt/<topic>`, branch `<topic>`, or path ending in
+  `/.<topic>`), returning its path, branch, and topic. Unknown topics error
+  with `no worktree for '<topic>'; /wt list to see what exists`, which the
+  glue uses as the signal to create instead. It is what makes `/wt <topic>`
+  re-enter an existing worktree.
 - **Self-check**: `zig build run -- --self-check` builds a scratch repo and
-  exercises create (explicit and auto-named), the exclude write, listing,
-  a fast-forward merge, prune, duplicate-topic rejection, self-merge
-  rejection, a real conflict, pruning an unmerged branch, an up-to-date
-  merge with a dirty worktree (merge and prune both report the uncommitted
-  files), and the non-repo error. It is the gate for `mise check`.
+  exercises create (explicit and auto-named), the exclude write, listing
+  (from the main checkout and from inside a worktree), find (existing
+  worktree and unknown topic), create from inside a worktree (placement
+  under the main checkout, base branch and head), a fast-forward merge,
+  prune, duplicate-topic rejection, self-merge rejection, a real conflict,
+  pruning an unmerged branch, an up-to-date merge with a dirty worktree
+  (merge and prune both report the uncommitted files), a long topic that
+  exceeds the list column padding, and the non-repo error. It is the gate
+  for `mise check`.
 
 ## Flow
 
-`/wt` -> create worktree (Zig) -> write the fresh session file's header with
-cwd = worktree directory (`SessionManager.create` + explicit header write) ->
+`/wt` -> create worktree (Zig) -> session file for the worktree ->
 `ctx.switchSession` (cwdOverride also passed, harmless) -> notify on the new
-session. `/wt merge <topic>` -> merge (Zig) -> on success auto-prune (Zig)
-unless `--keep` -> notify. `/wt list` and `/wt prune` are one-shot ops.
+session. `/wt <topic>` -> find the worktree (Zig): if it exists, switch into
+it; if not, create it first. The session file is the most recent session
+whose header cwd is the worktree path (resumes its history), or a fresh
+session file with an explicit header write (`SessionManager.create` for the
+path and session dir) when there is none. `/wt merge <topic>` -> merge
+(Zig) -> on success auto-prune (Zig) unless `--keep` -> notify. `/wt list`
+and `/wt prune` are one-shot ops.
 
 ## Notes
 
 - Sessions are stored per-directory, so the main checkout session and the
-  worktree session are fully isolated files. The worktree session starts
+  worktree session are fully isolated files. A new worktree session starts
   fresh with no carried-over context, matching the command's purpose.
+  Re-entering an existing worktree with `/wt <topic>` resumes its most
+  recent session (history intact) when one exists, and starts fresh
+  otherwise (for example a worktree created outside pi).
 - Opening a second pi in the main repo while another pi is active there
   continues the same session file; `/wt` switches away immediately, which
   self-corrects. Type it before doing anything else in that terminal.

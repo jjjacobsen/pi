@@ -7,7 +7,9 @@
 // Commands:
 //   /wt               create a worktree (auto name, e.g. wt/angry-aardvark)
 //                     and switch this pi session into a fresh session there
-//   /wt <topic>       same, with branch wt/<topic>
+//   /wt <topic>       create branch wt/<topic>, or switch back into the
+//                     worktree if it already exists (resumes its most
+//                     recent session when there is one)
 //   /wt list          show all worktrees (branch, path, clean/dirty)
 //   /wt merge <topic> [--keep]  merge wt/<topic> into the current branch,
 //                     then prune the worktree unless --keep
@@ -20,6 +22,8 @@
 //   -> {"id":3,"op":"merge","cwd":"/path","topic":"x"}
 //   <- {"id":3,"ok":true,"result":"{\"merged\":...,\"up_to_date\":...,\"branch\":...,\"text\":...}"}
 //   -> {"id":4,"op":"prune","cwd":"/path","topic":"x"} <- {"id":4,"ok":true,"result":"<text>"}
+//   -> {"id":5,"op":"find","cwd":"/path","topic":"x"}
+//   <- {"id":5,"ok":true,"result":"{\"path\":...,\"branch\":...,\"topic\":...}"}   (or "no worktree for...")
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -37,13 +41,22 @@ function notify(ctx, text, level = "info") {
   }
 }
 
-// Fresh session file rooted at the worktree, then replace the current
-// session with it. Interactive mode drops cwdOverride from
-// ctx.switchSession (pi's handleResumeSession only forwards withSession), so
-// the session file must carry the worktree path in its header before the
-// switch: without it the new session falls back to the process cwd and keeps
-// operating on the main checkout.
-async function switchToWorktree(ctx, worktreePath, branch, base) {
+// Session file to switch to for a worktree: the most recent session whose
+// header cwd is the worktree path (resumes its history), or a fresh session
+// file rooted there. Then replace the current session with it.
+//
+// Fresh files must carry the worktree path in the header: interactive mode
+// drops cwdOverride from ctx.switchSession (pi's handleResumeSession only
+// forwards withSession), so without it the new session falls back to the
+// process cwd and keeps operating on the main checkout.
+async function sessionFileForWorktree(worktreePath) {
+  try {
+    const sessions = await SessionManager.list(worktreePath); // sorted newest first
+    const recent = sessions.find((s) => s.cwd === worktreePath);
+    if (recent) return { sessionFile: recent.path, resumed: true };
+  } catch {
+    // unreadable session dir: fall through to a fresh session
+  }
   // Creates the worktree's session directory and returns the session file
   // path pi would use for that cwd (SessionManager.create mkdirs the dir and
   // generates the timestamped filename; the file itself is written lazily).
@@ -58,21 +71,27 @@ async function switchToWorktree(ctx, worktreePath, branch, base) {
       cwd: worktreePath,
     }) + "\n",
   );
+  return { sessionFile, resumed: false };
+}
+
+async function switchToWorktree(ctx, worktreePath, branch, base) {
+  const { sessionFile, resumed } = await sessionFileForWorktree(worktreePath);
   const result = await ctx.switchSession(sessionFile, {
     cwdOverride: worktreePath,
     withSession: async (nctx) => {
-      notify(nctx, `now in worktree ${branch} (from ${base}), fresh session`, "info");
+      const where = resumed ? "resumed session" : `fresh session${base ? ` (from ${base})` : ""}`;
+      notify(nctx, `now in worktree ${branch}, ${where}`, "info");
     },
   });
   if (result.cancelled) {
-    notify(ctx, `worktree ${branch} created at ${worktreePath} but the session switch was cancelled`, "warning");
+    notify(ctx, `worktree ${branch} at ${worktreePath}: the session switch was cancelled`, "warning");
   }
 }
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
   pi.registerCommand("wt", {
-    description: "Create a git worktree and switch to a fresh pi session in it (/wt list, /wt merge <topic>, /wt prune <topic>)",
+    description: "Create a git worktree and switch to a pi session in it (re-enters an existing worktree; /wt list, /wt merge <topic>, /wt prune <topic>)",
     getArgumentCompletions: (prefix) => {
       const words = ["list", "merge", "prune"];
       const trimmed = (prefix ?? "").trimStart();
@@ -137,8 +156,27 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // Bare /wt or /wt <topic>: create the worktree, then switch sessions.
+      // Bare /wt or /wt <topic>: switch into the worktree if it already
+      // exists, otherwise create it, then switch sessions.
       const topic = cmd && !cmd.startsWith("-") ? cmd : undefined;
+      if (topic) {
+        try {
+          const found = JSON.parse((await backend.call("find", { cwd: ctx.cwd, topic })).result);
+          try {
+            await switchToWorktree(ctx, found.path, found.branch);
+          } catch (err) {
+            notify(ctx, `session switch into worktree ${found.branch} at ${found.path} failed: ${err?.message ?? String(err)}`, "error");
+          }
+          return;
+        } catch (err) {
+          const msg = err?.message ?? String(err);
+          if (!msg.startsWith("no worktree for")) {
+            notify(ctx, msg, "error");
+            return;
+          }
+          // no worktree yet: fall through and create one
+        }
+      }
       let created;
       try {
         created = JSON.parse((await backend.call("create", { cwd: ctx.cwd, topic })).result);

@@ -8,12 +8,14 @@
 //                {"id":2,"op":"list","cwd":"/path"}
 //                {"id":3,"op":"merge","cwd":"/path","topic":"x"}  (keep optional)
 //                {"id":4,"op":"prune","cwd":"/path","topic":"x"}
+//                {"id":5,"op":"find","cwd":"/path","topic":"x"}
 // Response line: {"id":1,"ok":true,"result":"..."}
 //                {"id":1,"ok":false,"error":"..."}
 //
-// create and merge return a JSON object string in result (parsed by the
-// glue): create -> {"path":"...","branch":"wt/...","topic":"...","base":"..."}
-// and merge -> {"merged":true,"up_to_date":false,"branch":"wt/...","text":"..."}
+// create, find, and merge return a JSON object string in result (parsed by
+// the glue): create -> {"path":"...","branch":"wt/...","topic":"...","base":"..."},
+// find -> {"path":"...","branch":"wt/...","topic":"..."}, and
+// merge -> {"merged":true,"up_to_date":false,"branch":"wt/...","text":"..."}
 //
 // create adds a worktree at <root>/.wt/<topic> on a new branch wt/<topic>
 // from the current branch head (never carries uncommitted changes), and
@@ -87,6 +89,12 @@ const MergeResult = struct {
     up_to_date: bool = false,
     branch: []const u8,
     text: []const u8,
+};
+
+const FindResult = struct {
+    path: []const u8,
+    branch: []const u8,
+    topic: []const u8,
 };
 
 const WorktreeEntry = struct {
@@ -281,14 +289,41 @@ fn ensureExcluded(arena: Allocator, io: std.Io, root: []const u8) !void {
 }
 
 // ---------------------------------------------------------------------------
+// main checkout resolution
+
+// The main checkout path: parent of the repo's shared .git dir. gitRoot
+// (rev-parse --show-toplevel) returns the CURRENT worktree's root when
+// called from inside a linked worktree, which would make list render every
+// other worktree as a full absolute path and create nest new worktrees
+// under the worktree instead of under the repo. The common dir is shared
+// across all worktrees, so its parent is always the main checkout for a
+// normal repo. Falls back to the passed root when the layout is unusual
+// (e.g. --separate-git-dir).
+fn mainCheckout(arena: Allocator, io: std.Io, root: []const u8) ![]const u8 {
+    const res = try runGit(arena, io, &.{ "git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir" }, 4096);
+    if (res.ok) {
+        const common_dir = mem.trim(u8, res.stdout, " \t\r\n");
+        if (mem.endsWith(u8, common_dir, "/.git")) return common_dir[0 .. common_dir.len - ".git".len - 1];
+    }
+    return root;
+}
+
+// ---------------------------------------------------------------------------
 // create
 
 fn opCreate(arena: Allocator, io: std.Io, cwd: []const u8, topic_arg: ?[]const u8) !WorktreeOp {
-    const root = (try gitRoot(arena, io, cwd)) orelse
+    const checkout = (try gitRoot(arena, io, cwd)) orelse
         return .{ .err = "not a git repository" };
+    // Worktrees always live under the main checkout, even when the command
+    // runs from inside another worktree (git allows nesting, but then
+    // pruning the parent refuses).
+    const root = try mainCheckout(arena, io, checkout);
 
-    const head = try runGit(arena, io, &.{ "git", "-C", root, "rev-parse", "--verify", "HEAD" }, 4096);
+    // The new branch starts from the caller's checkout head (never carries
+    // uncommitted changes), not from the main checkout's head.
+    const head = try runGit(arena, io, &.{ "git", "-C", cwd, "rev-parse", "--verify", "HEAD" }, 4096);
     if (!head.ok) return .{ .err = "repository has no commits yet; commit something first" };
+    const head_hash = mem.trim(u8, head.stdout, " \t\r\n");
 
     const explicit = topic_arg != null and mem.trim(u8, topic_arg.?, " \t\r\n").len > 0;
     var rng = newRng();
@@ -312,24 +347,24 @@ fn opCreate(arena: Allocator, io: std.Io, cwd: []const u8, topic_arg: ?[]const u
             branch = try std.fmt.allocPrint(arena, "wt/{s}", .{fresh});
             path = try std.fmt.allocPrint(arena, "{s}/.wt/{s}", .{ root, fresh });
             if (!(try branchExists(arena, io, root, branch)) and !dirExists(io, path)) {
-                return finishCreate(arena, io, root, fresh, path, branch);
+                return finishCreate(arena, io, root, cwd, fresh, path, branch, head_hash);
             }
         }
         return .{ .err = "could not find a free worktree name" };
     }
-    return finishCreate(arena, io, root, topic, path, branch);
+    return finishCreate(arena, io, root, cwd, topic, path, branch, head_hash);
 }
 
-fn finishCreate(arena: Allocator, io: std.Io, root: []const u8, topic: []const u8, path: []const u8, branch: []const u8) !WorktreeOp {
+fn finishCreate(arena: Allocator, io: std.Io, root: []const u8, cwd: []const u8, topic: []const u8, path: []const u8, branch: []const u8, head: []const u8) !WorktreeOp {
     try ensureExcluded(arena, io, root);
 
-    const add = try runGit(arena, io, &.{ "git", "-C", root, "worktree", "add", "-b", branch, path, "HEAD" }, 4096);
+    const add = try runGit(arena, io, &.{ "git", "-C", root, "worktree", "add", "-b", branch, path, head }, 4096);
     if (!add.ok) {
         const err = mem.trim(u8, add.stderr, " \t\r\n");
         return .{ .err = if (err.len > 0) err else "git worktree add failed" };
     }
 
-    const base = try currentBranchLabel(arena, io, root);
+    const base = try currentBranchLabel(arena, io, cwd);
     const result = try std.json.Stringify.valueAlloc(arena, CreateResult{
         .path = path,
         .branch = branch,
@@ -343,8 +378,11 @@ fn finishCreate(arena: Allocator, io: std.Io, root: []const u8, topic: []const u
 // list
 
 fn opList(arena: Allocator, io: std.Io, cwd: []const u8) !WorktreeOp {
-    const root = (try gitRoot(arena, io, cwd)) orelse
+    const checkout = (try gitRoot(arena, io, cwd)) orelse
         return .{ .err = "not a git repository" };
+    // Display base is the main checkout, so paths stay relative (and short)
+    // even when the caller is inside a linked worktree.
+    const root = try mainCheckout(arena, io, checkout);
     const entries = try listWorktrees(arena, io, root);
 
     // The worktree containing the caller's cwd gets the '*' marker.
@@ -371,14 +409,31 @@ fn opList(arena: Allocator, io: std.Io, cwd: []const u8) !WorktreeOp {
         try out.appendSlice(marker);
         try out.appendSlice(" ");
         try out.appendSlice(branch);
-        try out.appendNTimes(' ', @max(1, 24 - branch.len));
+        try out.appendNTimes(' ', @max(1, 24 -| branch.len));
         try out.appendSlice(rel);
-        try out.appendNTimes(' ', @max(1, 30 - rel.len));
+        try out.appendNTimes(' ', @max(1, 30 -| rel.len));
         try out.appendSlice(state);
         try out.append('\n');
     }
     if (out.items.len > 0) out.items.len -= 1; // drop trailing newline
     return .{ .ok = true, .text = out.items };
+}
+
+// ---------------------------------------------------------------------------
+// find
+
+fn opFind(arena: Allocator, io: std.Io, cwd: []const u8, topic: []const u8) !WorktreeOp {
+    const root = (try gitRoot(arena, io, cwd)) orelse
+        return .{ .err = "not a git repository" };
+    const entries = try listWorktrees(arena, io, root);
+    const target = findWorktree(entries, topic) orelse
+        return .{ .err = try std.fmt.allocPrint(arena, "no worktree for '{s}'; /wt list to see what exists", .{topic}) };
+    const result = try std.json.Stringify.valueAlloc(arena, FindResult{
+        .path = target.path,
+        .branch = target.branch orelse "(detached)",
+        .topic = topic,
+    }, .{});
+    return .{ .ok = true, .text = result };
 }
 
 // ---------------------------------------------------------------------------
@@ -541,6 +596,34 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     const listed = try opList(arena, io, dir);
     fail(listed.ok and mem.indexOf(u8, listed.text, "wt/selfcheck") != null, "list shows the worktree");
 
+    // find resolves an existing worktree, rejects unknown topics
+    const found = try opFind(arena, io, dir, "selfcheck");
+    fail(found.ok, "find resolves an existing worktree");
+    const f = try json.parseFromSlice(FindResult, arena, found.text, .{});
+    fail(mem.eql(u8, f.value.branch, "wt/selfcheck"), "find reports the worktree branch");
+    fail(mem.eql(u8, f.value.path, c.value.path), "find reports the worktree path");
+    const missing = try opFind(arena, io, dir, "nope");
+    fail(!missing.ok and mem.indexOf(u8, missing.err, "no worktree for") != null, "find rejects unknown topics");
+
+    // list from inside a worktree: the main checkout is the display base, so
+    // everything stays relative (no underflow on the column padding) and the
+    // caller's worktree gets the marker
+    const from_inside = try opList(arena, io, c.value.path);
+    fail(from_inside.ok, "list from inside a worktree succeeds");
+    fail(mem.indexOf(u8, from_inside.text, "* wt/selfcheck") != null, "list from inside a worktree marks it current");
+    fail(mem.indexOf(u8, from_inside.text, ".wt/selfcheck") != null, "list from inside a worktree keeps rels short");
+
+    // create from inside a worktree lands under the main checkout and
+    // branches from the caller's worktree head
+    const from_wt = try opCreate(arena, io, c.value.path, "fromworktree");
+    fail(from_wt.ok, "create from inside a worktree succeeds");
+    const fw = try json.parseFromSlice(CreateResult, arena, from_wt.text, .{});
+    fail(mem.eql(u8, fw.value.path, try std.fmt.allocPrint(arena, "{s}/.wt/fromworktree", .{root})), "create from a worktree lands under the main checkout");
+    fail(mem.eql(u8, fw.value.base, "wt/selfcheck"), "create from a worktree reports the caller's branch as base");
+    const fw_head = try runGit(arena, io, &.{ "git", "-C", c.value.path, "rev-parse", "HEAD" }, 4096);
+    const fw_branch = try runGit(arena, io, &.{ "git", "-C", dir, "rev-parse", "refs/heads/wt/fromworktree" }, 4096);
+    fail(fw_head.ok and fw_branch.ok and mem.eql(u8, mem.trim(u8, fw_head.stdout, " \t\r\n"), mem.trim(u8, fw_branch.stdout, " \t\r\n")), "create from a worktree branches from its head");
+
     // merge back fast-forwards
     const merged = try opMerge(arena, io, dir, "selfcheck");
     fail(merged.ok, "merge succeeds");
@@ -601,6 +684,13 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     // prune of an unmerged branch removes the worktree but leaves the branch
     const conflict_prune = try opPrune(arena, io, dir, "conflict");
     fail(conflict_prune.ok and mem.indexOf(u8, conflict_prune.text, "left behind") != null, "unmerged branch left behind");
+
+    // long topics exceed the column padding; the saturating clamp must not
+    // overflow (debug builds panic on integer overflow)
+    const long_wt = try opCreate(arena, io, dir, "a-very-long-topic-name-that-exceeds-thirty-characters");
+    fail(long_wt.ok, "long-topic worktree created");
+    const long_list = try opList(arena, io, dir);
+    fail(long_list.ok, "list with long topics does not panic");
 
     // not a repo
     const not_repo = try opCreate(arena, io, "/tmp", null);
@@ -675,6 +765,17 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             }
             const outcome = opPrune(arena, io, cwd, topic) catch |err| {
+                respond(arena, io, id, false, @errorName(err)) catch {};
+                continue;
+            };
+            if (outcome.ok) respond(arena, io, id, true, outcome.text) catch {} else respond(arena, io, id, false, outcome.err) catch {};
+        } else if (mem.eql(u8, r.op, "find")) {
+            const topic = mem.trim(u8, r.topic orelse "", " \t\r\n");
+            if (topic.len == 0) {
+                respond(arena, io, id, false, "missing topic") catch {};
+                continue;
+            }
+            const outcome = opFind(arena, io, cwd, topic) catch |err| {
                 respond(arena, io, id, false, @errorName(err)) catch {};
                 continue;
             };

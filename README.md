@@ -100,12 +100,16 @@ from the current branch head (never carrying uncommitted changes) and
 switches the current pi session into a fresh session there, so you can run
 parallel agents on one repo, each isolated. Bare `/wt` names the worktree
 `wt/<adjective>-<noun>` (e.g. `wt/angry-aardvark`), `/wt <topic>` names it
-`wt/<topic>`. Worktrees live in `<repo>/.wt/`, excluded from git status via
-`.git/info/exclude`. `/wt list` shows all worktrees, `/wt merge <topic>`
-brings the worktree branch into your current branch (fast-forward when
-possible, conflicts left for normal resolution) and auto-prunes unless
-`--keep`, `/wt prune <topic>` removes a worktree and its branch. See
-[docs/architecture.md](docs/architecture.md).
+`wt/<topic>` (and re-enters an existing worktree with that topic, resuming
+its most recent session). All commands work from inside a worktree too:
+`/wt list` shows every worktree relative to the repo root, and new
+worktrees are always created under the main checkout. Worktrees live in
+`<repo>/.wt/`, excluded from git status via `.git/info/exclude`.
+`/wt list` shows all worktrees,
+`/wt merge <topic>` brings the worktree branch into your current branch
+(fast-forward when possible, conflicts left for normal resolution) and
+auto-prunes unless `--keep`, `/wt prune <topic>` removes a worktree and its
+branch. See [docs/architecture.md](docs/architecture.md).
 
 ### btw - quick side questions via /btw
 
