@@ -14,6 +14,9 @@ house, piece by piece
   `killOnHostTeardown`), so `/reload` picks up Zig and TS changes with no
   orphaned processes, while
   `/new` keeps the backends alive for the new session
+- `extensions/lib/toolkit.ts` - shared tool glue for the HTTP-delegating
+  extensions (search, vision): `withAbort` (Esc kills and respawns the
+  backend) and `toolError` (shape a failure as a tool result)
 - `prompts/` - prompt templates (slash commands); served to pi via the package manifest
 - `src/` - Zig backends. One binary per extension, built by `build.zig`;
   `src/common.zig` holds the IO/JSON/process helpers they all share

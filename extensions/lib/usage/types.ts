@@ -70,10 +70,6 @@ export const TAB_ORDER: TabName[] = ["today", "thisWeek", "lastWeek", "last30Day
 
 export const HOURLY_KEY_SEP = "\u0000";
 
-export function makeHourlyKey(provider: string, model: string, thinkingLevel: string): string {
-	return provider + HOURLY_KEY_SEP + model + HOURLY_KEY_SEP + thinkingLevel;
-}
-
 export function splitHourlyKey(key: string): { provider: string; model: string; thinkingLevel: string } {
 	const [provider = "", model = "", thinkingLevel = ""] = key.split(HOURLY_KEY_SEP);
 	return { provider, model, thinkingLevel };

@@ -36,7 +36,6 @@ const List = common.List;
 const readLine = common.readLine;
 const writeAllIo = common.writeAllIo;
 const respond = common.respond;
-const GitResult = common.GitResult;
 const runCmd = common.runCmd;
 const gitRoot = common.gitRoot;
 
