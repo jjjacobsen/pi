@@ -208,7 +208,7 @@ class SideChatWindow {
     const hints = [];
     hints.push("enter send");
     if (this.state.turns.length > 0 && !this.state.answering) hints.push("c copy");
-    if (this.state.turns.length > 0 && !this.state.answering) hints.push("b branch to chat");
+    if (this.state.turns.length > 0 && !this.state.answering) hints.push("b bring to main chat");
     hints.push("esc dismiss");
     lines.push(theme.fg("dim", hints.join(" · ")));
 
@@ -235,7 +235,7 @@ let windowRows = 24;
 
 function registerBtwCommand(pi) {
   pi.registerCommand("btw", {
-    description: "Ask a quick side question in a side chat: /btw [question]. c copy · b branch to chat · esc dismiss",
+    description: "Ask a quick side question in a side chat: /btw [question]. c copy · b bring to main chat · esc dismiss",
     handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
         notify(ctx, "only available in the pi TUI", "warning");

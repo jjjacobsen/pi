@@ -846,7 +846,7 @@ thread has content, so draft text is never hijacked.
   abort on Esc and on stream errors, so history only ever builds on answered
   turns).
 - `format` renders the answered thread as plain conversation text (question
-  and answer without Q/A labels) for copy and branch-to-chat. `copy` pipes that text into `pbcopy` (macOS);
+  and answer without Q/A labels) for copy and bringing into the main chat. `copy` pipes that text into `pbcopy` (macOS);
   a missing pbcopy is reported, never fatal. The `bin` request field
   overrides the binary for the self-check's fake pbcopy.
 - Thread state lives in a dedicated arena reset on `open`; request parsing
@@ -862,7 +862,7 @@ thread has content, so draft text is never hijacked.
 the open response messages through `streamSimple` (low thinking, max_tokens
 cap, AbortController) -> text deltas render live -> done: `answer` op ->
 follow-ups: `ask` op, queue while streaming, one at a time -> `c` copy /
-`b` branch / `esc` dismiss.
+`b` bring to main chat / `esc` dismiss.
 
 ## Notes
 
