@@ -56,6 +56,21 @@ type after it. Because this repo is loaded into pi as a package, the template
 is available in every project, no per-machine copy needed. See
 [pi prompt template docs](https://pi.dev) for the format.
 
+## Skills
+
+### repo-audit - whole-repo improvement audit
+
+`skills/repo-audit/SKILL.md`, served to pi as a package skill. A repo-wide
+scan for areas to improve: over-engineering, dead code, duplication,
+dependency bloat, error handling gaps, performance and security red flags,
+untested critical paths, and structural issues. Outputs one line per
+finding, ranked biggest impact first, with the replacement named, and ends
+with the net lines and deps removable. One-shot report, applies nothing.
+Adapted from the ponytail-audit skill of
+[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail): same
+format and the cut/stdlib/native/yagni/shrink tags, extended with general
+code audit categories.
+
 ## Adding a new extension
 
 1. Write the backend in `src/foo.zig`, add it to the `bins` list in `build.zig`

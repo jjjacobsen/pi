@@ -403,3 +403,27 @@ backend decides: continue (repeat until the floors are satisfied), stop
 - Pi reloading extensions may leave the old backend process alive if pi keeps
   the pipe fds open. Harmless (idle), cleaned up when pi exits and the pipe
   closes.
+
+# Repo audit skill (pi-repo-audit)
+
+## Goal
+
+In-house replacement for the ponytail-audit skill of the third-party
+ponytail extension (disabled in settings): a whole-repo improvement audit
+that outputs ranked, concrete findings without applying anything.
+
+## Design
+
+- Lives in `skills/repo-audit/SKILL.md`, served to pi as a package skill via
+  the `skills` entry in `package.json`. No extension glue or backend, the
+  skill is pure instructions for the model.
+- Kept from ponytail-audit: repo-wide scan, ranked one-line findings,
+  `<tag> <what>. <replacement>. [path]` format, the `net: -<N> lines,
+  -<M> deps possible` closer, and the cut/stdlib/native/yagni/shrink tags.
+- Extended with general code audit dimensions: dup (DRY), dep (dependency
+  hygiene), err (error handling), perf, sec, test, arch, doc.
+- Two discipline rules beyond ponytail: every finding must be verified by
+  reading the actual code and its usage (false positives are noise), and
+  the report caps at 15 findings so it forces prioritization.
+- Deliberate repo conventions (AGENTS.md) are never findings. Correctness
+  and security are out of scope except as red flags spotted in passing.
