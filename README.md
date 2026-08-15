@@ -6,9 +6,11 @@ house, piece by piece
 
 ## Layout
 
-- `extensions/` - TypeScript extension entry points (pi requires TS modules)
+- `extensions/` - TypeScript extension entry points (pi requires TS modules);
+  `extensions/backend.ts` is the shared stdio bridge all of them use
 - `prompts/` - prompt templates (slash commands); served to pi via the package manifest
-- `src/` - Zig backends. One binary per extension, built by `build.zig`
+- `src/` - Zig backends. One binary per extension, built by `build.zig`;
+  `src/common.zig` holds the IO/JSON/process helpers they all share
 - `docs/` - design notes; [installed-packages.md](docs/installed-packages.md) lists all pi packages installed via `settings.json`
 - `package.json` - pi package manifest; load this repo into pi with `pi install /path/to/this/repo`
 
@@ -73,6 +75,8 @@ code audit categories.
 
 ## Adding a new extension
 
-1. Write the backend in `src/foo.zig`, add it to the `bins` list in `build.zig`
-2. Write `extensions/foo.ts` glue that spawns the binary and registers tools
+1. Write the backend in `src/foo.zig`, add it to the `bins` list in `build.zig`;
+   reuse the helpers in `src/common.zig` (line reader, responder, `runCmd`)
+2. Write `extensions/foo.ts` glue that registers tools and bridges via
+   `createBackend("pi-foo")` from `extensions/backend.ts`
 3. Document it in `docs/architecture.md` and this README

@@ -13,10 +13,8 @@
 //   -> {"id":3,"op":"commit","message":"..."}        <- {"id":3,"ok":true,"result":"<hash> <header>"}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawn, spawnSync } from "node:child_process";
-import { createInterface } from "node:readline";
-import { existsSync } from "node:fs";
-import path from "node:path";
+import { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createBackend } from "./backend";
 
 const THINKING_LEVEL = "low";
 const MAX_SESSION_TAIL = 4000;
@@ -36,66 +34,12 @@ Rules:
 - Match the repository's recent commit style when it is consistent.
 - Output only the commit message, nothing else.`;
 
-const root = path.resolve(import.meta.dirname, "..");
-const bin = path.join(root, "zig-out", "bin", "pi-commit");
-
-if (!existsSync(bin)) {
-  const r = spawnSync("zig", ["build"], { cwd: root, stdio: "inherit" });
-  if (r.status !== 0 || !existsSync(bin)) {
-    throw new Error(`pi-commit binary missing; run \`zig build\` in ${root}`);
-  }
-}
-
-const child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
-// Unref so pi can exit in print mode (and on shutdown) without waiting on the
-// backend's pipes; the backend self-terminates when stdin closes.
-child.unref();
-child.stdin.unref();
-child.stdout.unref();
-let nextId = 1;
-const pending = new Map();
-const settle = (id, fn) => {
-  const p = pending.get(id);
-  if (p) {
-    pending.delete(id);
-    fn(p);
-  }
-};
-
-const rl = createInterface({ input: child.stdout });
-rl.on("line", (line) => {
-  try {
-    const msg = JSON.parse(line);
-    if (msg.ok) settle(msg.id, (p) => p.resolve(msg));
-    else settle(msg.id, (p) => p.reject(new Error(msg.error)));
-  } catch {}
-});
-child.on("exit", (code) => {
-  for (const p of pending.values()) p.reject(new Error(`pi-commit backend exited (code ${code})`));
-  pending.clear();
-});
-child.on("error", (err) => {
-  for (const p of pending.values()) p.reject(err);
-  pending.clear();
-});
-
-function call(op, params) {
-  return new Promise((resolve, reject) => {
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    child.stdin.write(JSON.stringify({ id, op, ...params }) + "\n");
-  });
-}
-
+const backend = createBackend("pi-commit");
 // ----- message generation via the pi SDK (same pattern pi-committer uses) -----
 
 let cachedRuntime;
-async function loadSdk() {
-  return import("@earendil-works/pi-coding-agent");
-}
-
-function resourceLoader(sdk) {
-  if (!cachedRuntime) cachedRuntime = sdk.createExtensionRuntime();
+function resourceLoader() {
+  if (!cachedRuntime) cachedRuntime = createExtensionRuntime();
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: cachedRuntime }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
@@ -127,16 +71,15 @@ function serializableModel(model) {
 }
 
 async function askModel(model, prompt, cwd) {
-  const sdk = await loadSdk();
   let session;
   try {
-    ({ session } = await sdk.createAgentSession({
+    ({ session } = await createAgentSession({
       cwd,
       model,
       thinkingLevel: THINKING_LEVEL,
-      resourceLoader: resourceLoader(sdk),
-      sessionManager: sdk.SessionManager.inMemory(cwd),
-      settingsManager: sdk.SettingsManager.inMemory({ compaction: { enabled: false } }),
+      resourceLoader: resourceLoader(),
+      sessionManager: SessionManager.inMemory(cwd),
+      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
       tools: [],
     }));
   } catch (error) {
@@ -170,7 +113,7 @@ function stripFences(text) {
 
 async function validate(message) {
   try {
-    await call("validate", { message });
+    await backend.call("validate", { message });
     return null; // valid
   } catch (err) {
     return err.message; // "- problem" lines
@@ -220,7 +163,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const cwd = ctx.cwd;
       try {
-        const analyze = await call("analyze", { cwd });
+        const analyze = await backend.call("analyze", { cwd });
         if (analyze.empty) return notify(ctx, "nothing to commit", "info");
 
         const model = serializableModel(ctx.model);
@@ -241,7 +184,7 @@ export default function (pi: ExtensionAPI) {
           message = retry;
         }
 
-        const result = await call("commit", { message, cwd });
+        const result = await backend.call("commit", { message, cwd });
         notify(ctx, result.result, "success");
       } catch (err) {
         notify(ctx, err?.message ?? String(err), "error");

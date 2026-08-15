@@ -53,3 +53,13 @@
   loop alive: `pi -p` never exits after print mode (browser.ts, commit.ts,
   lazygit.ts, goal.ts all had this). Unref the child and its stdin/stdout
   so pi can exit; the backend self-terminates on stdin EOF.
+
+## 2026-08-15 (shared backend.ts)
+
+- Testing extension glue with `bun -e` or `bun script.mjs` throws `TypeError:
+  child.stdin.unref is not a function` while the same code works in pi:
+  pi runs under real Node (shebang `#!/usr/bin/env node` in dist/cli.js),
+  and bun's `node:child_process` shim lacks `unref` on child stdin. Load
+  tests for extension code must run under `node`, with pi's module aliases
+  (`typebox`, `@earendil-works/*`) mocked, because jiti cannot resolve them
+  from a repo without node_modules.

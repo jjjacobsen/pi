@@ -1,3 +1,29 @@
+# Shared code (pi-common / pi-backends)
+
+All four extension pairs share the same shape: a thin TS entry point that
+spawns a Zig backend and speaks newline-delimited JSON over stdio. The
+shared parts live in two files:
+
+- `src/common.zig`: IO, JSON, and process helpers used by every backend —
+  the line reader with deadline (`readLine`), buffered writer
+  (`writeAllIo`), JSON-escaped responder (`respond`), monotonic and
+  realtime clocks (`nowMs` / `nowRealtimeMs`), and the command runner
+  (`runCmd`, `gitRoot`, `GitResult`). Each backend aliases only what it
+  needs and keeps its own request parsing, op dispatch, protocol structs,
+  and self-check. `goal.zig` aliases `nowRealtimeMs` because its deadlines
+  must be comparable to the glue's wall time; the others use the monotonic
+  clock.
+- `extensions/backend.ts`: `createBackend(binaryName, hooks)` owns spawning
+  the binary (with the auto-build guard), the pending-call map, line
+  dispatch, and the unref dance that lets pi exit in print mode while the
+  backend self-terminates on stdin EOF. `hooks.onOk` picks the resolved
+  value (browser resolves the raw result string); `hooks.onError` returns
+  the error message (goal adds a fallback).
+
+Per-backend protocol details are documented in each extension's section
+below; the wire format is identical everywhere: one JSON request line on
+stdin, one JSON response line on stdout.
+
 # Headless browser extension (pi-browser)
 
 ## Goal
@@ -74,7 +100,8 @@ matched by id; unrelated notifications are skipped.
 - `std.Io.File.writer` buffers; call `flush()` after writes or the bytes
   never leave the process.
 - Line reading is manual (posix.read into a growing buffer) because the new
-  Io.Reader API lacks `readUntilDelimiterOrEof`.
+  Io.Reader API lacks `readUntilDelimiterOrEof`. These helpers live in
+  `src/common.zig` (see the shared-code section above).
 - lightpanda mcp **ignores SIGTERM** and only exits on stdin EOF. Cleanup
   therefore closes the child's stdin pipe first, then `child.kill` (which
   signals and reaps). Null `child.stdin` after closing to avoid a double

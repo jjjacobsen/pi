@@ -14,62 +14,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { spawn, spawnSync } from "node:child_process";
-import { createInterface } from "node:readline";
-import { existsSync } from "node:fs";
-import path from "node:path";
+import { createBackend } from "./backend";
 
-const root = path.resolve(import.meta.dirname, "..");
-const bin = path.join(root, "zig-out", "bin", "pi-lg");
-
-if (!existsSync(bin)) {
-  const r = spawnSync("zig", ["build"], { cwd: root, stdio: "inherit" });
-  if (r.status !== 0 || !existsSync(bin)) {
-    throw new Error(`pi-lg binary missing; run \`zig build\` in ${root}`);
-  }
-}
-
-const child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
-// Unref so pi can exit in print mode (and on shutdown) without waiting on the
-// backend's pipes; the backend self-terminates when stdin closes.
-child.unref();
-child.stdin.unref();
-child.stdout.unref();
-let nextId = 1;
-const pending = new Map();
-const settle = (id, fn) => {
-  const p = pending.get(id);
-  if (p) {
-    pending.delete(id);
-    fn(p);
-  }
-};
-
-const rl = createInterface({ input: child.stdout });
-rl.on("line", (line) => {
-  try {
-    const msg = JSON.parse(line);
-    if (msg.ok) settle(msg.id, (p) => p.resolve(msg));
-    else settle(msg.id, (p) => p.reject(new Error(msg.error)));
-  } catch {}
-});
-child.on("exit", (code) => {
-  for (const p of pending.values()) p.reject(new Error(`pi-lg backend exited (code ${code})`));
-  pending.clear();
-});
-child.on("error", (err) => {
-  for (const p of pending.values()) p.reject(err);
-  pending.clear();
-});
-
-function call(op, params) {
-  return new Promise((resolve, reject) => {
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    child.stdin.write(JSON.stringify({ id, op, ...params }) + "\n");
-  });
-}
-
+const backend = createBackend("pi-lg");
 function notify(ctx, text, level = "info") {
   try {
     ctx.ui?.notify?.(`[lg] ${text}`, level);
@@ -88,7 +35,7 @@ export default function (pi: ExtensionAPI) {
       const target = path.resolve(ctx.cwd, (args ?? "").trim() || ".");
       try {
         // Validate before the TUI stops so failures never blink the screen.
-        await call("prepare", { cwd: target });
+        await backend.call("prepare", { cwd: target });
 
         // custom() is the only extension API that hands over the live TUI
         // reference, which is what we need for stop/start. The placeholder
@@ -98,7 +45,7 @@ export default function (pi: ExtensionAPI) {
             let outcome;
             try {
               tui.stop();
-              outcome = await call("run", { cwd: target });
+              outcome = await backend.call("run", { cwd: target });
             } catch (err) {
               outcome = { error: err?.message ?? String(err) };
             } finally {

@@ -21,66 +21,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { spawn, spawnSync } from "node:child_process";
-import { createInterface } from "node:readline";
-import { existsSync } from "node:fs";
-import path from "node:path";
+import { createBackend } from "./backend";
 
 const STATUS_KEY = "goal";
 const STATE_ENTRY_TYPE = "goal-state";
 const MAX_GOAL_ID_LENGTH = 64;
 
-const root = path.resolve(import.meta.dirname, "..");
-const bin = path.join(root, "zig-out", "bin", "pi-goal");
-
-if (!existsSync(bin)) {
-  const r = spawnSync("zig", ["build"], { cwd: root, stdio: "inherit" });
-  if (r.status !== 0 || !existsSync(bin)) {
-    throw new Error(`pi-goal binary missing; run \`zig build\` in ${root}`);
-  }
-}
-
-const child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
-// Unref so pi can exit in print mode (and on shutdown) without waiting on the
-// backend's pipes; the backend self-terminates when stdin closes.
-child.unref();
-child.stdin.unref();
-child.stdout.unref();
-let nextId = 1;
-const pending = new Map();
-const settle = (id, fn) => {
-  const p = pending.get(id);
-  if (p) {
-    pending.delete(id);
-    fn(p);
-  }
-};
-
-const rl = createInterface({ input: child.stdout });
-rl.on("line", (line) => {
-  try {
-    const msg = JSON.parse(line);
-    if (msg.ok) settle(msg.id, (p) => p.resolve(msg));
-    else settle(msg.id, (p) => p.reject(new Error(msg.error ?? "goal backend error")));
-  } catch {}
-});
-child.on("exit", (code) => {
-  for (const p of pending.values()) p.reject(new Error(`pi-goal backend exited (code ${code})`));
-  pending.clear();
-});
-child.on("error", (err) => {
-  for (const p of pending.values()) p.reject(err);
-  pending.clear();
-});
-
-function call(op, params) {
-  return new Promise((resolve, reject) => {
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    child.stdin.write(JSON.stringify({ id, op, ...params }) + "\n");
-  });
-}
-
+const backend = createBackend("pi-goal", { onError: (msg) => msg.error ?? "goal backend error" });
 // ----- runtime state (mirror of the backend's canonical state) -----
 
 let state = null; // parsed goal state object, or null when no goal
@@ -98,11 +45,16 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// All session entries on the current branch, newest last.
+function sessionEntries(ctx) {
+  return ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.() ?? [];
+}
+
 // Cumulative assistant tokens across the session branch; the goal baseline
 // captured at start is subtracted by the backend.
 function cumulativeTokens(ctx) {
   let total = 0;
-  const entries = ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.() ?? [];
+  const entries = sessionEntries(ctx);
   for (const entry of entries) {
     if (entry?.type !== "message") continue;
     const message = entry.message;
@@ -155,7 +107,7 @@ function persistState(pi) {
 }
 
 function loadStateFromSession(ctx) {
-  const entries = ctx.sessionManager?.getBranch?.() ?? ctx.sessionManager?.getEntries?.() ?? [];
+  const entries = sessionEntries(ctx);
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
     if (entry?.type !== "custom" || entry?.customType !== STATE_ENTRY_TYPE) continue;
@@ -198,7 +150,7 @@ async function sendPrompt(pi, ctx, prompt) {
 async function dispatchIfSettled(pi, ctx) {
   if (!state) return false;
   if (!intent && !state.waiting) return false;
-  const resp = await call("event", {
+  const resp = await backend.call("event", {
     event: "settled",
     state,
     idle: ctx.isIdle?.() === true,
@@ -274,7 +226,7 @@ function registerTools(pi) {
         return toolText(rejection);
       }
       try {
-        const resp = await call("complete", {
+        const resp = await backend.call("complete", {
           state,
           goal_id: typeof params.goal_id === "string" ? params.goal_id.trim() : "",
           summary: typeof params.summary === "string" ? params.summary.trim() : "",
@@ -337,7 +289,7 @@ function registerTools(pi) {
         return toolText(rejection);
       }
       try {
-        const resp = await call("blocked", {
+        const resp = await backend.call("blocked", {
           state,
           goal_id: typeof params.goal_id === "string" ? params.goal_id.trim() : "",
           reason: typeof params.reason === "string" ? params.reason.trim() : "",
@@ -401,7 +353,7 @@ function registerTools(pi) {
         return toolText(rejection);
       }
       try {
-        const resp = await call("wait", {
+        const resp = await backend.call("wait", {
           state,
           goal_id: typeof params.goal_id === "string" ? params.goal_id.trim() : "",
           reason: typeof params.reason === "string" ? params.reason.trim() : "",
@@ -446,7 +398,7 @@ function registerGoalCommand(pi) {
     handler: async (args, ctx) => {
       let parsed;
       try {
-        parsed = await call("parse", { args: args ?? "" });
+        parsed = await backend.call("parse", { args: args ?? "" });
       } catch (err) {
         return notify(ctx, `parse failed: ${err?.message ?? err}`, "error");
       }
@@ -469,7 +421,7 @@ function registerGoalCommand(pi) {
           }
           let resp;
           try {
-            resp = await call("start", {
+            resp = await backend.call("start", {
               objective: parsed.objective,
               min_time: parsed.min_time,
               max_time: parsed.max_time,
@@ -492,7 +444,7 @@ function registerGoalCommand(pi) {
         }
         case "status": {
           try {
-            const resp = await call("status", { state });
+            const resp = await backend.call("status", { state });
             if (resp.ok) {
               notify(ctx, resp.text, "info");
               setStatus(ctx, resp.statusline);
@@ -507,7 +459,7 @@ function registerGoalCommand(pi) {
         case "pause": {
           if (!state) return notify(ctx, "no active goal", "warning");
           try {
-            const resp = await call("pause", { state });
+            const resp = await backend.call("pause", { state });
             if (!resp.ok) return notify(ctx, resp.error, "warning");
             state = resp.state;
             intent = null;
@@ -528,7 +480,7 @@ function registerGoalCommand(pi) {
         case "resume": {
           if (!state) return notify(ctx, "no active goal", "warning");
           try {
-            const resp = await call("resume", {
+            const resp = await backend.call("resume", {
               state,
               min_time: parsed.min_time,
               max_time: parsed.max_time,
@@ -555,7 +507,7 @@ function registerGoalCommand(pi) {
         case "clear": {
           try {
             const hadGoal = state !== null;
-            const resp = await call("clear", { state });
+            const resp = await backend.call("clear", { state });
             if (!resp.ok) return notify(ctx, resp.error, "warning");
             state = null;
             intent = null;
@@ -586,7 +538,7 @@ function registerGoalLifecycle(pi) {
       return;
     }
     try {
-      const resp = await call("restore", { state, tokens: cumulativeTokens(ctx) });
+      const resp = await backend.call("restore", { state, tokens: cumulativeTokens(ctx) });
       if (resp.ok) state = resp.state ?? null;
       setStatus(ctx, resp.statusline);
       if (state) scheduleWaitDeadline(pi, ctx);
@@ -610,7 +562,7 @@ function registerGoalLifecycle(pi) {
     state = loaded;
     if (!state) return;
     try {
-      const restored = await call("restore", { state, tokens: cumulativeTokens(ctx) });
+      const restored = await backend.call("restore", { state, tokens: cumulativeTokens(ctx) });
       if (!restored.ok) return;
       state = restored.state ?? null;
       setStatus(ctx, restored.statusline);
@@ -619,7 +571,7 @@ function registerGoalLifecycle(pi) {
         scheduleWaitDeadline(pi, ctx);
         return;
       }
-      const resp = await call("event", { event: "compact", state });
+      const resp = await backend.call("event", { event: "compact", state });
       if (resp.state !== undefined) state = resp.state;
       if (resp.action === "continue" && resp.prompt && state?.status === "active") {
         intent = { prompt: resp.prompt };
@@ -642,7 +594,7 @@ function registerGoalLifecycle(pi) {
     if (!state) return;
     clearWaitTimer();
     try {
-      const resp = await call("event", { event: "input", state, user_input: true });
+      const resp = await backend.call("event", { event: "input", state, user_input: true });
       if (resp.state !== undefined) state = resp.state;
       persistState(pi);
       setStatus(ctx, resp.statusline);
@@ -655,7 +607,7 @@ function registerGoalLifecycle(pi) {
   pi.on("before_agent_start", async (event, ctx) => {
     if (!state) return undefined;
     try {
-      const resp = await call("event", { event: "agent_start", state });
+      const resp = await backend.call("event", { event: "agent_start", state });
       if (resp.state !== undefined) state = resp.state;
       if (resp.action === "inject" && resp.prompt) {
         return { systemPrompt: `${event.systemPrompt}\n\n${resp.prompt}` };
@@ -672,7 +624,7 @@ function registerGoalLifecycle(pi) {
     const final = finalAssistant(messages);
     const output = assistantOutput(messages);
     try {
-      const resp = await call("event", {
+      const resp = await backend.call("event", {
         event: "agent_end",
         state,
         tokens: cumulativeTokens(ctx),

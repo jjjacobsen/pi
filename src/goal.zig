@@ -32,10 +32,13 @@ const mem = std.mem;
 const json = std.json;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
-const List = std.array_list.AlignedManaged(u8, null);
+const common = @import("common.zig");
+const List = common.List;
+const nowMs = common.nowRealtimeMs;
+const readLine = common.readLine;
+const writeAllIo = common.writeAllIo;
 
 const MAX_LINE = 4 * 1024 * 1024; // hard cap on a single request line
-const CHUNK = 64 * 1024;
 const MAX_OBJECTIVE = 4000;
 const MAX_SUMMARY = 4000;
 const MAX_REASON = 1000;
@@ -143,57 +146,7 @@ const ParsedArgs = struct {
 };
 
 // ---------------------------------------------------------------------------
-// IO helpers (same primitives as pi-commit)
-
-fn readLine(fd: posix.fd_t, line_buf: *List, arena: ?Allocator, deadline: ?i64) !?[]const u8 {
-    const alloc = arena orelse std.heap.page_allocator;
-    var consumed: usize = 0;
-    while (true) {
-        if (mem.indexOfScalar(u8, line_buf.items[consumed..], '\n')) |rel| {
-            const idx = consumed + rel;
-            const line = try alloc.dupe(u8, line_buf.items[0..idx]);
-            consumed = idx + 1;
-            if (consumed == line_buf.items.len) {
-                line_buf.clearRetainingCapacity();
-            } else {
-                const rest = line_buf.items.len - consumed;
-                mem.copyForwards(u8, line_buf.items[0..rest], line_buf.items[consumed..]);
-                line_buf.shrinkRetainingCapacity(rest);
-            }
-            return line;
-        }
-        if (line_buf.items.len > MAX_LINE) return error.LineTooLong;
-        if (deadline) |dl| {
-            const remaining = dl - nowMs();
-            if (remaining <= 0) return error.Timeout;
-            var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
-            _ = posix.poll(&fds, @intCast(@min(remaining, 2147483647))) catch |err| return err;
-            if (fds[0].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP) == 0) continue;
-        }
-        var chunk: [CHUNK]u8 = undefined;
-        const n = try posix.read(fd, &chunk);
-        if (n == 0) {
-            if (line_buf.items.len == 0) return null;
-            const line = try alloc.dupe(u8, line_buf.items);
-            line_buf.clearRetainingCapacity();
-            return line;
-        }
-        try line_buf.appendSlice(chunk[0..n]);
-    }
-}
-
-fn nowMs() i64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
-    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
-}
-
-fn writeAllIo(io: std.Io, file: std.Io.File, bytes: []const u8) !void {
-    var wbuf: [8192]u8 = undefined;
-    var w = std.Io.File.writerStreaming(file, io, &wbuf);
-    try w.interface.writeAll(bytes);
-    try w.flush();
-}
+// IO helpers (shared primitives from common.zig)
 
 fn respondJson(arena: Allocator, io: std.Io, resp: *const Response) !void {
     var buf = List.init(arena);
@@ -712,7 +665,8 @@ fn opRestore(arena: Allocator, req: *const Request, resp: *Response) void {
                     next.stop_cause = "time_limit";
                     next.active_started_at = null;
                 }
-            } else if (next.max_tokens) |mt| {
+            }
+            if (next.max_tokens) |mt| {
                 if (next.tokens_used >= mt) {
                     next.status = "paused";
                     next.stop_cause = "token_limit";
@@ -1408,6 +1362,15 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     opRestore(arena, &req, &resp);
     check(resp.state.?.waiting != null and resp.state.?.active_started_at == null, "restore keeps waiting clock stopped");
 
+    var g_restore_both = g;
+    g_restore_both.active_started_at = 1;
+    g_restore_both.max_time_sec = 3600; // not exceeded
+    g_restore_both.max_tokens = 10_000; // exceeded
+    req = Request{ .id = 31, .op = "restore", .state = g_restore_both, .tokens = 50_000 };
+    resp = Response{ .id = 31, .ok = true };
+    opRestore(arena, &req, &resp);
+    check(mem.eql(u8, resp.state.?.status, "paused") and mem.eql(u8, resp.state.?.stop_cause.?, "token_limit"), "restore checks both ceilings");
+
     // status
     req = Request{ .id = 28, .op = "status", .state = g };
     resp = Response{ .id = 28, .ok = true };
@@ -1451,7 +1414,7 @@ pub fn main(init: std.process.Init) !void {
         _ = arena_state.reset(.retain_capacity);
         const arena = arena_state.allocator();
 
-        const line = readLine(posix.STDIN_FILENO, &stdin_buf, arena, null) catch break orelse break;
+        const line = readLine(posix.STDIN_FILENO, &stdin_buf, MAX_LINE, arena, null) catch break orelse break;
         if (line.len == 0) continue;
 
         const parsed = json.parseFromSlice(Request, arena, line, .{ .ignore_unknown_fields = true }) catch |err| {
