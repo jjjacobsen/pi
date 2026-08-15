@@ -5,6 +5,7 @@ const std = @import("std");
 const bins = .{
     .{ .name = "pi-browser", .path = "src/browser.zig" },
     .{ .name = "pi-commit", .path = "src/commit.zig" },
+    .{ .name = "pi-lg", .path = "src/lazygit.zig" },
 };
 
 pub fn build(b: *std.Build) void {

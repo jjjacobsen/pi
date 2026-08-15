@@ -213,3 +213,91 @@ to fix.
   intent via args.
 - **Model and thinking level are fixed**: session model, `low` thinking.
   Config knobs (model override, thinking level) are future work.
+
+# Lazygit extension (pi-lg)
+
+## Goal
+
+Open lazygit full-screen over the pi TUI with `/lg`, exactly like
+kdheepak/lazygit.nvim does over nvim: lazygit takes the whole terminal, quit
+returns to pi. All process logic lives in Zig; the TS glue only owns the pi
+TUI lifecycle, which only code inside the pi process can touch.
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/lazygit.ts    TS glue: /lg command, TUI stop/start around run
+       └─ src/lazygit.zig     Zig backend: validation, /dev/tty handoff, spawn+wait
+            └─ lazygit        spawned with stdin/stdout/stderr = /dev/tty
+```
+
+Why this split:
+
+- The TUI suspend/resume must run inside the pi process: `tui.stop()` restores
+  the cooked terminal, `tui.start()` re-enters raw mode. Only the TS
+  extension (loaded into pi) can do that, and only component factories
+  receive the live TUI reference, so the glue uses `ctx.ui.custom()` to grab
+  it. This is the same mechanism pi's built-in Ctrl+G (`app.editor.external`)
+  uses, and the UX copies lazygit.nvim.
+- Everything else is Zig: lazygit detection, git-repo validation, opening
+  /dev/tty, spawning lazygit with the terminal as its stdio, and exit-status
+  reporting. The backend's own stdin/stdout are pipes to the glue, so it
+  cannot "inherit" the terminal; Zig 0.16 spawn's `.file` StdIo dup2's an
+  arbitrary fd into the child, which is how /dev/tty reaches lazygit.
+
+## Protocol (newline-delimited JSON on stdin/stdout)
+
+```json
+{"id":1,"op":"prepare","cwd":"/path"}                  -> Zig
+{"id":1,"ok":true,"result":"/path/to/repo-root"}       <- prepare
+{"id":2,"op":"run","cwd":"/path"}                      ->
+{"id":2,"ok":true,"result":"exited 0"}                 <- run: exited N / signal N / stopped / unknown
+{"id":N,"ok":false,"error":"..."}                      <- failures
+```
+
+## Zig behavior
+
+- `prepare` runs before the TUI stops so common failures surface as a
+  notification with no screen flicker: `lazygit --version` (PATH check) and
+  `git -C <cwd> rev-parse --show-toplevel` (repo check). It returns the repo
+  root. `run` gets the same cwd (absolute, resolved by the glue against
+  `ctx.cwd`).
+- `run` opens /dev/tty (the controlling terminal) and spawns lazygit with
+  stdin/stdout/stderr pointing at it, cwd = the target. lazygit puts the
+  terminal in raw mode itself, renders full-screen, and restores termios on
+  clean exit. The backend blocks in `child.wait` and reports the term.
+- No special signal handling is needed: while lazygit runs it owns the
+  terminal in raw mode (ISIG off), so Ctrl+C / Ctrl+Z are lazygit key events,
+  not signals to pi. Same exposure pi's external editor has.
+
+## Flow
+
+`/lg` -> resolve target (`ctx.cwd`, or `/lg <path>`) -> prepare (error =>
+notify, no screen change) -> `tui.stop()` -> run (Zig spawns lazygit on the
+terminal, waits) -> `tui.start()` + full redraw + close component -> notify
+`lazygit exited N`.
+
+## Self-check
+
+`zig build run -- --self-check` requires lazygit on PATH, builds a scratch
+repo under /tmp, verifies prepare succeeds on it and fails on a non-repo
+path, and exercises the spawn+wait+report path with a fake `lazygit` script
+that exits 42 (no real lazygit is spawned). If the process has no controlling
+terminal (CI, detached shells) the spawn portion is skipped with a note,
+because /dev/tty is the whole point of the run op.
+
+## Known limitations and upgrade paths
+
+- **Unix-only by design**: /dev/tty does not exist on Windows, so the run op
+  cannot hand the console to lazygit there. pi itself already treats suspend
+  and external editors as Unix features, and this extension follows the same
+  line. Windows support (CONIN$/CONOUT$ handoff) is out of scope.
+- **Brief TUI blink on late spawn failure**: if prepare passes but the spawn
+  itself fails (e.g. lazygit removed between prepare and run), stop/start
+  still wrap the call and the screen redraws once. Acceptable.
+- **Orphaned lazygit if pi dies while it runs**: same as pi's external
+  editor; lazygit keeps the terminal and pi's next start redraws over it.
+- **Generalizable to other TUIs**: the same backend shape runs any TUI tool;
+  a `tool` field on run (lazygit default) would cover jj, tig, etc. Not
+  implemented (YAGNI).
