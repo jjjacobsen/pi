@@ -2309,20 +2309,20 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     try environ.put("HOME", "/nonexistent");
 
     const json_out = try runCollect(arena, io, &environ, bounds);
-    if (json_out.len < 100) return error.SelfCheckSmallOutput;
+    common.expect(json_out.len >= 100, "collect output is non-trivial");
 
     // Verify the cache file was written and is loadable.
     const cache_path = try std.fmt.allocPrint(arena, "{s}/pi-usage-cache.bin", .{tmp_root});
     const reloaded = try loadCache(io, arena, cache_path);
-    if (reloaded.files.count() != 1) return error.SelfCheckCacheMiss;
+    common.expect(reloaded.files.count() == 1, "cache holds the session file");
     const cached = reloaded.files.get(session_file).?;
-    if (cached.messages.len != 3) return error.SelfCheckMessageCount;
+    common.expect(cached.messages.len == 3, "cache holds all three messages");
 
     // Verify the aggregated payload shape.
-    if (std.mem.indexOf(u8, json_out, "\"allTime\"") == null) return error.SelfCheckNoAllTime;
-    if (std.mem.indexOf(u8, json_out, "\"opencode-go\"") == null) return error.SelfCheckNoProvider;
-    if (std.mem.indexOf(u8, json_out, "\"Tools\"") == null) return error.SelfCheckNoAuxiliary;
-    if (std.mem.indexOf(u8, json_out, "\"deepseek-v4-flash\"") == null) return error.SelfCheckNoModel;
+    common.expect(std.mem.indexOf(u8, json_out, "\"allTime\"") != null, "payload has allTime");
+    common.expect(std.mem.indexOf(u8, json_out, "\"opencode-go\"") != null, "payload has opencode-go");
+    common.expect(std.mem.indexOf(u8, json_out, "\"Tools\"") != null, "payload has auxiliary provider");
+    common.expect(std.mem.indexOf(u8, json_out, "\"deepseek-v4-flash\"") != null, "payload has the model");
 
     // Limits op must fail gracefully with no credentials (no network in self-check).
     const auth_path = try std.fmt.allocPrint(arena, "{s}/auth.json", .{tmp_root});
@@ -2332,8 +2332,8 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
         try writeAllIo(io, f, "{\"openai-codex\":{\"type\":\"oauth\",\"access\":\"\",\"refresh\":\"\",\"expires\":0}}\n");
     }
     const limits_json = try buildLimitsJson(arena, io, tmp_root, &environ);
-    if (std.mem.indexOf(u8, limits_json, "\"opencode-go\"") == null) return error.SelfCheckNoLimitsProvider;
-    if (std.mem.indexOf(u8, limits_json, "OPENCODE_API_KEY") == null) return error.SelfCheckNoLimitsError;
+    common.expect(std.mem.indexOf(u8, limits_json, "\"opencode-go\"") != null, "limits payload has opencode-go");
+    common.expect(std.mem.indexOf(u8, limits_json, "OPENCODE_API_KEY") != null, "limits payload reports the missing key");
 
     std.debug.print("PASS: pi-usage self-check ok\n", .{});
 }

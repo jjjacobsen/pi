@@ -1133,8 +1133,9 @@ pi-web-access surface so the model's habits carry over.
 - **Failure handling**: non-2xx surfaces the provider's `error.message`
   with the status. 429/5xx/network errors retry once after 500ms; 4xx and
   "no answer or sources" fail immediately. The HTTP call runs on a worker
-  thread with a 60s deadline (same socket-shutdown pattern as pi-vision),
-  so a hung endpoint cannot stall the backend.
+  thread with a 60s deadline (the shared `httpWithDeadline` machinery in
+  `common.zig`, same as pi-vision), so a hung endpoint cannot stall the
+  backend.
 - **Self-check**: `zig build run -- --self-check` spins up an in-process
   HTTP server (no network) and exercises the whole pipeline: a full
   answer-mode stream (marker placement, source list, snippet, and body
