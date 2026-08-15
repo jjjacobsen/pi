@@ -15,6 +15,7 @@ file whenever packages change.
 | @baylarsadigov/omp-undo-redo | 1.2.5 |
 | pi-peon-ping | 0.2.0 |
 | @dietrichgebert/ponytail | 4.9.0 |
+| pi-transcribe (ssh) |  |
 
 ## Local installs
 
