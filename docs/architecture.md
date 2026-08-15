@@ -1174,3 +1174,62 @@ written. Pages that need full content are fetched with the browser tools.
 - `queries` arrays and multi-provider fan-out are deliberately gone: the
   server-side model plans multiple queries itself, and parallel fan-out to
   several providers was the bloat this extension replaces.
+
+# Footer extension (extensions/footer.ts)
+
+## Goal
+
+Replace pi's built-in status footer with a cleaner, opencode-inspired
+footer. Two lines plus optional extension statuses:
+
+```
+π  ~/Projects/pi  main                       <- workspace
+↑26 ↓44 $0.000 1.0%/1.0M 12.4 tok/s   deepseek-v4-flash • max   <- stats, model right
+```
+
+Drops the built-in footer's cache segments (R = cache read, W = cache
+write, CH = cache hit %) and the `(auto)` auto-compaction marker, and adds
+a tok/s readout: live while streaming, frozen at the last value once
+idle. All colors come from the active pi theme.
+
+## Architecture
+
+Pure TypeScript glue, no Zig backend: everything is already available to
+extensions, so there is no protocol and no backend binary.
+
+- Token/cost totals: summed from `ctx.sessionManager.getEntries()`
+  (assistant, toolResult, compaction and branch_summary usage), the same
+  data the built-in footer uses.
+- Context usage: `ctx.getContextUsage()` (percent + context window),
+  threshold-colored like the built-in footer (warning above 70%, error
+  above 90%).
+- Git branch, extension statuses, provider count: `footerData` passed to
+  the `ctx.ui.setFooter()` factory. `onBranchChange` triggers re-renders.
+- Model + reasoning level: `ctx.model` and `ctx.thinkingLevel` (live
+  getters), right-aligned like the built-in footer, with the `(provider)`
+  prefix when more than one provider has models.
+- Cost segment: shown when the session has cost or the provider is
+  subscription-billed (anthropic, github-copilot, kimi-coding,
+  openai-codex, xai), matching the built-in footer's visibility rule.
+- tok/s: estimated from streamed characters (`text_delta` +
+  `thinking_delta` lengths from `message_update` events, ~4 chars per
+  token), smoothed over a sliding 5-second window. It is the last segment
+  on the stats line so the rest of the line never shifts when it appears.
+  Once it appears it persists: it updates live while a stream is active
+  and freezes at the last measured value on `message_end` (a stream too
+  short to measure live freezes its overall average). Providers only
+  report real token usage at stream end, so a character-based estimate is
+  the only live option; it is an approximation.
+- Nerd Font icons: fa-folder U+F07B, fa-code-fork U+F126, fa-gauge U+F0E4,
+  plus a plain `π`. Verified present in FiraCode Nerd Font.
+
+## Glue behavior
+
+- Enabled automatically at session start (TUI mode only); the `/footer`
+  command toggles between this footer and the built-in one.
+- `message_update` / `message_end` / `model_select` /
+  `thinking_level_select` / `session_info_changed` handlers call
+  `tui.requestRender()` through a module-level handle that `dispose()`
+  clears (identity-checked so a replaced footer cannot null a newer one).
+- Extension statuses set via `ctx.ui.setStatus()` still render on a third
+  footer line, same as the built-in footer.

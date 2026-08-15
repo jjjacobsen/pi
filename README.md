@@ -60,6 +60,10 @@ autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 1
 
 `extensions/usage.ts` + `src/usage.zig`. The `/usage` command shows usage stats for Today / This Week / Last Week / Last 30 Days / All Time across four views: Graphs (braille charts by provider/model/thinking, cumulative toggle), Table (providers to models, filter/hide/expand), Insights (cost advice), and Limits (provider quota: OpenAI Codex subscription and OpenCode Go 5h/weekly/monthly windows with usage bars, reset timers, plan/account info, Codex saved resets). All data collection runs in the Zig backend: session JSONL scanning with a binary cache, aggregation, insights, and the quota fetches. Replaces the third-party `@tmustier/pi-usage-extension`; the limits view is adapted from omp (can1357/oh-my-pi). See [docs/architecture.md](docs/architecture.md).
 
+### footer - custom status footer via /footer
+
+`extensions/footer.ts`. Pure TS, no Zig backend. Replaces pi's built-in footer with an opencode-style two-line footer: `π  ~/Projects/pi  main` workspace line on top (nerd font icons), token/cost/context stats on the bottom with the model and reasoning level right-aligned. Drops the built-in footer's R (cache read), W (cache write), CH (cache hit %) and (auto) compaction segments, and adds a tok/s readout (estimated from streamed characters; live while streaming, frozen at the last value when idle, placed last so the line never shifts). Enabled automatically at session start; `/footer` toggles back to the built-in footer. See [docs/architecture.md](docs/architecture.md).
+
 ## Prompts
 
 ### q - question only
