@@ -1114,14 +1114,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const check = struct {
-        fn f(cond: bool, msg: []const u8) void {
-            if (!cond) {
-                std.debug.print("FAIL: {s}\n", .{msg});
-                std.process.exit(1);
-            }
-        }
-    }.f;
+    const check = common.expect;
 
     // duration parsing
     check(parseDurationSec("90s").value == 90, "parse 90s");

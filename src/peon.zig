@@ -442,14 +442,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const expect = struct {
-        fn f(cond: bool, msg: []const u8) void {
-            if (!cond) {
-                std.debug.print("FAIL: {s}\n", .{msg});
-                std.process.exit(1);
-            }
-        }
-    }.f;
+    const expect = common.expect;
 
     const tmp = try std.fmt.allocPrint(arena, "/tmp/pi-peon-selfcheck-{x}", .{seedFromEntropy()});
     try std.Io.Dir.createDirPath(.cwd(), io, tmp);

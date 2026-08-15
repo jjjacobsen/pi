@@ -25,7 +25,6 @@ const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const List = common.List;
 const CHUNK = common.CHUNK;
-const nowMs = common.nowMs;
 const readLine = common.readLine;
 const writeAllIo = common.writeAllIo;
 const respond = common.respond;
@@ -578,23 +577,10 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const dir = try std.fmt.allocPrint(arena, "/tmp/pi-commit-selfcheck-{d}", .{nowMs()});
-    const cwd_dir = std.Io.Dir.cwd();
-    cwd_dir.deleteTree(io, dir) catch {};
-    cwd_dir.createDirPath(io, dir) catch |err| {
-        std.debug.print("FAIL: mkdir {s}: {s}\n", .{ dir, @errorName(err) });
-        std.process.exit(1);
-    };
-    defer cwd_dir.deleteTree(io, dir) catch {};
+    const dir = try common.selfCheckDir(arena, io, "commit");
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
-    const fail = struct {
-        fn f(cond: bool, msg: []const u8) void {
-            if (!cond) {
-                std.debug.print("FAIL: {s}\n", .{msg});
-                std.process.exit(1);
-            }
-        }
-    }.f;
+    const fail = common.expect;
 
     const init = try runGit(arena, io, &.{ "git", "init", "-q", dir }, 4096);
     fail(init.ok, "git init in temp repo");

@@ -136,6 +136,31 @@ pub fn gitRoot(arena: Allocator, io: std.Io, cwd: []const u8) !?[]const u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Self-check helpers (shared by every backend's --self-check)
+
+// Fails the self-check with a message; every backend's self-check aliases
+// this as fail/check/expect and calls it per assertion.
+pub fn expect(cond: bool, msg: []const u8) void {
+    if (!cond) {
+        std.debug.print("FAIL: {s}\n", .{msg});
+        std.process.exit(1);
+    }
+}
+
+// Scratch directory for a self-check under /tmp, e.g. "pi-wt-selfcheck-…".
+// The caller defers the deletion: `defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};`.
+pub fn selfCheckDir(arena: Allocator, io: std.Io, name: []const u8) ![]const u8 {
+    const dir = try std.fmt.allocPrint(arena, "/tmp/pi-{s}-selfcheck-{d}", .{ name, nowMs() });
+    const cwd_dir = std.Io.Dir.cwd();
+    cwd_dir.deleteTree(io, dir) catch {};
+    cwd_dir.createDirPath(io, dir) catch |err| {
+        std.debug.print("FAIL: mkdir {s}: {s}\n", .{ dir, @errorName(err) });
+        std.process.exit(1);
+    };
+    return dir;
+}
+
+// ---------------------------------------------------------------------------
 // HTTP call with deadline (shared by pi-vision and pi-search)
 //
 // Both backends POST to a remote endpoint on a worker thread so a hung

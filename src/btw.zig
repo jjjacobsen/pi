@@ -295,14 +295,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const check = struct {
-        fn f(cond: bool, msg: []const u8) void {
-            if (!cond) {
-                std.debug.print("FAIL: {s}\n", .{msg});
-                std.process.exit(1);
-            }
-        }
-    }.f;
+    const check = common.expect;
 
     thread_arena_state = std.heap.ArenaAllocator.init(gpa);
     defer thread_arena_state.deinit();
@@ -344,14 +337,8 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     check(resp.text != null and mem.indexOf(u8, resp.text.?, "a box that wraps") != null, "format has the answer");
 
     // copy pipes the formatted text into a fake pbcopy that saves stdin
-    const dir = try std.fmt.allocPrint(arena, "/tmp/pi-btw-selfcheck-{d}", .{common.nowMs()});
-    const cwd_dir = std.Io.Dir.cwd();
-    cwd_dir.deleteTree(io, dir) catch {};
-    cwd_dir.createDirPath(io, dir) catch |err| {
-        std.debug.print("FAIL: mkdir {s}: {s}\n", .{ dir, @errorName(err) });
-        std.process.exit(1);
-    };
-    defer cwd_dir.deleteTree(io, dir) catch {};
+    const dir = try common.selfCheckDir(arena, io, "btw");
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
     const out_path = try std.fmt.allocPrint(arena, "{s}/clip.txt", .{dir});
     const script_path = try std.fmt.allocPrint(arena, "{s}/pbcopy", .{dir});
     const script = std.Io.Dir.createFileAbsolute(io, script_path, .{}) catch |err| {
@@ -361,7 +348,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     const sh = try std.fmt.allocPrint(arena, "#!/bin/sh\ncat > {s}\n", .{out_path});
     try writeAllIo(io, script, sh);
     script.close(io);
-    cwd_dir.setFilePermissions(io, script_path, .executable_file, .{}) catch |err| {
+    std.Io.Dir.cwd().setFilePermissions(io, script_path, .executable_file, .{}) catch |err| {
         std.debug.print("FAIL: chmod {s}: {s}\n", .{ script_path, @errorName(err) });
         std.process.exit(1);
     };

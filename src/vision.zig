@@ -646,14 +646,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const fail = struct {
-        fn f(cond: bool, msg: []const u8) void {
-            if (!cond) {
-                std.debug.print("FAIL: {s}\n", .{msg});
-                std.process.exit(1);
-            }
-        }
-    }.f;
+    const fail = common.expect;
 
     const sctx = try gpa.create(SelfCheckCtx);
     sctx.* = .{ .gpa = gpa, .io = io };

@@ -33,7 +33,6 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const List = common.List;
-const nowMs = common.nowMs;
 const readLine = common.readLine;
 const writeAllIo = common.writeAllIo;
 const respond = common.respond;
@@ -130,26 +129,13 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const fail = struct {
-        fn f(cond: bool, msg: []const u8) void {
-            if (!cond) {
-                std.debug.print("FAIL: {s}\n", .{msg});
-                std.process.exit(1);
-            }
-        }
-    }.f;
+    const fail = common.expect;
 
     const check = try runCmd(arena, io, &.{ "lazygit", "--version" }, 4096);
     fail(check.ok, "lazygit must be installed (brew install lazygit)");
 
-    const dir = try std.fmt.allocPrint(arena, "/tmp/pi-lg-selfcheck-{d}", .{nowMs()});
-    const cwd_dir = std.Io.Dir.cwd();
-    cwd_dir.deleteTree(io, dir) catch {};
-    cwd_dir.createDirPath(io, dir) catch |err| {
-        std.debug.print("FAIL: mkdir {s}: {s}\n", .{ dir, @errorName(err) });
-        std.process.exit(1);
-    };
-    defer cwd_dir.deleteTree(io, dir) catch {};
+    const dir = try common.selfCheckDir(arena, io, "lg");
+    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
 
     const init = try runCmd(arena, io, &.{ "git", "init", "-q", dir }, 4096);
     fail(init.ok, "git init in temp repo");
@@ -174,7 +160,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     tty.close(io);
 
     const fake_dir = try std.fmt.allocPrint(arena, "{s}/fakebin", .{dir});
-    cwd_dir.createDirPath(io, fake_dir) catch |err| {
+    std.Io.Dir.cwd().createDirPath(io, fake_dir) catch |err| {
         std.debug.print("FAIL: mkdir {s}: {s}\n", .{ fake_dir, @errorName(err) });
         std.process.exit(1);
     };
@@ -185,7 +171,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     };
     try writeAllIo(io, script, "#!/bin/sh\nexit 42\n");
     script.close(io);
-    cwd_dir.setFilePermissions(io, script_path, .executable_file, .{}) catch |err| {
+    std.Io.Dir.cwd().setFilePermissions(io, script_path, .executable_file, .{}) catch |err| {
         std.debug.print("FAIL: chmod {s}: {s}\n", .{ script_path, @errorName(err) });
         std.process.exit(1);
     };
