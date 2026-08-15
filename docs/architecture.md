@@ -967,7 +967,11 @@ Why this split:
 - **Request**: `POST {base_url}/chat/completions` with the standard
   `image_url` data-URL content block plus the prompt, `max_tokens: 4096`,
   `temperature: 0`. Response text is `choices[0].message.content`, falling
-  back to `reasoning_content` for reasoning models that hide the content.
+  back to `reasoning_content` for reasoning models that hide the content;
+  both fields accept a plain string or a blocks array (`text`/`thinking`/
+  `reasoning` blocks, joined with newlines) so block-style responses from
+  models like Xiaomi MiMo parse. Parse failures surface the raw body
+  (truncated) in the error for diagnosis.
   Non-2xx responses surface the provider's `error.message` with the status.
 - **Retry**: one retry after 500ms for 429, 5xx, and network errors. 4xx,
   timeouts, and parse failures fail immediately.

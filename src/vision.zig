@@ -280,14 +280,76 @@ const Completion = struct {
     const Choice = struct {
         message: Message = .{},
     };
+    // content/reasoning_content are kept as raw json.Value: OpenAI-compatible
+    // models return either a plain string ("content":"hi") or a content
+    // blocks array ("content":[{"type":"text","text":"hi"},...]), and
+    // newer models (e.g. Xiaomi MiMo) always use blocks.
     const Message = struct {
-        content: ?[]const u8 = null,
-        reasoning_content: ?[]const u8 = null,
+        content: ?json.Value = null,
+        reasoning_content: ?json.Value = null,
     };
     const CompletionError = struct {
         message: ?[]const u8 = null,
     };
 };
+
+// Extract the assistant text from a message field, accepting either a plain
+// string or a content-blocks array. Text blocks are joined with newlines;
+// non-text blocks (image_url etc.) are skipped.
+fn textFromValue(arena: Allocator, value: json.Value) !?[]const u8 {
+    switch (value) {
+        .string => |s| return if (s.len == 0) null else s,
+        .array => |items| {
+            var parts: std.ArrayList([]const u8) = .empty;
+            var total: usize = 0;
+            for (items.items) |item| {
+                const obj = switch (item) {
+                    .object => |o| o,
+                    else => continue,
+                };
+                // Text lives in "text" (content blocks) or "thinking"/"reasoning"
+                // (reasoning blocks); take the first non-empty string field.
+                const text = blk: {
+                    for ([_][]const u8{ "text", "thinking", "reasoning" }) |key| {
+                        const v = obj.get(key) orelse continue;
+                        if (v == .string and v.string.len > 0) break :blk v.string;
+                    }
+                    break :blk null;
+                } orelse continue;
+                try parts.append(arena, text);
+                total += text.len + 1;
+            }
+            if (parts.items.len == 0) return null;
+            if (parts.items.len == 1) return parts.items[0];
+            const joined = try arena.alloc(u8, total - 1);
+            var off: usize = 0;
+            for (parts.items, 0..) |p, i| {
+                @memcpy(joined[off .. off + p.len], p);
+                off += p.len;
+                if (i + 1 < parts.items.len) {
+                    joined[off] = '\n';
+                    off += 1;
+                }
+            }
+            return joined;
+        },
+        else => return null,
+    }
+}
+
+// The assistant text: content wins, reasoning_content is the fallback for
+// reasoning models that hide the answer there.
+fn messageText(arena: Allocator, msg: Completion.Message) !?[]const u8 {
+    if (msg.content) |c| {
+        const t = try textFromValue(arena, c);
+        if (t != null and t.?.len > 0) return t;
+    }
+    if (msg.reasoning_content) |r| {
+        const t = try textFromValue(arena, r);
+        if (t != null and t.?.len > 0) return t;
+    }
+    return null;
+}
 
 fn isRetryableStatus(code: u16) bool {
     return code == 429 or (code >= 500 and code <= 599);
@@ -348,7 +410,10 @@ fn httpWorker(ctx: *WorkerCtx) void {
     const code: u16 = @intFromEnum(res.status);
     if (code >= 200 and code < 300) {
         const parsed = json.parseFromSliceLeaky(Completion, arena, res.body, .{ .ignore_unknown_fields = true }) catch {
-            workerFinish(ctx, false, false, "invalid JSON in vision model response");
+            // Surface the raw body (truncated) so unexpected response shapes
+            // are diagnosable without packet captures.
+            const snippet = res.body[0..@min(res.body.len, 400)];
+            workerFinish(ctx, false, false, std.fmt.allocPrint(arena, "invalid JSON in vision model response: {s}", .{snippet}) catch "invalid JSON in vision model response");
             return;
         };
         if (parsed.choices.len == 0) {
@@ -356,12 +421,15 @@ fn httpWorker(ctx: *WorkerCtx) void {
             return;
         }
         const msg = parsed.choices[0].message;
-        const content = msg.content orelse msg.reasoning_content;
-        if (content == null or content.?.len == 0) {
+        const text = messageText(arena, msg) catch {
+            workerFinish(ctx, false, false, "out of memory");
+            return;
+        };
+        if (text == null or text.?.len == 0) {
             workerFinish(ctx, false, false, "vision model returned no content");
             return;
         }
-        workerFinish(ctx, true, false, content.?);
+        workerFinish(ctx, true, false, text.?);
         return;
     }
 
@@ -411,7 +479,12 @@ fn runFetch(arena: Allocator, io: std.Io, url: []const u8, api_key: []const u8, 
     var resp = try req.receiveHead(&.{});
     var buf: [MAX_RESPONSE]u8 = undefined;
     var out = std.Io.Writer.fixed(&buf);
-    const reader = resp.reader(&.{});
+    // The client advertises gzip/deflate in Accept-Encoding, so the body must
+    // be decompressed; the raw reader would hand back compressed bytes.
+    var transfer_buf: [64]u8 = undefined;
+    var decompress_buf: [std.compress.flate.max_window_len]u8 = undefined;
+    var decompress: std.http.Decompress = undefined;
+    const reader = resp.readerDecompressing(&transfer_buf, &decompress, &decompress_buf);
     _ = reader.streamRemaining(&out) catch |err| switch (err) {
         error.WriteFailed => return error.ResponseTooLarge,
         else => return err,
@@ -582,6 +655,27 @@ const TEST_WEBP = [_]u8{
 // canvas 4x4) followed by an alpha-data chunk and a lossy VP8 frame.
 // Exercises the VP8X header parser and the alpha-aware compression path.
 
+const TEST_GZIP = [_]u8{
+    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x4d, 0x8e,
+    0x41, 0x0e, 0xc2, 0x40, 0x08, 0x45, 0xaf, 0x62, 0x58, 0x57, 0xe3, 0x7a,
+    0xae, 0x62, 0x8c, 0x99, 0x52, 0xda, 0x41, 0xa7, 0xc3, 0xa4, 0x60, 0xac,
+    0x69, 0x7a, 0x77, 0x19, 0xdd, 0xb8, 0x02, 0xf2, 0xfe, 0x0b, 0x7f, 0x03,
+    0x1e, 0x20, 0x80, 0x22, 0x74, 0x20, 0xfd, 0x9d, 0xd0, 0xfc, 0xc2, 0x14,
+    0xed, 0x84, 0x32, 0xd7, 0x4c, 0xc6, 0x52, 0x1c, 0xe1, 0x42, 0xd1, 0xc8,
+    0x93, 0xe7, 0x0e, 0x66, 0x19, 0x28, 0x37, 0x87, 0xf2, 0x78, 0xc4, 0x44,
+    0xf8, 0x68, 0x81, 0x24, 0x8c, 0xa4, 0x10, 0x2e, 0x1b, 0x70, 0x19, 0x68,
+    0xfd, 0x45, 0x49, 0x35, 0x4e, 0x04, 0x61, 0x83, 0x45, 0xb2, 0x4f, 0x88,
+    0xaa, 0xac, 0x16, 0x8b, 0x35, 0x47, 0x8a, 0x91, 0x6f, 0xcd, 0xb1, 0x77,
+    0x6d, 0xd8, 0x68, 0x6d, 0xe4, 0x3b, 0xfe, 0x3f, 0x84, 0xc3, 0x8b, 0xfa,
+    0x7a, 0xa8, 0xae, 0x5b, 0x5a, 0xe4, 0x39, 0x25, 0xd8, 0xaf, 0x7b, 0x07,
+    0x23, 0x17, 0xd6, 0x74, 0xf3, 0x76, 0xea, 0x3d, 0xdd, 0x30, 0xa9, 0x8d,
+    0x7c, 0x00, 0x3b, 0xe1, 0x0a, 0x3d, 0xd7, 0x00, 0x00, 0x00,
+};
+
+// gzip (mtime 0) of the completionBodyBlocks body for "self-check: webp
+// passthrough". The server serves it with Content-Encoding: gzip to prove
+// the client decompresses (openrouter gzips by default).
+
 const SelfCheckCtx = struct {
     gpa: Allocator,
     io: std.Io,
@@ -593,6 +687,18 @@ const SelfCheckCtx = struct {
 
 fn completionBody(arena: Allocator, text: []const u8) ![]const u8 {
     return std.fmt.allocPrint(arena, "{{\"id\":\"sc\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"self-check\",\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":\"{s}\"}},\"finish_reason\":\"stop\"}}]}}", .{text});
+}
+
+// Content-blocks variant: some models (e.g. Xiaomi MiMo) always return
+// "content" as an array of blocks instead of a plain string.
+fn completionBodyBlocks(arena: Allocator, text: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{{\"id\":\"sc\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"self-check\",\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}},\"finish_reason\":\"stop\"}}]}}", .{text});
+}
+
+// Reasoning-blocks variant: reasoning models hide the answer in
+// "reasoning_content" as an array of thinking blocks with "content": null.
+fn completionBodyReasoning(arena: Allocator, text: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{{\"id\":\"sc\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"self-check\",\"choices\":[{{\"index\":0,\"message\":{{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":[{{\"type\":\"thinking\",\"thinking\":\"{s}\"}}]}},\"finish_reason\":\"stop\"}}]}}", .{text});
 }
 
 fn serveThread(ctx: *SelfCheckCtx) void {
@@ -633,8 +739,10 @@ fn serveThread(ctx: *SelfCheckCtx) void {
             0 => req.respond("{\"error\":{\"message\":\"self-check injected 500\",\"type\":\"server_error\"}}", .{ .status = .internal_server_error }) catch {},
             1 => req.respond(completionBody(arena, "self-check: 4x4 red png") catch "error", .{}) catch {},
             2 => req.respond(completionBody(arena, "self-check: compressed jpeg") catch "error", .{}) catch {},
-            3 => req.respond(completionBody(arena, "self-check: webp passthrough") catch "error", .{}) catch {},
-            4 => req.respond(completionBody(arena, "self-check: webp compressed") catch "error", .{}) catch {},
+            3 => {
+                req.respond(&TEST_GZIP, .{ .status = .ok, .extra_headers = &.{.{ .name = "content-encoding", .value = "gzip" }} }) catch {};
+            },
+            4 => req.respond(completionBodyReasoning(arena, "self-check: webp compressed") catch "error", .{}) catch {},
             5 => req.respond("{\"error\":{\"message\":\"self-check injected 400\",\"type\":\"invalid_request_error\"}}", .{ .status = .bad_request }) catch {},
             else => {
                 std.Io.sleep(io, std.Io.Duration.fromMilliseconds(2000), .awake) catch {};

@@ -1,0 +1,4 @@
+# typos config. Only exception so far: `flate` is the Zig stdlib module name
+# (std.compress.flate), not a misspelling.
+[default.extend-words]
+flate = "flate"
