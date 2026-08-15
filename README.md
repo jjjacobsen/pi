@@ -66,39 +66,6 @@ autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 1
 
 `extensions/footer.ts`. Pure TS, no Zig backend. Replaces pi's built-in footer with an opencode-style two-line footer: `π  ~/Projects/pi  main` workspace line on top (nerd font icons), token/cost/context stats on the bottom with the model and reasoning level right-aligned. Drops the built-in footer's R (cache read), W (cache write), CH (cache hit %) and (auto) compaction segments, and adds a tok/s readout (estimated from streamed characters; live while streaming, frozen at the last value when idle, placed last so the line never shifts). Enabled automatically at session start; `/footer` toggles back to the built-in footer. See [docs/architecture.md](docs/architecture.md).
 
-## Prompts
-
-### q - question only
-
-`prompts/q.md` defines the `/q` slash command. It expands into an instruction
-that tells the model not to make any changes, then passes through whatever you
-type after it. Because this repo is loaded into pi as a package, the template
-is available in every project, no per-machine copy needed. See
-[pi prompt template docs](https://pi.dev) for the format.
-
-## Skills
-
-### repo-audit - whole-repo improvement audit
-
-`skills/repo-audit/SKILL.md`, served to pi as a package skill. A repo-wide
-scan for areas to improve: over-engineering, dead code, duplication,
-dependency bloat, error handling gaps, performance and security red flags,
-untested critical paths, and structural issues. Outputs one line per
-finding, ranked biggest impact first, with the replacement named, and ends
-with the net lines and deps removable. One-shot report, applies nothing.
-Adapted from the ponytail-audit skill of
-[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail): same
-format and the cut/stdlib/native/yagni/shrink tags, extended with general
-code audit categories.
-
-## Adding a new extension
-
-1. Write the backend in `src/foo.zig`, add it to the `bins` list in `build.zig`;
-   reuse the helpers in `src/common.zig` (line reader, responder, `runCmd`)
-2. Write `extensions/foo.ts` glue that registers tools and bridges via
-   `createBackend("pi-foo")` from `extensions/lib/backend.ts`
-3. Document it in `docs/architecture.md` and this README
-
 ### wt - parallel agents via git worktrees
 
 `extensions/wt.ts` + `src/wt.zig`. The `/wt` command creates a git worktree
@@ -158,3 +125,36 @@ the sources, cutting most of the latency. One retry on transient failures,
 a hard deadline, Esc aborts, and no config file: auth comes from pi's model
 registry. Replaces the third-party pi-web-access package (uninstalled). See
 [docs/architecture.md](docs/architecture.md).
+
+## Adding a new extension
+
+1. Write the backend in `src/foo.zig`, add it to the `bins` list in `build.zig`;
+   reuse the helpers in `src/common.zig` (line reader, responder, `runCmd`)
+2. Write `extensions/foo.ts` glue that registers tools and bridges via
+   `createBackend("pi-foo")` from `extensions/lib/backend.ts`
+3. Document it in `docs/architecture.md` and this README
+
+## Prompts
+
+### q - question only
+
+`prompts/q.md` defines the `/q` slash command. It expands into an instruction
+that tells the model not to make any changes, then passes through whatever you
+type after it. Because this repo is loaded into pi as a package, the template
+is available in every project, no per-machine copy needed. See
+[pi prompt template docs](https://pi.dev) for the format.
+
+## Skills
+
+### repo-audit - whole-repo improvement audit
+
+`skills/repo-audit/SKILL.md`, served to pi as a package skill. A repo-wide
+scan for areas to improve: over-engineering, dead code, duplication,
+dependency bloat, error handling gaps, performance and security red flags,
+untested critical paths, and structural issues. Outputs one line per
+finding, ranked biggest impact first, with the replacement named, and ends
+with the net lines and deps removable. One-shot report, applies nothing.
+Adapted from the ponytail-audit skill of
+[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail): same
+format and the cut/stdlib/native/yagni/shrink tags, extended with general
+code audit categories.
