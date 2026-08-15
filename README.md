@@ -33,6 +33,14 @@ See [docs/architecture.md](docs/architecture.md).
 mise check        # build + self-check (needs `lightpanda` on PATH)
 ```
 
+### lazygit - full-screen git TUI via /lg
+
+`extensions/lazygit.ts` + `src/lazygit.zig`. The `/lg` command pauses the pi
+TUI and hands the whole terminal to lazygit, exactly like lazygit.nvim does
+over nvim: it validates the target is a git repo and lazygit is on PATH, stops
+pi's renderer, spawns lazygit on `/dev/tty`, then resumes and reports the exit
+status. See [docs/architecture.md](docs/architecture.md).
+
 ## Prompts
 
 ### q - question only
