@@ -47,6 +47,11 @@ if (!existsSync(bin)) {
 }
 
 const child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
+// Unref so pi can exit in print mode (and on shutdown) without waiting on the
+// backend's pipes; the backend self-terminates when stdin closes.
+child.unref();
+child.stdin.unref();
+child.stdout.unref();
 let nextId = 1;
 const pending = new Map();
 const settle = (id, fn) => {
