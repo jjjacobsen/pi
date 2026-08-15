@@ -7,7 +7,6 @@ file whenever packages change.
 
 | Package | Version |
 | ------- | ------- |
-| @getpipher/vision | 0.5.2 |
 | pi-transcribe (ssh) |  |
 
 ## Local installs
@@ -15,8 +14,3 @@ file whenever packages change.
 | Path | Purpose |
 | ---- | ------- |
 | `../../Projects/pi` | this repo, dev install |
-
-Removed: `@narumitw/pi-btw` (replaced by the in-house `/btw` extension in this
-repo), `@narumitw/pi-goal`, `@tmustier/pi-usage-extension`,
-`@baylarsadigov/omp-undo-redo`, `@dietrichgebert/ponytail`, `pi-web-access`
-(replaced by the in-house `web_search` extension in this repo).
