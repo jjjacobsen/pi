@@ -200,3 +200,26 @@ extensions/ as a hk step.
   each backend paid a full no-op build on every launch (~2s of startup).
   Fixed with a project-wide stamp (zig-out/.pi-build-stamp.json): the
   rebuild now runs at most once per source change.
+
+## 2026-08-15 — browser extension: every tool call hung forever (protocol drift)
+
+- `extensions/lib/backend.ts` (shared glue) sends `{"id":N,"op":"...",...}`
+  on its wire; every other backend's `Request` struct parses `op`. But
+  `src/browser.zig`'s `Request` parsed a `tool` field (an old pre-shared-glue
+  protocol), so every real browser_* call failed with `MissingField`. The
+  backend answered with the unmatchable id 0, the glue's pending map had no
+  entry for it, and the caller's promise never settled: an infinite hang,
+  no error, no log.
+- What made it invisible: `zig build run -- --self-check` passes (it calls
+  `Browser.call` directly, bypassing the wire protocol), and my first
+  harness drove the binary with the documented `tool` format instead of
+  reading what the glue actually sends. The bug only shows through the real
+  glue (Node) or by sending `op` yourself. Repro: feed the backend
+  `{"id":5,"op":"goto","params":"{}"}` and watch it reply
+  `{"id":0,"ok":false,"error":"MissingField"}` while the caller waits.
+- Fixed: renamed the field to `op` in `src/browser.zig` (+ protocol comments,
+  `docs/architecture.md`), and hardened `extensions/lib/backend.ts` to log
+  responses with unknown ids / non-JSON lines to stderr instead of dropping
+  them silently, so a future protocol drift fails loudly instead of hanging.
+- Lesson: test the glue's actual wire bytes, not the documented ones; and
+  when a tool hangs forever with no error, check the backend's id-0 replies.

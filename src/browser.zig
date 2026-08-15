@@ -5,7 +5,7 @@
 // sends one JSON request per line on stdin, we forward it as an MCP tools/call,
 // and write one JSON response line to stdout.
 //
-// Request line:  {"id":1,"tool":"goto","params":"{\"url\":\"...\"}"}
+// Request line:  {"id":1,"op":"goto","params":"{\"url\":\"...\"}"}
 //                 (params is a JSON string containing a raw JSON object)
 // Response line: {"id":1,"ok":true,"result":"..."}  or  {"id":1,"ok":false,"error":"..."}
 //
@@ -39,7 +39,7 @@ var g_terminate = std.atomic.Value(bool).init(false);
 
 const Request = struct {
     id: i64,
-    tool: []const u8,
+    op: []const u8, // MCP tool name, e.g. "goto"; the shared glue sends `op`
     params: []const u8, // JSON string containing the raw arguments object
 };
 
@@ -240,7 +240,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         };
 
-        const res = browser.call(arena, req.value.tool, req.value.params) catch |err| CallResult{
+        const res = browser.call(arena, req.value.op, req.value.params) catch |err| CallResult{
             .ok = false,
             .text = @errorName(err),
         };

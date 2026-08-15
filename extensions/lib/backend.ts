@@ -100,13 +100,6 @@ export function createBackend(binaryName, hooks = {}) {
   let nextId = 1;
   const pending = new Map();
   let killed = false;
-  const settle = (id, fn) => {
-    const p = pending.get(id);
-    if (p) {
-      pending.delete(id);
-      fn(p);
-    }
-  };
 
   const spawnBackend = () => {
     child = spawn(bin, [], { stdio: ["pipe", "pipe", "inherit"] });
@@ -117,11 +110,24 @@ export function createBackend(binaryName, hooks = {}) {
     child.stdout.unref();
     rl = createInterface({ input: child.stdout });
     rl.on("line", (line) => {
+      let msg;
       try {
-        const msg = JSON.parse(line);
-        if (msg.ok) settle(msg.id, (p) => p.resolve(hooks.onOk ? hooks.onOk(msg) : msg));
-        else settle(msg.id, (p) => p.reject(new Error(hooks.onError ? hooks.onError(msg) : msg.error)));
-      } catch {}
+        msg = JSON.parse(line);
+      } catch {
+        console.error(`${binaryName}: non-JSON line from backend: ${line.slice(0, 200)}`);
+        return;
+      }
+      const entry = pending.get(msg.id);
+      if (!entry) {
+        // A response for an unknown id can never settle a caller; surface it
+        // instead of dropping it silently (that turned protocol bugs into
+        // infinite tool-call hangs).
+        console.error(`${binaryName}: response for unknown id ${msg.id}: ${line.slice(0, 200)}`);
+        return;
+      }
+      pending.delete(msg.id);
+      if (msg.ok) entry.resolve(hooks.onOk ? hooks.onOk(msg) : msg);
+      else entry.reject(new Error(hooks.onError ? hooks.onError(msg) : msg.error));
     });
     child.on("exit", (code) => {
       for (const p of pending.values()) p.reject(new Error(`${binaryName} backend exited (code ${code})`));

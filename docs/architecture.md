@@ -81,7 +81,7 @@ Why this split:
 ### pi glue -> Zig backend (one JSON object per line on stdin)
 
 ```json
-{"id":1,"tool":"goto","params":"{\"url\":\"https://example.com\"}"}
+{"id":1,"op":"goto","params":"{\"url\":\"https://example.com\"}"}
 ```
 
 `params` is a JSON **string** containing a raw JSON object, so Zig never has
