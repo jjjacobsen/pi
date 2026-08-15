@@ -936,7 +936,6 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     // 4. results mode stops at the message item: sources only, no answer,
     //    and no timeout despite the stalled completion.
     const r4 = try opSearch(gpa, arena, io, mkreq(endpoint, "quick look", "results", 5, null, null, 600));
-    std.debug.print("R4ERR: {s}\n", .{r4.err});
     fail(r4.ok, "results mode returns before the stalled completion");
     fail(mem.indexOf(u8, r4.text, "1. Alpha Example (https://example.com/alpha)") != null, "results mode has the source");
     fail(mem.indexOf(u8, r4.text, "The answer is alpha") == null, "results mode skips the answer");

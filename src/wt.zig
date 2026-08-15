@@ -74,7 +74,6 @@ const Request = struct {
     op: []const u8,
     cwd: ?[]const u8 = null,
     topic: ?[]const u8 = null,
-    keep: ?bool = null,
 };
 
 const CreateResult = struct {
@@ -99,7 +98,6 @@ const FindResult = struct {
 
 const WorktreeEntry = struct {
     path: []const u8,
-    head: []const u8 = "",
     branch: ?[]const u8 = null, // short name, e.g. "wt/angry-aardvark"
 };
 
@@ -216,7 +214,8 @@ fn dirtyFiles(arena: Allocator, io: std.Io, path: []const u8) ![]const u8 {
 
 // Parses `git worktree list --porcelain` into entries. Blocks are separated
 // by blank lines; a worktree block has a "worktree <path>" line, a "HEAD
-// <hash>" line, and optionally a "branch refs/heads/<name>" line.
+// <hash>" line, and optionally a "branch refs/heads/<name>" line. The HEAD
+// hash is not stored: nothing reads it.
 fn parseWorktrees(arena: Allocator, porcelain: []const u8) ![]WorktreeEntry {
     var entries = std.ArrayList(WorktreeEntry).empty;
     var blocks = mem.splitSequence(u8, porcelain, "\n\n");
@@ -226,8 +225,6 @@ fn parseWorktrees(arena: Allocator, porcelain: []const u8) ![]WorktreeEntry {
         while (lines.next()) |line| {
             if (mem.startsWith(u8, line, "worktree ")) {
                 e.path = line["worktree ".len..];
-            } else if (mem.startsWith(u8, line, "HEAD ")) {
-                e.head = line["HEAD ".len..];
             } else if (mem.startsWith(u8, line, "branch refs/heads/")) {
                 e.branch = line["branch refs/heads/".len..];
             }
@@ -434,6 +431,18 @@ fn opFind(arena: Allocator, io: std.Io, cwd: []const u8, topic: []const u8) !Wor
         .topic = topic,
     }, .{});
     return .{ .ok = true, .text = result };
+}
+
+// ---------------------------------------------------------------------------
+// main-loop response dispatch (shared by every op: outcome.ok -> result
+// text, otherwise the error text)
+
+fn respondOutcome(arena: Allocator, io: std.Io, id: i64, outcome: WorktreeOp) void {
+    if (outcome.ok) {
+        respond(arena, io, id, true, outcome.text) catch {};
+    } else {
+        respond(arena, io, id, false, outcome.err) catch {};
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -740,13 +749,13 @@ pub fn main(init: std.process.Init) !void {
                 respond(arena, io, id, false, @errorName(err)) catch {};
                 continue;
             };
-            if (outcome.ok) respond(arena, io, id, true, outcome.text) catch {} else respond(arena, io, id, false, outcome.err) catch {};
+            respondOutcome(arena, io, id, outcome);
         } else if (mem.eql(u8, r.op, "list")) {
             const outcome = opList(arena, io, cwd) catch |err| {
                 respond(arena, io, id, false, @errorName(err)) catch {};
                 continue;
             };
-            if (outcome.ok) respond(arena, io, id, true, outcome.text) catch {} else respond(arena, io, id, false, outcome.err) catch {};
+            respondOutcome(arena, io, id, outcome);
         } else if (mem.eql(u8, r.op, "merge")) {
             const topic = mem.trim(u8, r.topic orelse "", " \t\r\n");
             if (topic.len == 0) {
@@ -757,7 +766,7 @@ pub fn main(init: std.process.Init) !void {
                 respond(arena, io, id, false, @errorName(err)) catch {};
                 continue;
             };
-            if (outcome.ok) respond(arena, io, id, true, outcome.text) catch {} else respond(arena, io, id, false, outcome.err) catch {};
+            respondOutcome(arena, io, id, outcome);
         } else if (mem.eql(u8, r.op, "prune")) {
             const topic = mem.trim(u8, r.topic orelse "", " \t\r\n");
             if (topic.len == 0) {
@@ -768,7 +777,7 @@ pub fn main(init: std.process.Init) !void {
                 respond(arena, io, id, false, @errorName(err)) catch {};
                 continue;
             };
-            if (outcome.ok) respond(arena, io, id, true, outcome.text) catch {} else respond(arena, io, id, false, outcome.err) catch {};
+            respondOutcome(arena, io, id, outcome);
         } else if (mem.eql(u8, r.op, "find")) {
             const topic = mem.trim(u8, r.topic orelse "", " \t\r\n");
             if (topic.len == 0) {
@@ -779,7 +788,7 @@ pub fn main(init: std.process.Init) !void {
                 respond(arena, io, id, false, @errorName(err)) catch {};
                 continue;
             };
-            if (outcome.ok) respond(arena, io, id, true, outcome.text) catch {} else respond(arena, io, id, false, outcome.err) catch {};
+            respondOutcome(arena, io, id, outcome);
         } else {
             respond(arena, io, id, false, "unknown op") catch {};
         }

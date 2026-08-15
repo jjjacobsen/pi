@@ -19,6 +19,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { toolError, withAbort } from "./lib/toolkit";
 
 const TOOL_NAME = "web_search";
 // The Codex subscription endpoint: same server-side web_search pipeline the
@@ -55,34 +56,9 @@ function codexAccountId(token) {
 }
 
 // ---------------------------------------------------------------------------
-// Backend bridge with abort support: Esc during a search kills the backend
-// (it may be blocked in an HTTP request) and spawns a fresh one.
-
-function withAbort(call, signal) {
-  if (!signal) return call;
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(new Error("web_search aborted"));
-      backend.restart();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    call.then(
-      (v) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(v);
-      },
-      (e) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(e);
-      },
-    );
-  });
-}
-
-function toolError(text) {
-  return { content: [{ type: "text", text }], details: {}, isError: true };
-}
+// Backend bridge with abort support lives in lib/toolkit.ts (shared with
+// pi-vision): Esc during a search kills the backend (it may be blocked in an
+// HTTP request) and spawns a fresh one.
 
 export default function searchExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
@@ -135,6 +111,7 @@ export default function searchExtension(pi: ExtensionAPI) {
       headers["OpenAI-Beta"] = "responses=experimental";
       try {
         const text = await withAbort(
+          backend,
           backend.call("search", {
             query: params.query,
             mode: params.mode ?? "answer",
@@ -148,6 +125,7 @@ export default function searchExtension(pi: ExtensionAPI) {
             timeout_ms: DEFAULT_TIMEOUT_MS,
           }),
           signal,
+          "web_search",
         );
         return { content: [{ type: "text", text }], details: {} };
       } catch (e) {

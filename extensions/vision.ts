@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { toolError, withAbort } from "./lib/toolkit";
 
 const TOOL_NAME = "describe_image";
 const DEFAULT_MAX_DIMENSION = 1568;
@@ -73,34 +74,9 @@ function syncToolAvailability(pi, model) {
 }
 
 // ---------------------------------------------------------------------------
-// Backend bridge with abort support: Esc during a vision call kills the
-// backend (it may be blocked in an HTTP request) and spawns a fresh one.
-
-function withAbort(call, signal) {
-  if (!signal) return call;
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(new Error("describe_image aborted"));
-      backend.restart();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    call.then(
-      (v) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(v);
-      },
-      (e) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(e);
-      },
-    );
-  });
-}
-
-function toolError(text) {
-  return { content: [{ type: "text", text }], details: {}, isError: true };
-}
+// Backend bridge with abort support lives in lib/toolkit.ts (shared with
+// pi-search): Esc during a vision call kills the backend (it may be blocked
+// in an HTTP request) and spawns a fresh one.
 
 export default function visionExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
@@ -164,6 +140,7 @@ export default function visionExtension(pi: ExtensionAPI) {
           : "";
       try {
         const text = await withAbort(
+          backend,
           backend.call("describe", {
             path: params.image_path,
             cwd: ctx.cwd,
@@ -177,6 +154,7 @@ export default function visionExtension(pi: ExtensionAPI) {
             timeout_ms: TIMEOUT_MS,
           }),
           signal,
+          "describe_image",
         );
         return { content: [{ type: "text", text }], details: {} };
       } catch (e) {

@@ -66,7 +66,9 @@ const CommitOutcome = struct {
 };
 
 // ---------------------------------------------------------------------------
-// analyze// Drains a pipe into buf, keeping at most max bytes. Keeps reading past max so
+// analyze
+
+// Drains a pipe into buf, keeping at most max bytes. Keeps reading past max so
 // a chatty child never blocks on a full pipe.
 fn drainInto(fd: posix.fd_t, buf: *List, max: usize) !void {
     var chunk: [CHUNK]u8 = undefined;
