@@ -4,6 +4,7 @@ const std = @import("std");
 // Add new extension backends here as the repo grows.
 const bins = .{
     .{ .name = "pi-browser", .path = "src/browser.zig" },
+    .{ .name = "pi-commit", .path = "src/commit.zig" },
 };
 
 pub fn build(b: *std.Build) void {

@@ -129,3 +129,87 @@ exercises the whole stack and is the gate for `mise check`.
   mise task; the Zig backend would prefer the locally built binary over
   `lightpanda` from PATH.
 - **MAX_LINE cap**: single messages over 64MB fail with LineTooLong.
+
+# Commit extension (pi-commit)
+
+## Goal
+
+Replace the third-party pi-committer package with an in-house `/commit`
+command: stage all changes, generate a good conventional commit message from
+the current model, and commit. Fast, no background workers, no auto-triggers,
+no config file.
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/commit.ts      TS glue: /commit command, subagent model call
+       └─ src/commit.zig       Zig backend: git analysis, validation, commit
+```
+
+Why this split:
+
+- pi extensions must be TypeScript modules. The glue registers the `/commit`
+  command, collects the session context tail, and calls the current model
+  through the pi SDK (`createAgentSession`, thinking level `low`, no tools).
+  This is the same pattern pi-committer used, and it is the only place the
+  provider credentials are reachable.
+- Zig owns everything git-related and all message judgment: the diff digest,
+  repo style sampling, conventional-commit validation with retry feedback,
+  and the commit itself. The model writes, the backend judges.
+
+## Protocol (newline-delimited JSON on stdin/stdout)
+
+```json
+{"id":1,"op":"analyze","cwd":"/path"}                        -> Zig
+{"id":1,"ok":true,"result":"<markdown context>","empty":false} <- Zig
+{"id":2,"op":"validate","message":"feat(x): ...\n\n..."}     ->
+{"id":2,"ok":true,"result":"ok"}                             <-
+{"id":2,"ok":false,"error":"- problem\n- problem"}           <- problems feed the retry
+{"id":3,"op":"commit","message":"..."}                       ->
+{"id":3,"ok":true,"result":"<short-hash> <header>"}          <-
+```
+
+## Zig behavior
+
+- `analyze` runs `git add -A` first: the working tree is snapshotted when
+  `/commit` starts, so a later `commit` op commits exactly what the user saw.
+  Then it collects `--name-status`, `--stat`, and the `-U3` diff (with `-M`
+  for rename detection), the last 25 commit subjects, and AGENTS.md/CLAUDE.md
+  lines mentioning commits. Small diffs (under 6KB) are passed raw; bigger
+  ones become a digest: per-file hunk headers plus declaration-like changed
+  lines, capped at 12KB. The whole context is capped at 24KB.
+- `validate` enforces: Conventional Commits header (`type(scope)!: desc`,
+  type allowlist, header <= 100 chars), no vague descriptions ("update
+  files"), no diff noise in the message, and a substantive body (>= 50 chars,
+  not a placeholder). Problems are returned as `- line` text so the glue can
+  feed them back to the model for one retry.
+- `commit` re-checks that something is staged, runs `git commit -F -` with
+  the message on stdin, and returns `<short-hash> <header>`. Pre-commit hooks
+  run as normal.
+- `--self-check` builds a scratch repo under /tmp and exercises analyze,
+  validate, and commit end to end. It is the gate for `mise check`.
+
+## Flow
+
+`/commit` -> analyze (stage + digest) -> model call (low thinking) ->
+validate -> on failure one retry with the problems appended -> commit ->
+notify `<hash> <header>`.
+
+There is no deterministic fallback: if the model cannot produce a valid
+message after the retry, the command fails loudly with the problems and the
+last attempt. Dumb messages are the exact failure mode this extension exists
+to fix.
+
+## Known limitations and upgrade paths
+
+- **No confirmation prompt**: the commit is created immediately, like Codex.
+  The message can be wrong (the model infers intent from the diff plus the
+  session tail); the body may occasionally state a wrong "why".
+- **One commit per invocation**: no grouping of code/test/docs into separate
+  commits. Add grouping later only if wanted.
+- **The "why" is best-effort**: sources are the session context tail, the
+  `/commit <args>` intent, and AGENTS.md guidance. A manual commit can state
+  intent via args.
+- **Model and thinking level are fixed**: session model, `low` thinking.
+  Config knobs (model override, thinking level) are future work.

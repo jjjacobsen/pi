@@ -13,6 +13,14 @@ house, piece by piece
 
 ## Extensions
 
+### commit - AI commit messages
+
+`extensions/commit.ts` + `src/commit.zig`. The `/commit` command stages all
+changes and creates a conventional commit with a model-generated message:
+repo style from `git log`, a diff digest, AGENTS.md commit guidance, session
+context for the "why", strict validation with one retry, thinking level
+`low` for speed. See [docs/architecture.md](docs/architecture.md).
+
 ### browser - headless browser via Lightpanda
 
 `extensions/browser.ts` + `src/browser.zig`. Gives the model 26 `browser_*`
