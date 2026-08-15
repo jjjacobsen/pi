@@ -9,10 +9,6 @@ file whenever packages change.
 | ------- | ------- |
 | @getpipher/vision | 0.5.2 |
 | pi-web-access | 0.21.0 |
-| @narumitw/pi-goal | 0.50.0 |
-| @narumitw/pi-btw | 0.50.0 |
-| @baylarsadigov/omp-undo-redo | 1.2.5 |
-| @dietrichgebert/ponytail | 4.9.0 |
 | pi-transcribe (ssh) |  |
 
 ## Local installs
@@ -20,3 +16,7 @@ file whenever packages change.
 | Path | Purpose |
 | ---- | ------- |
 | `../../Projects/pi` | this repo, dev install |
+
+Removed: `@narumitw/pi-btw` (replaced by the in-house `/btw` extension in this
+repo), `@narumitw/pi-goal`, `@tmustier/pi-usage-extension`,
+`@baylarsadigov/omp-undo-redo`, `@dietrichgebert/ponytail`.

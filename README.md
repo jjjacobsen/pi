@@ -104,3 +104,17 @@ brings the worktree branch into your current branch (fast-forward when
 possible, conflicts left for normal resolution) and auto-prunes unless
 `--keep`, `/wt prune <topic>` removes a worktree and its branch. See
 [docs/architecture.md](docs/architecture.md).
+
+### btw - quick side questions via /btw
+
+`extensions/btw.ts` + `src/btw.zig`. The `/btw [question]` command opens a
+side-chat window that stays inside the session TUI (the transcript remains
+visible above it) and answers questions with the current model at `low`
+thinking, ELI15-style, without touching the main conversation. Multiple
+questions work: type one while an answer streams and it queues. In the
+window: `enter` send, `c` copy the Q&A thread to the clipboard, `b` bring
+the Q&A into the main chat, `esc` dismiss (main chat untouched). All thread
+logic lives in the Zig backend: the ELI15 system prompt with the main-chat
+excerpt embedded, history assembly, Q&A formatting, and pbcopy. Replaces
+the third-party `@narumitw/pi-btw` package (removed from settings). See
+[docs/architecture.md](docs/architecture.md).
