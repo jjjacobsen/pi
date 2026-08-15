@@ -84,3 +84,17 @@ code audit categories.
 2. Write `extensions/foo.ts` glue that registers tools and bridges via
    `createBackend("pi-foo")` from `extensions/lib/backend.ts`
 3. Document it in `docs/architecture.md` and this README
+
+### wt - parallel agents via git worktrees
+
+`extensions/wt.ts` + `src/wt.zig`. The `/wt` command creates a git worktree
+from the current branch head (never carrying uncommitted changes) and
+switches the current pi session into a fresh session there, so you can run
+parallel agents on one repo, each isolated. Bare `/wt` names the worktree
+`wt/<adjective>-<noun>` (e.g. `wt/angry-aardvark`), `/wt <topic>` names it
+`wt/<topic>`. Worktrees live in `<repo>/.wt/`, excluded from git status via
+`.git/info/exclude`. `/wt list` shows all worktrees, `/wt merge <topic>`
+brings the worktree branch into your current branch (fast-forward when
+possible, conflicts left for normal resolution) and auto-prunes unless
+`--keep`, `/wt prune <topic>` removes a worktree and its branch. See
+[docs/architecture.md](docs/architecture.md).

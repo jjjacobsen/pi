@@ -546,3 +546,115 @@ Fields: volume (10%..100%), paused (active|paused), silent_window_seconds
 - The glue unrefs the backend child and its pipes (shared `createBackend`),
   and the backend self-terminates on stdin EOF like the other backends.
 - Sessions with no UI (print mode) never fire the event ops, so no sounds.
+
+# Worktree extension (pi-wt)
+
+## Goal
+
+Run multiple pi agents in parallel on one repo, each isolated in its own git
+worktree. `/wt` creates a worktree from the current branch head (never
+carrying uncommitted changes), then replaces the current pi session with a
+fresh session rooted at the worktree. Merging the worktree back and cleaning
+up is part of the same command.
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/wt.ts     TS glue: /wt command, session replacement, auto-prune
+       └─ src/wt.zig      Zig backend: all git logic (create/list/merge/prune)
+```
+
+Why this split:
+
+- Session replacement must run inside the pi process: only code loaded into
+  pi can call `ctx.switchSession`. The glue writes the new session file's
+  header itself (via `SessionManager.create(path)` for the path and session
+  dir, then a direct header write): interactive mode drops `cwdOverride`
+  from `ctx.switchSession` (pi's `handleResumeSession` only forwards
+  `withSession`), so the file must carry the worktree path in its header
+  before the switch, or the new session falls back to the process cwd and
+  keeps operating on the main checkout.
+- Everything git-related lives in Zig: worktree creation and discovery,
+  name generation, the `.git/info/exclude` write, merge execution with
+  conflict detection, and safe pruning. The glue never runs git.
+
+## Protocol (newline-delimited JSON on stdin/stdout)
+
+```json
+{"id":1,"op":"create","cwd":"/path","topic":"optional"}        -> Zig
+{"id":1,"ok":true,"result":"{\"path\":...,\"branch\":...,\"topic\":...,\"base\":...}"}
+{"id":2,"op":"list","cwd":"/path"}                             ->
+{"id":2,"ok":true,"result":"* main   .  clean\n  wt/x   .wt/x  clean"} <-
+{"id":3,"op":"merge","cwd":"/path","topic":"x"}                ->
+{"id":3,"ok":true,"result":"{\"merged\":true,\"up_to_date\":false,\"branch\":...,\"text\":...}"}
+{"id":4,"op":"prune","cwd":"/path","topic":"x"}                ->
+{"id":4,"ok":true,"result":"removed ... , deleted branch ..."} <-
+```
+
+create and merge return a JSON object string in `result` that the glue
+parses. All other ops return plain text.
+
+## Zig behavior
+
+- `create` validates the repo (must be a git repo with at least one commit),
+  computes the topic (user word sanitized to `[a-z0-9-]`, or a generated
+  adjective-noun name like `angry-aardvark`), and checks collisions. Explicit
+  topics error on collision; generated names re-roll up to 25 times. It then
+  writes `.wt/` into `.git/info/exclude` (a local, never-committed file, so
+  worktrees never show as untracked noise) and runs
+  `git worktree add -b wt/<topic> <root>/.wt/<topic> HEAD`. The response
+  carries the absolute worktree path, branch, topic, and the base branch
+  label. The name generator is seeded from the monotonic clock mixed with a
+  stack address; collision re-rolls guard against repeats.
+- `list` parses `git worktree list --porcelain` and reports branch (or
+  `(detached)`), path relative to the repo root, and clean/dirty via a
+  `status --porcelain` probe per worktree. The worktree containing the
+  caller's cwd gets a `*` marker.
+- `merge` finds the worktree for a topic (branch `wt/<topic>`, branch
+  `<topic>`, or path ending in `/.<topic>`), refuses to merge a worktree into
+  itself, and runs `git merge --no-edit` in the caller's checkout. One rule:
+  bring `wt/<topic>` into whatever branch the caller is on. Fast-forward
+  when possible, merge commit otherwise, `--no-edit` so no editor can hang
+  the backend. A failed merge with unmerged paths is reported as
+  `merge conflicts in <files>; resolve and commit`; any other failure
+  surfaces git's own stderr (e.g. local changes would be overwritten).
+- `prune` runs `git worktree remove` (refuses on a dirty worktree, no
+  `--force`) then `git branch -d` (refuses on an unmerged branch, no `-D`).
+  A leftover branch is reported, never force-deleted.
+- **Self-check**: `zig build run -- --self-check` builds a scratch repo and
+  exercises create (explicit and auto-named), the exclude write, listing,
+  a fast-forward merge, prune, duplicate-topic rejection, self-merge
+  rejection, a real conflict, pruning an unmerged branch, and the non-repo
+  error. It is the gate for `mise check`.
+
+## Flow
+
+`/wt` -> create worktree (Zig) -> write the fresh session file's header with
+cwd = worktree directory (`SessionManager.create` + explicit header write) ->
+`ctx.switchSession` (cwdOverride also passed, harmless) -> notify on the new
+session. `/wt merge <topic>` -> merge (Zig) -> on success auto-prune (Zig)
+unless `--keep` -> notify. `/wt list` and `/wt prune` are one-shot ops.
+
+## Notes
+
+- Sessions are stored per-directory, so the main checkout session and the
+  worktree session are fully isolated files. The worktree session starts
+  fresh with no carried-over context, matching the command's purpose.
+- Opening a second pi in the main repo while another pi is active there
+  continues the same session file; `/wt` switches away immediately, which
+  self-corrects. Type it before doing anything else in that terminal.
+- The worktree directory is a new path for pi's project trust store, so the
+  first switch prompts once to trust it, like any new directory.
+- The glue unrefs the backend child and its pipes (shared `createBackend`),
+  and the backend self-terminates on stdin EOF like the other backends.
+- Zig 0.16 API notes for future backends: `std.ArrayList(T)` is now the
+  unmanaged list (`append(self, gpa, item)`, init with `.empty`),
+  `std.crypto.random` was removed (seed name generators from the clock
+  instead), and `std.fmt.allocPrint` used inside a struct-literal return
+  needs `try` before `allocPrint`.
+- **RPC mode hangs on backend I/O (upstream pi quirk)**: any extension await
+  on a `createBackend` child pipe stalls in rpc mode, so `/wt` guards
+  `ctx.mode !== "tui"` and refuses there. The worktree would still be
+  created (the backend runs) before the hang, which is why the guard sits at
+  the top of the handler.
