@@ -51,6 +51,21 @@ See [docs/architecture.md](docs/architecture.md).
 mise check        # build + self-check (needs `lightpanda` on PATH)
 ```
 
+### cua - desktop computer use via Cua Driver
+
+`extensions/cua.ts` + `src/cua.zig`. Gives the model 19 `computer_*` tools
+(list/launch apps, window snapshots with AX element trees, full-screen and
+cropped screenshots, click/double/right-click, type, press key, hotkey,
+scroll, cursor, kill) that drive the host desktop through
+[trycua/cua](https://github.com/trycua/cua)'s `cua-driver` CLI, targeting
+windows without moving the system cursor. Screenshots are written to
+`~/.pi/agent/cua-screenshots/` and viewed through the existing
+describe_image vision tool (the model decides when pixels are worth
+vision tokens). Requires the CuaDriver daemon with Accessibility + Screen
+Recording granted. Self-check runs against a fake `cua-driver` script, so
+`mise check` passes without the daemon.
+See [docs/architecture.md](docs/architecture.md).
+
 ### lazygit - full-screen git TUI via /lg
 
 `extensions/lazygit.ts` + `src/lazygit.zig`. The `/lg` command pauses the pi

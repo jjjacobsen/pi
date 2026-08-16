@@ -269,3 +269,25 @@ extensions/ as a hk step.
   (`appendSlice(alloc, items)`); `common.List` is the managed variant and
   takes no allocator argument. Using the managed `List` with the unmanaged
   call shape fails to compile.
+
+## 2026-08-15 — pi-cua extension (Cua Driver)
+
+- `cua-driver call` exit codes are unreliable: `invalid_arguments` exits 0
+  with an in-band JSON error on stdout, unknown tools exit 1 with the
+  message on stderr, and `window_id_not_found` exits non-zero with JSON on
+  stdout. Judge success by stdout content (non-empty = result, in-band
+  `code` payloads pass through to the model), never by the exit code.
+- The docs claim `--screenshot-out-file` makes get_window_state respond
+  with `screenshot_file_path`; the real 0.20.0 CLI omits the key entirely.
+  Track the path yourself (the backend chose it).
+- `cua-driver call <tool>` reads stdin when it is piped (it waits for JSON
+  args) — a spawned child must get `/dev/null` stdin (`.ignore` in Zig
+  0.16 spawn), which the CLI tolerates, or it blocks forever on the
+  parent's open pipe.
+- The tool input schemas admit fields the CLI rejects at runtime
+  (`additionalProperties: false`, e.g. list_apps has no properties at
+  all); unknown fields come back as in-band `invalid_arguments` JSON, so
+  glue schemas must match the MCP argument names exactly
+  (`cua-driver describe <tool>` is the source of truth).
+- `list_apps` ignores a `{"name":...}` filter (no such schema field); the
+  CLI silently ignores the extra field instead of rejecting it.

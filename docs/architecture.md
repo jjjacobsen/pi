@@ -199,6 +199,134 @@ exercises the whole stack and is the gate for `mise check`.
   `lightpanda` from PATH.
 - **MAX_LINE cap**: single messages over 64MB fail with LineTooLong.
 
+# Computer-use extension (pi-cua)
+
+## Goal
+
+Give the pi coding agent control of the host desktop through [Cua
+Driver](https://github.com/trycua/cua) (`cua-driver` 0.20+): real apps,
+signed-in browser sessions, and the current OS user session, without moving
+the system cursor (each command targets a window instead of the shared
+cursor). Screenshots are written to disk and viewed through the existing
+describe_image vision tool, so the extension works with text-only primaries
+and the model controls when vision tokens are spent.
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/cua.ts     TS glue: 19 computer_* tool schemas + stdio bridge
+       └─ src/cua.zig      Zig backend: spawns `cua-driver call` per request
+            └─ cua-driver  CLI proxy to the CuaDriver daemon (CuaDriver.app on macOS)
+```
+
+Why this split:
+
+- pi extensions must be TypeScript modules, so the glue registers the tool
+  schemas (one per cua-driver MCP tool; params pass through as a JSON
+  string, so the keys must match the MCP argument names) and bridges calls
+  over the shared newline-delimited JSON pipe. Esc aborts by killing and
+  respawning the backend (shared `withAbort`), so no driver call outlives
+  its turn; the in-flight `cua-driver call` finishes on its own (it is a
+  short-lived CLI that proxies to the daemon).
+- Everything else is Zig: the argv build, the child lifecycle, the 120s
+  deadline, stdout/stderr handling, the screenshot directory, and the
+  get_window_state extraction.
+
+## Protocol (newline-delimited JSON on stdin/stdout)
+
+```json
+{"id":1,"op":"call","tool":"get_window_state","params":"{\"pid\":123}"}  -> Zig
+{"id":1,"ok":true,"result":"..."}                                            <- Zig
+{"id":1,"ok":false,"error":"..."}                                           <- failures
+```
+
+`params` is a JSON string containing the raw arguments object (same shape
+as pi-browser). `bin`, `shots_dir`, and `timeout_ms` are optional request
+fields used only by the self-check; the glue never sends them.
+
+## Zig behavior
+
+- **One spawn per call**: `cua-driver call [--screenshot-out-file <path>]
+  <tool> <params-json>`. The child's stdin is `.ignore` (a /dev/null open):
+  cua-driver call reads stdin when it is piped, which would block forever
+  on the backend's open pipe. stdout is drained to EOF (one JSON result
+  line, pretty-printed; draining past the 64KB pipe buffer is what keeps a
+  large elements array from deadlocking `wait`), stderr is drained on a
+  background thread into a capped buffer (the thread is joined before the
+  buffer is read or freed).
+- **Result rules** (learned from the real CLI, verified against 0.20.0):
+  - Non-empty stdout is the result, even when the payload is an in-band
+    error like `{"code":"window_id_not_found",...}` or
+    `invalid_arguments`: those are normal operational outcomes the model
+    must see and recover from, so they pass through as results.
+  - Empty stdout means the call failed: the stderr text is the error (e.g.
+    "Permission denied: tool 'x' has no reviewed risk classification"),
+    falling back to the exit term.
+  - Exit codes are never used to judge success (invalid args exit 0).
+  - The 120s default deadline (`timeout_ms` override) is enforced via the
+    shared poll-based readLine; on expiry the child is SIGTERMed and
+    reaped (`child.kill` closes its pipes, which also unblocks the stderr
+    thread). A missing binary surfaces "failed to spawn ...", not a hang.
+- **Screenshots**: image tools (get_window_state, get_desktop_state, zoom)
+  always get `--screenshot-out-file` pointing into
+  `~/.pi/agent/cua-screenshots/` (shot-<millis>.png/.jpg). The response
+  does NOT echo the path back (the docs claim `screenshot_file_path`, the
+  real CLI omits it), so the backend tracks it: get_window_state gets it
+  appended by the extraction, the other two get a `screenshot: <path>`
+  prefix line. The dir is created on demand and pruned to the newest 25
+  files per call.
+- **get_window_state extraction**: the driver returns the AX tree twice
+  (model-facing `tree_markdown` with `[element_index N]` tags plus a
+  `structuredContent.elements` array of up to 2000 JSON rows). The elements
+  array is redundant bloat for the model and is dropped; the result keeps
+  the markdown plus what action selection needs: pid/window_id, element
+  count, window bounds, screenshot path + dimensions, `degraded_reason`,
+  background-input route statuses, and the escalation recommendation. A
+  payload without `tree_markdown` (in-band errors) passes through raw.
+- Result text is capped at 256KB with head/tail truncation (shared
+  pattern with pi-browser), so a huge tree cannot flood the model's
+  context or the session file.
+- **Self-check**: `zig build run -- --self-check` exercises the whole
+  dispatch against a fake `cua-driver` shell script (which records its
+  argv to a log, writes screenshot files, and serves canned responses):
+  passthrough, tree extraction, zoom path prefix, the args log proving
+  the `--screenshot-out-file` argv shape, a stderr failure, an in-band
+  error payload, the timeout path (a 2s fake call with a 300ms deadline),
+  and a missing binary. No daemon or OS permissions needed; it is the gate
+  for `mise check`.
+
+## Flow
+
+The model calls `computer_list_apps` / `computer_list_windows` to find a
+target, `computer_get_window_state` for the AX tree + screenshot path
+(re-snapshot every turn: indices and element_tokens go stale), and
+`describe_image` on the screenshot path when pixels matter. Actions prefer
+`element_token` / `element_index + snapshot_id` (AX path: works on
+backgrounded windows, no focus steal); `x,y` pixel coordinates are
+window-local screenshot pixels (top-left origin, 2x scale on retina) for
+canvas/WebGL surfaces only. `computer_zoom` crops a region to a readable
+JPEG for pixel work. The driver reports background-input constraints in
+the snapshot; the model retries with `delivery_mode: "foreground"` when a
+background attempt did not land.
+
+## Notes
+
+- The glue unrefs the backend child and its pipes (shared `createBackend`),
+  registers `session_shutdown` to kill it, and the backend self-terminates
+  on stdin EOF like the other backends.
+- Requires the Cua Driver daemon running and macOS Accessibility + Screen
+  Recording granted to CuaDriver.app (`cua-driver permissions status`).
+  Standard permission mode is assumed; approval prompts surface as driver
+  errors the model relays. The extension itself makes no external calls
+  beyond the local daemon.
+- Session labels are deliberately not managed: cua-driver falls back to
+  the authenticated transport's implicit lifecycle session. Explicit
+  `start_session`/`end_session` management is future work.
+- Tool surface is the focused 19-tool observation/action loop; the other
+  ~37 driver tools (browser_*, clipboard, recording, menus, ...) are
+  deliberately not exposed. Add them per tool when needed.
+
 # Commit extension (pi-commit)
 
 ## Goal
