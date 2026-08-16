@@ -124,17 +124,17 @@ tool — pi passes images to them natively. `/vision show` and
 third-party @getpipher/vision package. See
 [docs/architecture.md](docs/architecture.md).
 
-### search - web search via the Codex subscription
+### search - web search via the Exa API
 
-`extensions/search.ts` + `src/search.zig`. The `web_search` tool runs the
-same server-side OpenAI web search pipeline the Codex CLI uses, free with a
-Codex subscription: the model plans queries, OpenAI's index searches, and
-the answer comes back grounded with `[n]` citation markers into a numbered
-source list. Mode `answer` (default) returns the cited answer plus sources;
-mode `results` stops streaming once the searches complete and returns only
-the sources, cutting most of the latency. One retry on transient failures,
-a hard deadline, Esc aborts, and no config file: auth comes from pi's model
-registry. Replaces the third-party pi-web-access package (uninstalled). See
+`extensions/search.ts` + `src/search.zig`. The `web_search` tool queries
+Exa with the `EXA_API_KEY` from your shell environment and returns a
+numbered source list with excerpts: the model writes the answer and cites
+sources as `[n]` markers into the list. Mode `answer` (default) returns
+sources with longer excerpts for synthesis; mode `results` returns only a
+compact list, faster and cheaper. One retry on transient failures, a 30s
+deadline, Esc aborts, domain and recency filters, and the per-search cost
+is reported so /usage counts it. Replaces the third-party pi-web-access
+package (uninstalled) and the original Codex-backed search. See
 [docs/architecture.md](docs/architecture.md).
 
 ## Adding a new extension

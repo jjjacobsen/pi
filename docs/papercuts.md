@@ -250,3 +250,22 @@ extensions/ as a hk step.
   them silently, so a future protocol drift fails loudly instead of hanging.
 - Lesson: test the glue's actual wire bytes, not the documented ones; and
   when a tool hangs forever with no error, check the backend's id-0 replies.
+
+## 2026-08-15 — Exa search rewrite
+
+- Sourcing `~/.zshrc` inside a bash tool session dies silently before the
+  next command runs: the `eval "$(fnox activate zsh)"` and `eval "$(mise
+  activate zsh)"` hooks plus zsh-only syntax (`autoload`, `bindkey`,
+  `(( ... ))`) abort the whole script under bash, and earlier commands that
+  did survive left the session in a broken state. Fix: don't source it,
+  copy the needed export inline (`export EXA_API_KEY="..."`).
+- Zig 0.16 `std.http` decompressing reader: `readVec` returning 0 means the
+  reader's internal buffer was drained (bytes it had already pulled from
+  the socket), not EOF. Breaking on 0 truncated the Exa response body and
+  made the parse fail with "not valid JSON"; only `error.EndOfStream` is
+  EOF. Fix: keep looping, re-check `reader.buffered()` after a 0-return
+  read (same quirk as the old SSE loop, now hit on a plain full-body read).
+- `std.ArrayList` (unmanaged) takes the allocator per call
+  (`appendSlice(alloc, items)`); `common.List` is the managed variant and
+  takes no allocator argument. Using the managed `List` with the unmanaged
+  call shape fails to compile.

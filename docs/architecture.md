@@ -1099,145 +1099,119 @@ primary -> hint appended -> model calls describe_image.
 
 ## Goal
 
-In-house replacement for the pi-web-access package (uninstalled): a single
-`web_search` tool that runs OpenAI's server-side web search pipeline, the
-same one the Codex CLI uses, free with a Codex subscription. No API keys, no
-config file, no provider matrix, no curator UI, no summary-model round trip.
-Fast by construction: `answer` mode returns the grounded, cited answer;
-`results` mode stops streaming the moment the searches complete and returns
-just the source list, skipping the answer-generation wait.
+In-house replacement for the pi-web-access package (uninstalled) and the
+original Codex-backed pi-search: a single `web_search` tool that queries the
+Exa API with the user's `EXA_API_KEY` (from the shell environment, e.g.
+`~/.zshrc`) and returns a numbered source list with excerpts. Exa has no
+built-in answer synthesis, so the model writes the grounded answer and cites
+sources as `[n]` markers against the returned list. No config file, no auth
+flow: `answer` mode requests longer excerpts (maxCharacters 900) so the
+model can synthesize; `results` mode requests short excerpts (250) and
+returns just the compact list, faster and cheaper.
 
 ## Architecture
 
 ```
 pi (coding agent)
-  └─ extensions/search.ts    TS glue: tool schema, Codex auth resolution
-       └─ src/search.zig      Zig backend: request body, SSE stream parse,
-                              citation markers, result formatting, deadline
-            └─ chatgpt.com/backend-api/codex/responses  (HTTPS, streamed)
+  └─ extensions/search.ts    TS glue: tool schema, EXA_API_KEY from env
+       └─ src/search.zig      Zig backend: Exa request body, response parse,
+                              source list formatting, deadline, cost usage
+            └─ api.exa.ai/search  (HTTPS, JSON request/response)
 ```
 
 Why this split:
 
-- The glue's only jobs are the tool schema and auth: pick an openai-codex
-  model from pi's model registry (preferring the mid-tier "terra", like the
-  old routing did), resolve its token via `getApiKeyAndHeaders`, decode the
-  `chatgpt-account-id` from the JWT claims, and pass endpoint/headers/model
-  to Zig per call (the pi-vision pattern). Esc aborts by killing and
-  respawning the backend.
-- Everything else is Zig: the Responses API request body (instructions,
-  web_search tool with allowed/blocked domain filters, include of
-  `web_search_call.action.sources`, `tool_choice: "required"`), the SSE
-  stream parse (web_search_call sources + message content parts with
-  url_citation annotations), the [n] citation markers, the numbered source
-  list, the single retry, and the hard deadline.
+- The glue's only jobs are the tool schema and the API key: read
+  `process.env.EXA_API_KEY` (fails loudly at call time when missing) and
+  forward it per call. Esc aborts by killing and respawning the backend.
+- Everything else is Zig: the Exa request body (query, numResults capped at
+  Exa's standard 10, `type: "auto"` with `useAutoprompt: false` so the query
+  is never rewritten, includeDomains/excludeDomains from the domain filters,
+  startPublishedDate from the recency filter, contents.text.maxCharacters
+  per mode), the JSON response parse (results deduped by url, capped at 30),
+  the numbered source list, the single retry, the hard deadline, and the
+  cost accounting.
 
 ## Protocol (newline-delimited JSON on stdin/stdout)
 
 ```json
-{"id":1,"op":"search","query":"...","mode":"answer","num_results":8,"recency":"week","domains":["example.com","-bad.com"],"endpoint":"https://chatgpt.com/backend-api/codex/responses","api_key":"...","headers":"[[\"h\",\"v\"],...]","model":"gpt-5.6-terra","timeout_ms":60000}
-{"id":1,"ok":true,"result":"<answer with [n] markers>\n\nSources:\n1. Title (url)\n   snippet"}       <- or {"id":1,"ok":false,"error":"..."}
+{"id":1,"op":"search","query":"...","mode":"answer","num_results":8,"recency":"week","domains":["example.com","-bad.com"],"api_key":"...","timeout_ms":30000}
+{"id":1,"ok":true,"result":"Sources:\n1. Title (url)\n   excerpt...","usage":{"input":0,...,"cost":{"total":0.007}}}       <- or {"id":1,"ok":false,"error":"..."}
 ```
 
 `domains` entries with a leading `-` are blocked; the rest are allowed.
-`recency` is day/week/month/year. `num_results` caps at 20. The tool param
-names (`mode`, `numResults`, `recencyFilter`, `domainFilter`) keep the old
-pi-web-access surface so the model's habits carry over.
+`recency` is day/week/month/year and maps to `startPublishedDate`, computed
+in Zig as an ISO 8601 UTC timestamp via `std.time.epoch`. `num_results`
+caps at 10. The tool param names (`mode`, `numResults`, `recencyFilter`,
+`domainFilter`) keep the old pi-web-access surface so the model's habits
+carry over, and the `[n]` citation habit carries over too: the numbered
+source list keeps the same shape, only the answer synthesis moved from the
+server to the model.
 
 ## Zig behavior
 
-- **Request body**: instructions ("grounded only in the web results", the
-  recency label, "prefer around N distinct sources", the domain rules) plus
-  the web_search tool with server-side `filters.allowed_domains` /
-  `blocked_domains`, `include: ["web_search_call.action.sources"]`,
-  `store: false`, `stream: true`, `tool_choice: "required"`,
-  `parallel_tool_calls: true`. The server-side model plans its own queries,
-  so one user query fans out into several searches in parallel.
-- **SSE parse**: `response.output_item.done` events carry the items. A
-  `web_search_call` item yields sources from any of its shapes
-  (`output`, `action.sources`, `sources`, `results`; url falls back to
-  `source_website_url`, title to `caption`), deduped by url. A `message`
-  item yields content parts plus `url_citation` annotations
-  (start/end indexes). Terminal events (`response.completed`/`response.done`)
-  are handled before the item lookup — they carry `response`, not `item` —
-  and their `response.usage` object (input/output/cached/reasoning tokens)
-  is captured for the tool result.
-- **Citation markers**: annotations resolve to the 1-based position in the
-  source list; a `[n]` marker is inserted right after the cited span.
-  Annotation urls missing from the web_search_call list are appended as
-  sources, their cited span becoming the snippet, so every marker
-  resolves. Spans are validated against the part text before use.
-- **Results mode**: the read loop stops at the first
-  `response.output_item.added` for a message item once sources exist —
-  the message is only added after every search call completes, so this is
-  the earliest point where all sources are in, and it skips the entire
-  answer-generation wait. If no sources arrived by then (sources only in
-  the final response), the stream continues to completion and the sources
-  are returned anyway.
-- **Streaming read**: SSE lines are pulled incrementally via the
-  decompressing response reader with a manual line buffer, so results mode
-  can break out mid-stream. The reader buffers internally: bytes that
-  arrive with the response head sit in `buffered()` and a read that refills
-  that buffer returns 0, so the loop drains `buffered()` first and
-  re-checks it after any 0-return read (a papercut, see docs/papercuts.md).
-  A single event line is capped at 4MB.
-- **Failure handling**: non-2xx surfaces the provider's `error.message`
-  with the status. 429/5xx/network errors retry once after 500ms; 4xx and
-  "no answer or sources" fail immediately. The HTTP call runs on a worker
-  thread with a 60s deadline (the shared `httpWithDeadline` machinery in
+- **Request body**: POST to `https://api.exa.ai/search` with `x-api-key`
+  (no other auth) and a JSON body carrying query, numResults, type,
+  useAutoprompt, includeDomains, excludeDomains, startPublishedDate, and
+  contents.text.maxCharacters. Optional fields are omitted when absent.
+  `useAutoprompt: false` matters: Exa rewrites the query by default, and
+  the model already planned it.
+- **Response parse**: `results[]` objects yield title/url/text, deduped by
+  url and capped at 30. A missing `results` array is an error; an empty one
+  returns "No results found." as a clean outcome. `costDollars.total` (USD)
+  becomes the tool result's usage JSON so /usage aggregates web_search
+  under the Tools provider (no tokens to report, cost only).
+- **Formatting**: `Sources:` followed by numbered `Title (url)` entries
+  with a normalized excerpt (`answer` mode up to 900 chars, `results` mode
+  up to 250). Total output capped at 32KB.
+- **Failure handling**: non-2xx surfaces Exa's `error`/`message` with the
+  status. 429/5xx/network errors retry once after 500ms; 4xx (including
+  402 out-of-credits) fail immediately. The HTTP call runs on a worker
+  thread with a 30s deadline (the shared `httpWithDeadline` machinery in
   `common.zig`, same as pi-vision), so a hung endpoint cannot stall the
-  backend. The glue computes cost from the Codex model's pricing and
-  reports the tokens as `AgentToolResult.usage`, so web_search usage lands
-  in pi's footer and /usage totals.
-- **Self-check**: `zig build run -- --self-check` spins up an in-process
-  HTTP server (no network) and exercises the whole pipeline: a full
-  answer-mode stream (marker placement, source list, snippet, and body
-  assertions for model/tool/filters/instructions), an injected 500 proving
-  the single retry, a 400 surfacing immediately, results mode against a
-  stream that stalls 1.5s before completion (proving the early stop under
-  a 600ms deadline), a two-citation answer proving dedupe and
-  annotation-only sources, a 300ms deadline against a 2s-slow server, and
-  an exact server request count. It is the gate for `mise check`.
+  backend.
+- **Self-check**: `./zig-out/bin/pi-search --self-check` spins up an
+  in-process HTTP server (no network) and exercises the whole pipeline: an
+  answer-mode happy path (numbered sources, dedupe, excerpt, usage cost,
+  and body assertions for query/numResults/domains/recency/maxCharacters/
+  useAutoprompt), an injected 500 proving the single retry, a 400 surfacing
+  immediately, results mode (compact excerpt cap), a 300ms deadline against
+  a 2s-slow server, an empty result set, a no-recency body, validation
+  failures (missing query/api key, bad mode), and an exact server request
+  count.
 
 ## Glue behavior
 
-- Auth: `modelRegistry.getAll()` filtered to provider `openai-codex`
-  (excluding pro/ultra model segments), preferring an id containing
-  "terra". No openai-codex model -> clear error telling the user to
-  `/login` with a Codex account. The resolved token becomes the Bearer,
-  the JWT's `chatgpt_account_id` becomes the `chatgpt-account-id` header,
-  plus `originator: pi` and the `responses=experimental` beta header, all
-  forwarded to Zig as a JSON header list.
-- No config file, no provider selection, no tool visibility sync: the tool
-  is always registered and fails loudly at call time without a Codex
-  subscription.
+- The API key comes from `process.env.EXA_API_KEY`; no Codex auth, no pi
+  model registry involvement. A missing key yields a clear error telling
+  the user to export it before starting pi.
+- No config file, no provider selection: the tool is always registered and
+  fails loudly at call time without the key.
 - `createBackend` `restart()` on abort (Esc) kills a backend blocked in an
   HTTP read and respawns it, same as pi-vision.
 
 ## Flow
 
-`web_search(query, mode, ...)` -> glue resolves Codex auth -> Zig builds the
-Responses body and streams the SSE -> sources and message parts collected ->
-citation markers inserted -> answer + numbered source list returned ->
-the model answers with `[n]` citations resolving to the source list.
-`results` mode returns after the searches complete, before the answer is
-written. Pages that need full content are fetched with the browser tools.
+`web_search(query, mode, ...)` -> glue reads EXA_API_KEY -> Zig posts the
+search and parses the JSON -> numbered source list with excerpts returned
+-> the model writes the answer with `[n]` citations resolving to the list.
+`results` mode returns just the compact list. Pages that need full content
+are fetched with the browser tools.
 
 ## Notes
 
 - The glue unrefs the backend child and its pipes (shared `createBackend`),
   and the backend self-terminates on stdin EOF like the other backends.
-- The Codex endpoint is what pi-web-access's openai-search.ts used, so the
-  auth shape (JWT bearer + account id) is battle-tested in this
-  environment. The early stop in results mode relies on the documented
-  stream event ordering (`output_item.added` for the message comes after
-  all web_search_call items); if OpenAI ever changes that ordering, results
-  mode degrades to full-stream latency, never to wrong results, because
-  the no-sources case keeps streaming.
+- Exa's free tier is 1000 credits per month, one search per credit; the
+  per-search cost (currently ~$0.007) rides the tool result's usage so
+  /usage reflects it. The old Codex-backed search was replaced because the
+  server-side synthesis pipeline (query planning + search + answer
+  generation before the first token) regularly blew the 60s deadline;
+  Exa returns in milliseconds and the answer synthesis moved to the model,
+  which was already writing the final answer anyway.
 - `queries` arrays and multi-provider fan-out are deliberately gone: the
-  server-side model plans multiple queries itself, and parallel fan-out to
-  several providers was the bloat this extension replaces.
-
+  model plans the query, and parallel fan-out to several providers was the
+  bloat this extension replaces.
 # Footer extension (extensions/footer.ts)
 
 ## Goal
