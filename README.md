@@ -61,7 +61,11 @@ scroll, cursor, kill) that drive the host desktop through
 windows without moving the system cursor. Screenshots are written to
 `~/.pi/agent/cua-screenshots/` and viewed through the existing
 describe_image vision tool (the model decides when pixels are worth
-vision tokens). Requires the CuaDriver daemon with Accessibility + Screen
+vision tokens). Every `get_window_state` tree row carries its
+`element_token` and the snapshot_id is surfaced, so tree-driven clicks
+(`element_token` or `element_index + snapshot_id`) work with no pixels;
+screenshots are only needed for canvas surfaces the AX tree does not
+cover. Requires the CuaDriver daemon with Accessibility + Screen
 Recording granted. Self-check runs against a fake `cua-driver` script, so
 `mise check` passes without the daemon.
 See [docs/architecture.md](docs/architecture.md).

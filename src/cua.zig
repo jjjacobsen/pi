@@ -156,13 +156,17 @@ fn printNumber(buf: *List, v: json.Value) !void {
 
 // get_window_state returns the AX tree twice: a model-facing tree_markdown
 // (rows tagged with [element_index N]) and a structuredContent.elements
-// array with up to 2000 entries (the same rows, JSON-shaped). The elements
-// array is redundant bloat for the model, so it is dropped and the
-// markdown plus the fields that matter for action selection are kept:
-// window bounds, the screenshot path (we chose it), element count,
-// degraded reason, background-input route statuses, and the escalation
-// recommendation. A payload without tree_markdown (e.g. an in-band error
-// such as window_id_not_found) passes through raw.
+// array with up to 2000 entries (the same rows, JSON-shaped, each carrying
+// an element_token and an optional selected flag). The elements array is
+// redundant bloat for the model, so it is dropped; but its tokens and
+// selected flags are injected into the markdown rows ("tok=...") so every
+// tree row is directly clickable via element_token, and the snapshot_id is
+// surfaced so element_index + snapshot_id clicks work too. The result also
+// keeps the fields action selection needs: window bounds, the screenshot
+// path (we chose it), element count, degraded reason, background-input
+// route statuses, and the escalation recommendation. A payload without
+// tree_markdown (e.g. an in-band error such as window_id_not_found) passes
+// through raw.
 fn extractWindowState(arena: Allocator, out: []const u8, shot_path: []const u8) ![]const u8 {
     const parsed = json.parseFromSlice(json.Value, arena, out, .{}) catch {
         return capResult(arena, out);
@@ -177,6 +181,12 @@ fn extractWindowState(arena: Allocator, out: []const u8, shot_path: []const u8) 
     if (obj.get("pid")) |v| try printNumber(&buf, v) else try buf.appendSlice("?");
     try buf.appendSlice("  window_id: ");
     if (obj.get("window_id")) |v| try printNumber(&buf, v) else try buf.appendSlice("?");
+    if (obj.get("snapshot_id")) |sid| {
+        if (sid == .string and sid.string.len > 0) {
+            try buf.appendSlice("  snapshot_id: ");
+            try buf.appendSlice(sid.string);
+        }
+    }
     if (obj.get("element_count")) |v| {
         try buf.appendSlice("  elements: ");
         try printNumber(&buf, v);
@@ -267,16 +277,65 @@ fn extractWindowState(arena: Allocator, out: []const u8, shot_path: []const u8) 
             }
         }
     }
+    // Build element_index -> {token, selected} from the structured elements
+    // array so tree rows can carry their clickable element_token.
+    var elem_info = std.StringHashMap(ElemInfo).init(arena);
+    defer elem_info.deinit();
+    if (obj.get("elements")) |els| {
+        if (els == .array) {
+            for (els.array.items) |e| {
+                if (e != .object) continue;
+                const eo = e.object;
+                const idx = eo.get("element_index") orelse continue;
+                const tok = eo.get("element_token") orelse continue;
+                if (idx != .integer or tok != .string) continue;
+                const selected = if (eo.get("selected")) |s| (s == .bool and s.bool) else false;
+                var key_buf: [32]u8 = undefined;
+                const key = arena.dupe(u8, std.fmt.bufPrint(&key_buf, "{d}", .{idx.integer}) catch continue) catch continue;
+                elem_info.put(key, .{ .token = tok.string, .selected = selected }) catch continue;
+            }
+        }
+    }
+
     if (obj.get("tree_markdown")) |tm| {
         if (tm == .string and tm.string.len > 0) {
             try buf.appendSlice("\ntree:\n");
-            try buf.appendSlice(tm.string);
+            var lines = std.mem.splitScalar(u8, tm.string, '\n');
+            while (lines.next()) |line| {
+                var i: usize = 0;
+                while (i < line.len and line[i] == ' ') i += 1;
+                // A row starts with "- [N] "; continuation lines (labels
+                // spanning multiple lines) never start with "- [".
+                if (i + 3 < line.len and line[i] == '-' and line[i + 1] == ' ' and line[i + 2] == '[') {
+                    var j = i + 3;
+                    const start = j;
+                    while (j < line.len and line[j] >= '0' and line[j] <= '9') j += 1;
+                    if (j > start and j < line.len and line[j] == ']') {
+                        if (elem_info.get(line[start..j])) |info| {
+                            try buf.appendSlice(line[0 .. j + 1]);
+                            try buf.appendSlice(" tok=");
+                            try buf.appendSlice(info.token);
+                            if (info.selected) try buf.appendSlice(" [selected]");
+                            try buf.appendSlice(line[j + 1 ..]);
+                            try buf.appendSlice("\n");
+                            continue;
+                        }
+                    }
+                }
+                try buf.appendSlice(line);
+                try buf.appendSlice("\n");
+            }
         } else {
             try buf.appendSlice("\ntree: (empty)");
         }
     }
     return capResult(arena, buf.items);
 }
+
+const ElemInfo = struct {
+    token: []const u8,
+    selected: bool,
+};
 
 // Runs one `cua-driver call` and shapes the outcome. Never fails with an
 // error union on child trouble: spawn failures, timeouts, and empty-stdout
@@ -402,7 +461,7 @@ fn selfCheck(gpa: Allocator, io: std.Io, environ: *std.process.Environ.Map) !voi
         \\case "$tool" in
         \\  get_window_state)
         \\    printf 'fake-png' > "$out"
-        \\    echo '{{"pid":86748,"window_id":51958,"element_count":2,"window_bounds":{{"x":0.0,"y":33.0,"width":1512.0,"height":949.0}},"screenshot_width":1568,"screenshot_height":984,"screenshot_scale":2.0,"tree_markdown":"Window: Ghostty\\n  [element_index 1] Fake Button","background_input":{{"routes":[{{"route":"accessibility","status":"available","reason":"ok"}},{{"route":"window_pointer","status":"refused","reason":"off_space_or_ax_unresolved"}}]}},"escalation":{{"recommended":"foreground"}}}}'
+        \\    echo '{{"pid":86748,"window_id":51958,"element_count":3,"snapshot_id":"s0000000e","window_bounds":{{"x":0.0,"y":33.0,"width":1512.0,"height":949.0}},"screenshot_width":1568,"screenshot_height":984,"screenshot_scale":2.0,"tree_markdown":"Window: Ghostty\\n  - [1] Fake Button [actions=[press]]\\n  - [2] Fake Selected\\nSecond Line [actions=[press]]","elements":[{{"depth":1,"element_index":1,"element_token":"s0000000e:1","frame":{{"x":0.0,"y":0.0,"w":100.0,"h":20.0}},"label":"Fake Button","role":"AXButton","selected":false}},{{"depth":1,"element_index":2,"element_token":"s0000000e:2","frame":{{"x":0.0,"y":0.0,"w":100.0,"h":20.0}},"label":"Fake Selected","role":"AXButton","selected":true}}],"background_input":{{"routes":[{{"route":"accessibility","status":"available","reason":"ok"}},{{"route":"window_pointer","status":"refused","reason":"off_space_or_ax_unresolved"}}]}},"escalation":{{"recommended":"foreground"}}}}'
         \\    ;;
         \\  zoom)
         \\    printf 'fake-jpg' > "$out"
@@ -445,8 +504,11 @@ fn selfCheck(gpa: Allocator, io: std.Io, environ: *std.process.Environ.Map) !voi
     res = try runCall(gpa, io, arena, environ, &.{ .id = 2, .op = "call", .tool = "get_window_state", .params = "{\"pid\":86748,\"window_id\":51958}", .bin = script_path, .shots_dir = shots });
     check(res.ok, "get_window_state call succeeds");
     check(mem.indexOf(u8, res.text, "Fake Button") != null, "tree markdown is extracted");
-    check(mem.indexOf(u8, res.text, "[element_index 1]") != null, "element tags are preserved");
-    check(mem.indexOf(u8, res.text, "elements: 2") != null, "element count is reported");
+    check(mem.indexOf(u8, res.text, "- [1]") != null, "element tags are preserved");
+    check(mem.indexOf(u8, res.text, "snapshot_id: s0000000e") != null, "snapshot id is surfaced");
+    check(mem.indexOf(u8, res.text, "tok=s0000000e:1") != null, "element tokens are injected into tree rows");
+    check(mem.indexOf(u8, res.text, "tok=s0000000e:2 [selected]") != null, "selected state is injected into tree rows");
+    check(mem.indexOf(u8, res.text, "elements: 3") != null, "element count is reported");
     check(mem.indexOf(u8, res.text, "bounds: x=0 y=33 w=1512 h=949") != null, "window bounds are reported");
     check(mem.indexOf(u8, res.text, "screenshot: ") != null, "screenshot path is reported");
     check(mem.indexOf(u8, res.text, "window_pointer=refused (off_space_or_ax_unresolved)") != null, "background routes are summarized");

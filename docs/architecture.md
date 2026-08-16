@@ -278,12 +278,17 @@ fields used only by the self-check; the glue never sends them.
   files per call.
 - **get_window_state extraction**: the driver returns the AX tree twice
   (model-facing `tree_markdown` with `[element_index N]` tags plus a
-  `structuredContent.elements` array of up to 2000 JSON rows). The elements
-  array is redundant bloat for the model and is dropped; the result keeps
-  the markdown plus what action selection needs: pid/window_id, element
-  count, window bounds, screenshot path + dimensions, `degraded_reason`,
-  background-input route statuses, and the escalation recommendation. A
-  payload without `tree_markdown` (in-band errors) passes through raw.
+  `structuredContent.elements` array of up to 2000 JSON rows, each carrying
+  an `element_token` and an optional `selected` flag). The elements array
+  is redundant bloat for the model and is dropped, but its tokens and
+  selected flags are injected into the markdown rows (`[N] tok=...
+  [selected]`) and the `snapshot_id` is surfaced, so every tree row is
+  directly clickable via `element_token` or `element_index + snapshot_id`
+  with no pixel math and no screenshot. The result also keeps what action
+  selection needs: pid/window_id, element count, window bounds, screenshot
+  path + dimensions, `degraded_reason`, background-input route statuses,
+  and the escalation recommendation. A payload without `tree_markdown`
+  (in-band errors) passes through raw.
 - Result text is capped at 256KB with head/tail truncation (shared
   pattern with pi-browser), so a huge tree cannot flood the model's
   context or the session file.

@@ -291,3 +291,15 @@ extensions/ as a hk step.
   (`cua-driver describe <tool>` is the source of truth).
 - `list_apps` ignores a `{"name":...}` filter (no such schema field); the
   CLI silently ignores the extra field instead of rejecting it.
+- `std.StringHashMap` does NOT copy key memory in Zig 0.16 ("Key memory is
+  managed by the caller"). Keys built in a stack buffer (e.g.
+  `std.fmt.bufPrint`) and then `put` into the map silently point at
+  reused stack slots once the buffer goes out of scope - lookups then
+  miss or hit the wrong entry, and `grow` panics on the duplicate. Dupe
+  keys into an arena before `put`. Diagnosed via a map-iterator debug
+  print showing two entries with the same key.
+- `zig build run -- --self-check` does not refresh `zig-out/bin/<name>`:
+  the run artifact goes to the build cache, so hand-testing the installed
+  binary after a source change runs a stale build (panics/old behavior
+  that the self-check does not show). Run `zig build` first to install
+  the new binary, then exercise it.
