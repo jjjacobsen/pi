@@ -3,7 +3,7 @@
  *
  * Replaces pi's built-in footer with a cleaner two-line layout:
  *   line 1:  π  ~/Projects/pi  main            (workspace, git branch)
- *   line 2:  ↑26 ↓44 $0.000 1.0%/1.0M 12.4 tok/s   ...   deepseek-v4-flash • max
+ *   line 2:  ↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   ...   deepseek-v4-flash • max
  *
  * vs the built-in footer this drops the R (cache read), W (cache write),
  * CH (cache hit %) and (auto) compaction segments, and adds a tok/s
@@ -11,6 +11,13 @@
  * live value is a rolling average over the last ~15s of streaming, excluding
  * downtime pauses, so it reads steady instead of jumping chunk to chunk.
  * Model + reasoning level stay right-aligned.
+ *
+ * Context is shown as absolute tokens over the window (38,234/1.0M) instead
+ * of a percent; ctx.getContextUsage() already handles compaction correctly
+ * (tokens: null right after /compact until the next LLM response, shown as
+ * ?/1.0M, then anchored on the first post-compaction response's verified
+ * usage). A session_compact listener re-renders so the ?/1.0M state appears
+ * immediately instead of lingering stale until the next stream.
  *
  * Pure TS glue, no Zig backend: everything comes from the extension API
  * (ctx.sessionManager / ctx.getContextUsage / ctx.model) plus
@@ -188,13 +195,14 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	const { input, output, cost } = sessionTotals(ctx);
 	const contextUsage = ctx.getContextUsage();
 	const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
-	const contextPercent = contextUsage?.percent;
+	const contextTokens = contextUsage?.tokens ?? null;
+	const contextPercent = contextTokens !== null && contextWindow > 0 ? (contextTokens / contextWindow) * 100 : null;
 	const contextDisplay =
-		contextPercent === null || contextPercent === undefined
+		contextTokens === null
 			? `?/${formatTokens(contextWindow)}`
-			: `${contextPercent.toFixed(1)}%/${formatTokens(contextWindow)}`;
+			: `${contextTokens.toLocaleString("en-US")}/${formatTokens(contextWindow)}`;
 	const contextColor: "error" | "warning" | "dim" =
-		contextPercent === null || contextPercent === undefined
+		contextPercent === null
 			? "dim"
 			: contextPercent > 90
 				? "error"
@@ -294,6 +302,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("model_select", rerender);
 	pi.on("thinking_level_select", rerender);
 	pi.on("session_info_changed", rerender);
+	// Re-render right after /compact: getContextUsage() flips to tokens: null
+	// (displayed ?/1.0M) and session_info_changed does not fire for compaction
+	pi.on("session_compact", rerender);
 
 	pi.on("session_start", (_event, ctx) => {
 		if (footerEnabled && ctx.mode === "tui") enableFooter(ctx);

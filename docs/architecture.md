@@ -1354,7 +1354,7 @@ footer. Two lines plus optional extension statuses:
 
 ```
 π  ~/Projects/pi  main                       <- workspace
-↑26 ↓44 $0.000 1.0%/1.0M 12.4 tok/s   deepseek-v4-flash • max   <- stats, model right
+↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   deepseek-v4-flash • max   <- stats, model right
 ```
 
 Drops the built-in footer's cache segments (R = cache read, W = cache
@@ -1370,9 +1370,14 @@ extensions, so there is no protocol and no backend binary.
 - Token/cost totals: summed from `ctx.sessionManager.getEntries()`
   (assistant, toolResult, compaction and branch_summary usage), the same
   data the built-in footer uses.
-- Context usage: `ctx.getContextUsage()` (percent + context window),
-  threshold-colored like the built-in footer (warning above 70%, error
-  above 90%).
+- Context usage: `ctx.getContextUsage()` absolute tokens over the window
+  (`38,234/1.0M`, thousands-separated numerator), threshold-colored like
+  the built-in footer (warning above 70%, error above 90%). The source is
+  compaction-aware: right after /compact the tokens are unknown until the
+  next LLM response, so it shows `?/1.0M`; a `session_compact` listener
+  re-renders at that moment (session_info_changed only fires on session
+  name changes), and once the next response lands the value anchors on its
+  verified usage, which reflects the actual post-compaction context.
 - Git branch, extension statuses, provider count: `footerData` passed to
   the `ctx.ui.setFooter()` factory. `onBranchChange` triggers re-renders.
 - Model + reasoning level: `ctx.model` and `ctx.thinkingLevel` (live
@@ -1398,8 +1403,9 @@ extensions, so there is no protocol and no backend binary.
 - Enabled automatically at session start (TUI mode only); the `/footer`
   command toggles between this footer and the built-in one.
 - `message_update` / `message_end` / `model_select` /
-  `thinking_level_select` / `session_info_changed` handlers call
-  `tui.requestRender()` through a module-level handle that `dispose()`
-  clears (identity-checked so a replaced footer cannot null a newer one).
+  `thinking_level_select` / `session_info_changed` / `session_compact`
+  handlers call `tui.requestRender()` through a module-level handle that
+  `dispose()` clears (identity-checked so a replaced footer cannot null a
+  newer one).
 - Extension statuses set via `ctx.ui.setStatus()` still render on a third
   footer line, same as the built-in footer.
