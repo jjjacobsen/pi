@@ -298,3 +298,24 @@ extensions/ as a hk step.
 - tsconfig `paths` does not consult the target package's `exports` map: `@earendil-works/pi-ai/compat` mapped to the package dir fails because the file lives at `dist/compat.d.ts`. A package-specific entry mapping `@earendil-works/pi-ai/*` into `dist/` fixes subpath imports. Order does not matter, TS falls through a pattern whose target does not resolve to the next one (verified after `jq -S` reordered the entries).
 - `hk fix -S jq -S newlines` on a new tsconfig.json: the write tool emits no trailing newline (newlines step fails) and `Builtins.jq` (`jq -S`) wants multi-line array formatting, so a fresh JSON file fails the check until both fixers run once.
 - `bun`'s global install serves as the type source: `strict: false` + `paths` + `typeRoots` pointing at `~/.bun/install/global/node_modules` give the extension glue its types with no local `node_modules`, but the config is machine-specific and breaks on any clone lacking that install (documented in docs/architecture.md).
+
+## 2026-08-18 — one-shot conversion (pi-search)
+
+- Zig 0.16 format strings: a literal `{` in a `print` format string must be
+  `{{` even when it is the JSON envelope opener. `buf.print("{\"ok\":true,
+  \"result\":\"", .{})` fails to compile with "missing closing }" in
+  `std/Io/Writer.zig`; the existing code always used `{{` for the envelope
+  and the one-shot `respondExit`/`respondOutcomeExit` additions in
+  common.zig initially forgot it on one line. Any hand-built envelope in a
+  format string needs `{{`/`}}`, plain `appendSlice` is fine.
+- A multi-edit `edit` call is atomic: when one `oldText` matches multiple
+  locations (the search "unrefs the backend child" note appears in three
+  extension sections of docs/architecture.md), the whole call is rejected
+  and NONE of the edits apply, including the ones that were unique. After
+  a rejected multi-edit, grep to confirm nothing partial landed before
+  re-submitting with unique context anchors.
+- `pi.exec` result shape quirk: on a signal death (timeout or abort) the
+  exit `code` comes back as 0 with `killed: true` (the code is null for
+  signal terminations and execCommand substitutes 0), so the glue must
+  check `res.killed` before trusting the exit code, or a killed process
+  looks like an empty success. Handled in extensions/lib/zig.ts.

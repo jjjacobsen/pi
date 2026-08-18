@@ -91,7 +91,8 @@ Codex-backed search
 ## Adding a new extension
 
 1. Write the backend in `src/foo.zig` and add it to `bins` in `build.zig`
-2. Write `extensions/foo.ts` glue that bridges via `createBackend("pi-foo")`
+2. Write `extensions/foo.ts` glue that calls the binary via the shared
+   `callZig` helper (see `extensions/search.ts`)
 3. Document it in `docs/architecture.md` and this README
 
 ## Prompts

@@ -1,10 +1,12 @@
 // pi-common: IO, JSON, and process helpers shared by the extension backends.
 //
-// Every backend speaks the same protocol to its TS glue: one JSON request
-// line on stdin, one JSON response line on stdout. These helpers are the
-// shared part of that protocol (line reader with deadline, buffered writer,
-// JSON-escaped responder, process runner). Each backend keeps its own
-// request parsing, op dispatch, protocol structs, and self-check.
+// The converted one-shot backends speak this protocol: one JSON request as
+// a single argv element, one JSON response envelope on stdout, exit 0/1.
+// The persistent backends (browser last) still speak the older protocol:
+// one JSON request line on stdin, one JSON response line on stdout. These
+// helpers are the shared part of both (line reader with deadline, buffered
+// writer, JSON-escaped responder, process runner). Each backend keeps its
+// own request parsing, op dispatch, protocol structs, and self-check.
 
 const std = @import("std");
 const posix = std.posix;
@@ -156,6 +158,36 @@ pub fn okOutcome(text: []const u8) Outcome {
 
 pub fn failOutcome(arena: Allocator, comptime fmt: []const u8, args: anytype) !Outcome {
     return .{ .ok = false, .err = try std.fmt.allocPrint(arena, fmt, args) };
+}
+
+// One-shot response: prints {"ok":true,"result":"..."} |
+// {"ok":false,"error":"..."} and exits 0/1. There is no id: one request
+// per process, so responses are self-addressing. Used by the converted
+// one-shot backends; the id-based respond/respondOutcome below remain for
+// the persistent backends (browser last).
+pub fn respondExit(alloc: Allocator, io: std.Io, ok: bool, text: []const u8) noreturn {
+    var buf = List.init(alloc);
+    buf.print("{{\"ok\":{s},\"{s}\":\"", .{ if (ok) "true" else "false", if (ok) "result" else "error" }) catch {};
+    appendJsonEscaped(&buf, text) catch {};
+    buf.appendSlice("\"}\n") catch {};
+    writeAllIo(io, std.Io.File.stdout(), buf.items) catch {};
+    std.process.exit(if (ok) 0 else 1);
+}
+
+// One-shot response dispatch for an Outcome: ok -> result text, else error.
+// A non-null usage is appended to the ok line as "","usage":<json>.
+pub fn respondOutcomeExit(arena: Allocator, io: std.Io, outcome: Outcome) noreturn {
+    if (outcome.usage) |u| {
+        var buf = List.init(arena);
+        buf.print("{{\"ok\":true,\"result\":\"", .{}) catch {};
+        appendJsonEscaped(&buf, outcome.text) catch {};
+        buf.appendSlice("\",\"usage\":") catch {};
+        buf.appendSlice(u) catch {};
+        buf.appendSlice("}\n") catch {};
+        writeAllIo(io, std.Io.File.stdout(), buf.items) catch {};
+        std.process.exit(0);
+    }
+    respondExit(arena, io, outcome.ok, if (outcome.ok) outcome.text else outcome.err);
 }
 
 // Main-loop response dispatch for an Outcome: ok -> result text, else error.

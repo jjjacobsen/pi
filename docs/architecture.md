@@ -1,58 +1,43 @@
 # Shared code (pi-common / pi-backends)
 
-All four extension pairs share the same shape: a thin TS entry point that
-spawns a Zig backend and speaks newline-delimited JSON over stdio. The
-shared parts live in two files:
+Extensions are one-shot: the glue spawns the Zig binary per call with the
+request as a single JSON argv element (`pi.exec`), the binary prints one
+JSON envelope to stdout, and exits. No persistent processes, no stdio
+bridge, no lifecycle management. Fault tolerance is unchanged: a crash in
+the binary cannot take down pi. The shared parts live in two files:
 
 - `src/common.zig`: IO, JSON, and process helpers used by every backend —
-  the line reader with deadline (`readLine`), buffered writer
-  (`writeAllIo`), JSON-escaped responder (`respond`), monotonic and
-  realtime clocks (`nowMs` / `nowRealtimeMs`), and the command runner
-  (`runCmd`, `gitRoot`, `GitResult`). Since pi-search and pi-vision were
-  built, it also holds the HTTP-with-deadline machinery they share
-  (`httpWithDeadline`, `WorkerSlot`, `workerFinish`, `isRetryableStatus` /
-  `isRetryableErr`, `parseHeaders`): each backend keeps its own fetch
-  worker and response parsing, and the worker-slot lifecycle (socket
-  shutdown on deadline, abandoned-worker self-cleanup when a worker is
-  stuck before registering its socket) lives
-  once. Each backend aliases only what it
-  needs and keeps its own request parsing, op dispatch, protocol structs,
-  and self-check. `goal.zig` aliases `nowRealtimeMs` because its deadlines
-  must be comparable to the glue's wall time; the others use the monotonic
-  clock.
-- `extensions/lib/backend.ts`: `createBackend(binaryName, hooks)` owns spawning
-  the binary, the pending-call map, line dispatch, and the unref dance that
-  lets pi exit in print mode while the backend self-terminates on stdin EOF.
-  Backends start lazily: importing an extension spawns nothing, so pi's
-  startup (which imports every extension) does not start ten binaries plus
-  Lightpanda until they are actually used. It is also what makes `/reload`
-  trustworthy: before spawning it rebuilds with `zig build` when the source
-  tree (build.zig, build.zig.zon, everything
-  under src/, including @embedFile assets) is newer than the last successful
-  build recorded in `zig-out/.pi-build-stamp.json`, and a failed build throws
-  instead of running a stale binary. The stamp is project-wide and written
-  once per successful build, so the rebuild runs at most once per source
-  change and a launch with no source edits never invokes zig at all. Pending
-  calls are scoped to their child generation, `restart()` (Esc abort on
-  vision/search/browser) respawns only after the old child exits, `reset()`
-  (session replacement) does the same without the eager spawn, an
-  unexpected exit marks the backend dead and the next call respawns it, and
-  `kill()` is terminal. `createBackend` returns `{call, kill, reset,
-  restart}`; every extension registers
-  `pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event))`,
-  which kills on host teardown (quit, reload) and resets on session
-  replacement (new, resume, fork): pi rebinds the loaded extension instances
-  without re-importing them, so a terminal kill there would leave the new
-  session with a permanently dead backend, and instead the child is killed
-  and respawned fresh, wiping in-memory state (browser page, peon counters)
-  so nothing bleeds across sessions. `/clone` goes through the same fork
-  path, so every session replacement
-  starts with a clean backend. Teardown is
-  stdin EOF with SIGTERM insurance, instead of orphaning the process until
-  pi exits.
-  `hooks.onOk` picks the resolved value (vision and search resolve the full
-  response line so the glue can forward the delegated model's `usage`);
-  `hooks.onError` returns the error message (goal adds a fallback).
+  the one-shot responders (`respondExit` / `respondOutcomeExit`, which
+  print the `{"ok":true,"result":...}` envelope and exit 0/1), buffered
+  writer (`writeAllIo`), JSON-escaped writer helper (`appendJsonEscaped`),
+  monotonic and realtime clocks (`nowMs` / `nowRealtimeMs`), and the
+  command runner (`runCmd`, `gitRoot`, `GitResult`). Since pi-search and
+  pi-vision were built, it also holds the HTTP-with-deadline machinery
+  they share (`httpWithDeadline`, `WorkerSlot`, `workerFinish`,
+  `isRetryableStatus` / `isRetryableErr`, `parseHeaders`): each backend
+  keeps its own fetch worker and response parsing, and the worker-slot
+  lifecycle (socket shutdown on deadline, abandoned-worker self-cleanup
+  when a worker is stuck before registering its socket) lives once. Each
+  backend aliases only what it needs and keeps its own request parsing,
+  op dispatch, protocol structs, and self-check. `goal.zig` aliases
+  `nowRealtimeMs` because its deadlines must be comparable to the glue's
+  wall time; the others use the monotonic clock. The old id-based
+  `respond` / `respondOutcome` and the line reader (`readLine`) remain for
+  the persistent backends (browser last) and die with them.
+- `extensions/lib/zig.ts`: `callZig(pi, binaryName, params, {signal,
+  timeout})` runs one backend op. It resolves the binary path (fails with
+  a rebuild hint when missing), spawns the binary via `pi.exec` with the
+  request as one JSON argv element, parses the stdout envelope, and
+  throws on a killed process (abort or timeout), a crash (non-zero exit
+  without an envelope), or a protocol error (`ok:false`).
+
+The persistent bridge (`extensions/lib/backend.ts`, `createBackend` +
+`handleSessionShutdown`) is the pre-one-shot model, kept only for the
+unconverted backends (browser last). It owns lazy spawning, the
+pending-call map, line dispatch, `restart()` / `reset()` / `kill()` on
+session boundaries, and the unref dance; unconverted backends still
+register `pi.on("session_shutdown", ...)`. The conversion playbook lives
+in `skills/convert-extension/SKILL.md`.
 
 Per-backend protocol details are documented in each extension's section
 below; the wire format is identical everywhere: one JSON request line on
@@ -1157,7 +1142,8 @@ Why this split:
 
 - The glue's only jobs are the tool schema and the API key: read
   `process.env.EXA_API_KEY` (fails loudly at call time when missing) and
-  forward it per call. Esc aborts by killing and respawning the backend.
+  forward it per call. Esc aborts by SIGTERMing the one-shot binary, so no
+  request can outlive its turn.
 - Everything else is Zig: the Exa request body (query, numResults capped at
   Exa's standard 10, `type: "auto"` with `useAutoprompt: false` so the query
   is never rewritten, includeDomains/excludeDomains from the domain filters,
@@ -1166,11 +1152,11 @@ Why this split:
   the numbered source list, the single retry, the hard deadline, and the
   cost accounting.
 
-## Protocol (newline-delimited JSON on stdin/stdout)
+## Protocol (one-shot: one JSON request in argv, one JSON envelope on stdout)
 
 ```json
-{"id":1,"op":"search","query":"...","mode":"answer","num_results":8,"recency":"week","domains":["example.com","-bad.com"],"api_key":"...","timeout_ms":30000}
-{"id":1,"ok":true,"result":"Sources:\n1. Title (url)\n   excerpt...","usage":{"input":0,...,"cost":{"total":0.007}}}       <- or {"id":1,"ok":false,"error":"..."}
+{"op":"search","query":"...","mode":"answer","num_results":8,"recency":"week","domains":["example.com","-bad.com"],"api_key":"...","timeout_ms":30000}
+{"ok":true,"result":"Sources:\n1. Title (url)\n   excerpt...","usage":{"input":0,...,"cost":{"total":0.007}}}       <- or {"ok":false,"error":"..."}
 ```
 
 `domains` entries with a leading `-` are blocked; the rest are allowed.
@@ -1221,8 +1207,9 @@ server to the model.
   the user to export it before starting pi.
 - No config file, no provider selection: the tool is always registered and
   fails loudly at call time without the key.
-- `createBackend` `restart()` on abort (Esc) kills a backend blocked in an
-  HTTP read and respawns it, same as pi-vision.
+- The call goes through the shared `callZig` helper (pi.exec + argv JSON),
+  so Esc aborts by SIGTERMing the one-shot binary. No backend lifecycle
+  exists anymore.
 
 ## Flow
 
@@ -1234,8 +1221,8 @@ are fetched with the browser tools.
 
 ## Notes
 
-- The glue unrefs the backend child and its pipes (shared `createBackend`),
-  and the backend self-terminates on stdin EOF like the other backends.
+- One-shot: the binary runs once per call and exits. No unref dance, no
+  session_shutdown wiring, and in-flight aborts kill only the binary.
 - Exa's free tier is 1000 credits per month, one search per credit; the
   per-search cost (currently ~$0.007) rides the tool result's usage so
   /usage reflects it. The old Codex-backed search was replaced because the

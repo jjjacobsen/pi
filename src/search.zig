@@ -9,14 +9,14 @@
 // the model can synthesize; mode "results" requests short excerpts (250)
 // and returns just the compact list, faster and cheaper.
 //
-// Request line:  {"id":1,"op":"search","query":"...","mode":"answer","num_results":8,"recency":"week","domains":["example.com","-bad.com"],"api_key":"...","timeout_ms":30000}
-// Response line: {"id":1,"ok":true,"result":"...","usage":{"...cost..."}} | {"id":1,"ok":false,"error":"..."}
+// Request:  {"op":"search","query":"...","mode":"answer","num_results":8,"recency":"week","domains":["example.com","-bad.com"],"api_key":"...","timeout_ms":30000} (one JSON argv element)
+// Response: {"ok":true,"result":"...","usage":{"...cost..."}} | {"ok":false,"error":"..."} (stdout, exit 0/1)
 //
 // The HTTP call runs on a worker thread so a hung endpoint cannot stall the
-// backend: the main thread enforces the deadline and, on expiry, shuts down
+// process: the main thread enforces the deadline and, on expiry, shuts down
 // the worker's socket to unblock it and lets the worker finish on its own.
 // Retryable failures (429, 5xx, network errors) are retried once after a
-// short backoff. The glue kills the backend on user abort (Esc), so no
+// short backoff. Esc aborts the call: pi.exec SIGTERMs the binary, so no
 // request can outlive its turn.
 
 const std = @import("std");
@@ -26,10 +26,8 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const List = common.List;
-const readLine = common.readLine;
-const respond = common.respond;
-
-const MAX_LINE = 4 * 1024 * 1024; // hard cap on a single request line
+const respondExit = common.respondExit;
+const respondOutcomeExit = common.respondOutcomeExit;
 const MAX_BODY = 4 * 1024 * 1024; // cap on the Exa response body
 const MAX_ANSWER = 32 * 1024; // cap on the formatted result
 const MAX_SNIPPET = 250; // excerpt cap in results mode
@@ -41,7 +39,6 @@ const RETRY_BACKOFF_MS = 500;
 const EXA_URL = "https://api.exa.ai/search";
 
 const Request = struct {
-    id: i64,
     op: []const u8,
     query: ?[]const u8 = null,
     mode: ?[]const u8 = null,
@@ -535,7 +532,7 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
 
     const mkreq = struct {
         fn f(ep: []const u8, query: []const u8, mode: []const u8, num_results: u32, recency: ?[]const u8, domains: ?[]const []const u8, timeout_ms: u32) Request {
-            return .{ .id = 1, .op = "search", .query = query, .mode = mode, .num_results = num_results, .recency = recency, .domains = domains, .endpoint = ep, .api_key = "selfcheck-key", .timeout_ms = timeout_ms };
+            return .{ .op = "search", .query = query, .mode = mode, .num_results = num_results, .recency = recency, .domains = domains, .endpoint = ep, .api_key = "selfcheck-key", .timeout_ms = timeout_ms };
         }
     }.f;
 
@@ -597,11 +594,11 @@ fn selfCheck(gpa: Allocator, io: std.Io) !void {
     fail(mem.indexOf(u8, b7, "startPublishedDate") == null, "no recency means no date filter");
 
     // 8. validation: missing query / api key / bad mode fail before any HTTP.
-    const r8 = try opSearch(gpa, arena, io, .{ .id = 1, .op = "search", .query = "", .api_key = "selfcheck-key", .timeout_ms = 1000 });
+    const r8 = try opSearch(gpa, arena, io, .{ .op = "search", .query = "", .api_key = "selfcheck-key", .timeout_ms = 1000 });
     fail(!r8.ok and mem.indexOf(u8, r8.err, "missing query") != null, "missing query fails");
-    const r9 = try opSearch(gpa, arena, io, .{ .id = 1, .op = "search", .query = "x", .mode = "bogus", .api_key = "selfcheck-key", .timeout_ms = 1000 });
+    const r9 = try opSearch(gpa, arena, io, .{ .op = "search", .query = "x", .mode = "bogus", .api_key = "selfcheck-key", .timeout_ms = 1000 });
     fail(!r9.ok and mem.indexOf(u8, r9.err, "mode must be") != null, "bad mode fails");
-    const r10 = try opSearch(gpa, arena, io, .{ .id = 1, .op = "search", .query = "x", .api_key = "", .timeout_ms = 1000 });
+    const r10 = try opSearch(gpa, arena, io, .{ .op = "search", .query = "x", .api_key = "", .timeout_ms = 1000 });
     fail(!r10.ok and mem.indexOf(u8, r10.err, "missing api_key") != null, "missing api key fails");
 
     // The server must have served exactly 8 requests (happy, 500, retry,
@@ -630,33 +627,22 @@ pub fn main(init: std.process.Init) !void {
         try selfCheck(gpa, io);
         return;
     }
+    if (argv.len < 2) {
+        std.debug.print("usage: pi-search '<request json>' | --self-check\n", .{});
+        std.process.exit(2);
+    }
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    var stdin_buf = List.init(gpa);
-    defer stdin_buf.deinit();
+    const arena = arena_state.allocator();
 
-    while (true) {
-        _ = arena_state.reset(.retain_capacity);
-        const arena = arena_state.allocator();
+    const req = json.parseFromSlice(Request, arena, std.mem.sliceTo(argv[1], 0), .{ .ignore_unknown_fields = true }) catch |err|
+        respondExit(arena, io, false, @errorName(err));
 
-        const line = readLine(posix.STDIN_FILENO, &stdin_buf, MAX_LINE, arena, null) catch break orelse break;
-        if (line.len == 0) continue;
+    const outcome = if (mem.eql(u8, req.value.op, "search"))
+        opSearch(gpa, arena, io, req.value) catch |err| respondExit(arena, io, false, @errorName(err))
+    else
+        respondExit(arena, io, false, "unknown op");
 
-        const req = json.parseFromSlice(Request, arena, line, .{ .ignore_unknown_fields = true }) catch |err| {
-            respond(arena, io, 0, false, @errorName(err)) catch {};
-            continue;
-        };
-        const id = req.value.id;
-
-        if (mem.eql(u8, req.value.op, "search")) {
-            const outcome = opSearch(gpa, arena, io, req.value) catch |err| {
-                respond(arena, io, id, false, @errorName(err)) catch {};
-                continue;
-            };
-            respondOutcome(arena, io, id, outcome);
-        } else {
-            respond(arena, io, id, false, "unknown op") catch {};
-        }
-    }
+    respondOutcomeExit(arena, io, outcome);
 }
