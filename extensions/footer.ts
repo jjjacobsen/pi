@@ -39,8 +39,7 @@ const ICONS = {
 	gauge: "\u{F0E4}", // nf-fa-gauge
 };
 
-// Subscription-billed providers: keep the $ segment visible even at $0.000
-const SUBSCRIPTION_PROVIDERS = new Set(["anthropic", "github-copilot", "kimi-coding", "openai-codex", "xai"]);
+// Cost is always shown, starting at $0.000 before the first billed response
 
 // Rough chars-per-token for the live tok/s estimate
 const CHARS_PER_TOKEN = 4;
@@ -214,8 +213,7 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 
 	const parts: string[] = [];
 	parts.push(theme.fg("dim", `↑${formatTokens(input)} ↓${formatTokens(output)}`));
-	const isSubscription = ctx.model ? SUBSCRIPTION_PROVIDERS.has(ctx.model.provider) : false;
-	if (cost > 0 || isSubscription) parts.push(theme.fg("dim", `$${cost.toFixed(3)}`));
+	parts.push(theme.fg("dim", `$${cost.toFixed(3)}`));
 	parts.push(theme.fg(contextColor, contextDisplay));
 	// tok/s last so the rest of the line never shifts when it appears
 	parts.push(theme.fg("accent", `${ICONS.gauge} ${currentTokPerSec()} tok/s`));

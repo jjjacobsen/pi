@@ -1430,9 +1430,8 @@ extensions, so there is no protocol and no backend binary.
 - Model + reasoning level: `ctx.model` and `ctx.thinkingLevel` (live
   getters), right-aligned like the built-in footer, with the `(provider)`
   prefix when more than one provider has models.
-- Cost segment: shown when the session has cost or the provider is
-  subscription-billed (anthropic, github-copilot, kimi-coding,
-  openai-codex, xai), matching the built-in footer's visibility rule.
+- Cost segment: always visible, starting at $0.000 before the first
+  billed response.
 - tok/s: estimated from streamed characters (`text_delta` +
   `thinking_delta` lengths from `message_update` events, ~4 chars per
   token), smoothed over a sliding 15-second window. It is the last segment
