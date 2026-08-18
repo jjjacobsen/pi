@@ -23,8 +23,8 @@
  * Pure TS glue, no Zig backend: everything comes from the extension API
  * (ctx.sessionManager / ctx.getContextUsage / ctx.model) plus
  * footerData (git branch, extension statuses). Nerd Font icons used:
- * fa-folder U+F07B, fa-code-fork U+F126, fa-gauge U+F0E4 (all present in
- * FiraCode Nerd Font). Enabled at session start; /footer toggles.
+ * fa-folder U+F07B, fa-code-fork U+F126 (all present in FiraCode Nerd
+ * Font). Enabled at session start; /footer toggles.
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -36,7 +36,6 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 const ICONS = {
 	folder: "\u{F07B}", // nf-fa-folder
 	git: "\u{F126}", // nf-fa-code_fork
-	gauge: "\u{F0E4}", // nf-fa-gauge
 };
 
 // Cost is always shown, starting at $0.000 before the first billed response
@@ -216,7 +215,7 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	parts.push(theme.fg("dim", `$${cost.toFixed(3)}`));
 	parts.push(theme.fg(contextColor, contextDisplay));
 	// tok/s last so the rest of the line never shifts when it appears
-	parts.push(theme.fg("accent", `${ICONS.gauge} ${currentTokPerSec()} tok/s`));
+	parts.push(theme.fg("dim", `${currentTokPerSec()} tok/s`));
 	const left = parts.join("  ");
 
 	// Line 2 right: model + reasoning level
