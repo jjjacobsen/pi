@@ -29,7 +29,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CURRENT_SESSION_VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { createBackend, handleSessionShutdown } from "./lib/backend";
 import { prefixCompletions } from "./lib/toolkit";
 
 const backend = createBackend("pi-wt");
@@ -90,7 +90,7 @@ async function switchToWorktree(ctx, worktreePath, branch, base) {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
+  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
   pi.registerCommand("wt", {
     description: "Create a git worktree and switch to a pi session in it (re-enters an existing worktree; /wt list, /wt merge <topic>, /wt prune <topic>)",
     getArgumentCompletions: (prefix) => prefixCompletions(["list", "merge", "prune"], prefix),

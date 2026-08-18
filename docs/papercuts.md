@@ -303,3 +303,7 @@ extensions/ as a hk step.
   binary after a source change runs a stale build (panics/old behavior
   that the self-check does not show). Run `zig build` first to install
   the new binary, then exercise it.
+
+## 2026-08-17
+
+- Driving `createBackend` logic with a standalone harness: `extensions/lib/backend.ts` is TypeScript for pi which runs under Node (`#!/usr/bin/env node`), not Bun, so harnesses must transpile (`bun build --target=node`) and run under `node`, placed at `extensions/lib/` so `import.meta.dirname`-based root resolution lands on the repo. The unref'd child+pipes mean a harness with no ref'd handles exits before pipe I/O completes ("unsettled top-level await"): add a `setInterval(() => {}, 1000)` keep-alive. Also: `bun build` emits `+ \`\n\`` for `+ "\n"` as a template literal with a real newline, so textual patches around the write line land inside the string and corrupt the payload.

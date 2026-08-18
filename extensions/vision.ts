@@ -21,7 +21,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { createBackend, handleSessionShutdown } from "./lib/backend";
 import { toToolUsage, toolError, withAbort } from "./lib/toolkit";
 
 const TOOL_NAME = "describe_image";
@@ -82,7 +82,7 @@ function syncToolAvailability(pi, model) {
 // in an HTTP request) and spawns a fresh one.
 
 export default function visionExtension(pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
+  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
 
   // Resync tool visibility on session start and whenever the model changes.
   pi.on("session_start", (_event, ctx) => {

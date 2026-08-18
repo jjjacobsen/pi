@@ -20,16 +20,20 @@
 //   you why not. The stamp is project-wide and written once per successful
 //   build, so the rebuild runs at most once per source change and a launch
 //   with no source edits never invokes zig at all.
-// - Old processes are killed on host teardown: use the exported
-//   killOnHostTeardown(backend, event) from a pi.on("session_shutdown")
-//   handler, which kills only when the host actually goes away (reason
-//   "quit" or "reload"). kill() closes stdin (EOF is the backend's
-//   self-terminate signal) and SIGTERMs as insurance, rejects pending
-//   calls, and makes later calls fail fast. The kill closure holds only its
-//   own child, so a reloaded extension instance can never kill the new
-//   instance's backend. Session replacement ("new", "resume", "fork", /wt
-//   switches) must NOT kill: pi rebinds the same loaded extension instances
-//   without re-importing them, so the backend keeps serving the new session.
+// - Backends are torn down at session boundaries: use the exported
+//   handleSessionShutdown(backend, event) from a pi.on("session_shutdown")
+//   handler. Host teardown (reason "quit" or "reload") calls kill(): closes
+//   stdin (EOF is the backend's self-terminate signal) and SIGTERMs as
+//   insurance, rejects pending calls, and makes later calls fail fast. The
+//   kill closure holds only its own child, so a reloaded extension instance
+//   can never kill the new instance's backend. Session replacement ("new",
+//   "resume", "fork") calls reset(): pi rebinds the same loaded extension
+//   instances without re-importing them, and a terminal kill there would
+//   leave the new session with a permanently dead backend, so reset kills
+//   the child and respawns a fresh one instead, wiping in-memory state
+//   (browser page, peon counters) so it never bleeds across sessions.
+//   /clone goes through the same fork path, and /wt switches emit "resume",
+//   so every session replacement starts with a clean backend.
 //
 // Child lifecycle:
 // - Pending calls are scoped to their child generation, so a stale child's
@@ -39,6 +43,10 @@
 //   vision/search request) kills the child and respawns only after it
 //   exits, so old exit handlers never run against a new generation. Calls
 //   made while the respawn is pending wait for the new child.
+// - reset() (used at session replacement) is restart() without the eager
+//   spawn: a backend that was never started stays unused, and a backend
+//   that was started comes back to serve the new session with a fresh
+//   process and clean state.
 // - An unexpected child exit (crash) marks the backend dead; the next call
 //   spawns a fresh child instead of writing into a dead pipe and hanging.
 //
@@ -101,8 +109,15 @@ function ensureBuilt(root, bin) {
   writeFileSync(stampPath, JSON.stringify({ newest: newestSourceMtime(root) }));
 }
 
-export function killOnHostTeardown(backend, event) {
+// Session lifecycle wiring for every extension's pi.on("session_shutdown")
+// handler. kill() is terminal and belongs to host teardown (quit, reload):
+// nothing uses the backend after that. reset() is non-terminal and belongs
+// to session replacement (new, resume, fork): pi rebinds the same loaded
+// extension instances, so the backend must keep serving the next session,
+// but its in-memory state must not survive the boundary.
+export function handleSessionShutdown(backend, event) {
   if (event.reason === "quit" || event.reason === "reload") backend.kill();
+  else backend.reset();
 }
 
 export function createBackend(binaryName, hooks = {}) {
@@ -218,6 +233,21 @@ export function createBackend(binaryName, hooks = {}) {
       try {
         child.stdin.end();
       } catch {}
+      try {
+        child.kill("SIGTERM");
+      } catch {}
+    },
+    // Reset the backend at a session boundary without making it terminal:
+    // kills the child (fresh process, wiped in-memory state) and respawns
+    // once it exits, with calls made meanwhile queued for the new child.
+    // Unlike restart(), reset() does not spawn an unused backend: a backend
+    // that was never started stays lazy, and one that was started comes back
+    // to serve the new session.
+    reset() {
+      if (killed || restarting) return;
+      if (!child) return;
+      restarting = true;
+      rejectPending(pending, `${binaryName} backend reset (session boundary)`);
       try {
         child.kill("SIGTERM");
       } catch {}

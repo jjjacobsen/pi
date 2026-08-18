@@ -34,14 +34,20 @@ shared parts live in two files:
   once per successful build, so the rebuild runs at most once per source
   change and a launch with no source edits never invokes zig at all. Pending
   calls are scoped to their child generation, `restart()` (Esc abort on
-  vision/search/browser) respawns only after the old child exits, an
+  vision/search/browser) respawns only after the old child exits, `reset()`
+  (session replacement) does the same without the eager spawn, an
   unexpected exit marks the backend dead and the next call respawns it, and
-  `kill()` is terminal. `createBackend` returns `{call, kill, restart}`; every
-  extension registers `pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event))`,
-  which kills only on host teardown (quit, reload) and lets the backend
-  survive session replacement (new, resume, fork, /wt switches): pi rebinds
-  the loaded extension instances without re-importing them, so killing there
-  would leave the new session with a permanently dead backend. Teardown is
+  `kill()` is terminal. `createBackend` returns `{call, kill, reset,
+  restart}`; every extension registers
+  `pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event))`,
+  which kills on host teardown (quit, reload) and resets on session
+  replacement (new, resume, fork): pi rebinds the loaded extension instances
+  without re-importing them, so a terminal kill there would leave the new
+  session with a permanently dead backend, and instead the child is killed
+  and respawned fresh, wiping in-memory state (browser page, peon counters)
+  so nothing bleeds across sessions. `/clone` goes through the same fork
+  path and `/wt` switches emit "resume", so every session replacement
+  starts with a clean backend. Teardown is
   stdin EOF with SIGTERM insurance, instead of orphaning the process until
   pi exits.
   `hooks.onOk` picks the resolved value (vision and search resolve the full
@@ -181,13 +187,15 @@ exercises the whole stack and is the gate for `mise check`.
   down with the backend), matching the abort semantics of the other
   HTTP-delegating tools.
 - **/reload**: the glue rebuilds stale binaries and extensions kill their
-  backend on `session_shutdown` only when the host is torn down (quit or
+  backend on `session_shutdown` when the host is torn down (quit or
   reload), so a reload after editing Zig or TS code runs the new build with
   no orphaned processes. In-flight backend calls during a reload fail fast
   ("backend killed"), which is intended: reload is terminal for the old
-  instance. Session replacement (`/new`, `/resume`, `/fork`) does NOT kill:
-  pi reuses the loaded extension instances there, so the backend must stay
-  alive for the new session.
+  instance. Session replacement (`/new`, `/resume`, `/fork`, /wt switches)
+  resets the backend instead: pi reuses the loaded extension instances, so
+  a terminal kill there would leave the new session permanently dead, and
+  reset kills the child and respawns fresh, dropping the loaded page so no
+  browsing state bleeds into the new session.
 - **Lightpanda is early-stage**: its own JS engine is not Chromium-complete;
   heavy sites may misrender. Lightpanda nightly is installed via
   `brew install lightpanda-io/browser/lightpanda`.
@@ -318,8 +326,9 @@ background attempt did not land.
 ## Notes
 
 - The glue unrefs the backend child and its pipes (shared `createBackend`),
-  registers `session_shutdown` to kill it, and the backend self-terminates
-  on stdin EOF like the other backends.
+  registers `session_shutdown` to tear it down (kill on quit/reload, reset
+  on session replacement, shared `handleSessionShutdown`), and the backend
+  self-terminates on stdin EOF like the other backends.
 - Requires the Cua Driver daemon running and macOS Accessibility + Screen
   Recording granted to CuaDriver.app (`cua-driver permissions status`).
   Standard permission mode is assumed; approval prompts surface as driver
@@ -614,11 +623,13 @@ notification.
   command handler but never processes the follow-up prompt, so `/goal` in
   print mode is a no-op.
 - Pi reloading extensions kills the old backend via `session_shutdown`
-  (shared `killOnHostTeardown`), and the glue rebuilds stale binaries, so
+  (shared `handleSessionShutdown`), and the glue rebuilds stale binaries, so
   `/reload` runs current code with no orphaned processes. Session
-  replacement (`/new`, `/resume`, `/fork`) keeps the backend running: pi
-  reuses the loaded extension instances, and killing it there would break
-  every command in the new session.
+  replacement (`/new`, `/resume`, `/fork`) resets the backend: pi reuses
+  the loaded extension instances, so a terminal kill there would break
+  every command in the new session, and instead the child is killed and
+  respawned fresh so goal state stays session-scoped (restored from the
+  new session's entries on `session_start`).
 
 # Repo audit skill (pi-repo-audit)
 
@@ -1094,8 +1105,9 @@ follow-ups: `ask` op, queue while streaming, one at a time -> `c` copy /
 - Esc always dismisses the window and aborts any in-flight stream; the
   backend thread is dropped on the next `open`.
 - The glue unrefs the backend child and its pipes (shared `createBackend`),
-  registers `session_shutdown` to kill it, and the backend self-terminates
-  on stdin EOF like the other backends.
+  registers `session_shutdown` to tear it down (kill on quit/reload, reset
+  on session replacement, shared `handleSessionShutdown`), and the backend
+  self-terminates on stdin EOF like the other backends.
 # Vision extension (pi-vision)
 
 ## Goal

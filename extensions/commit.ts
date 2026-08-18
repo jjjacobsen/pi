@@ -15,7 +15,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { createBackend, handleSessionShutdown } from "./lib/backend";
 
 // Animated spinner shown as a widget above the editor while the commit
 // pipeline runs (TUI mode only: RPC mode ignores component factories, print
@@ -191,7 +191,7 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
+  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
   pi.registerCommand("commit", {
     description: "Stage all changes and commit them with an AI-generated conventional message",
     handler: async (args, ctx) => {

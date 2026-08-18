@@ -18,7 +18,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai/compat";
-import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { createBackend, handleSessionShutdown } from "./lib/backend";
 import { toolError, withAbort } from "./lib/toolkit";
 
 const TOOL_NAME = "web_search";
@@ -31,7 +31,7 @@ const DEFAULT_NUM_RESULTS = 8;
 const backend = createBackend("pi-search", { onOk: (msg) => msg });
 
 export default function searchExtension(pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
+  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
 
   pi.registerTool({
     name: TOOL_NAME,

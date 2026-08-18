@@ -11,11 +11,12 @@ house, piece by piece
   Backends start lazily (importing spawns nothing; the first call starts the
   binary), rebuild binaries when sources changed (stamped in
   `zig-out/.pi-build-stamp.json`, so at most once per edit), respawn only
-  after the old child exits (Esc aborts, crashes), and kill old backends on
-  host teardown (`session_shutdown` with reason quit/reload via
-  `killOnHostTeardown`), so `/reload` picks up Zig and TS changes with no
-  orphaned processes, while
-  `/new` keeps the backends alive for the new session
+  after the old child exits (Esc aborts, crashes), and tear backends down
+  at session boundaries (`session_shutdown` via `handleSessionShutdown`):
+  kill on host teardown (quit/reload), so `/reload` picks up Zig and TS
+  changes with no orphaned processes, and reset on session replacement
+  (`/new`, `/resume`, `/fork`), killing the child and respawning fresh so
+  no in-memory state bleeds into the new session
 - `extensions/lib/toolkit.ts` - shared tool glue for the HTTP-delegating
   extensions (search, vision): `withAbort` (Esc kills and respawns the
   backend), `toolError` (throws, since pi only treats thrown errors as tool

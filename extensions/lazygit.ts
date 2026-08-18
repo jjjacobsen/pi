@@ -15,7 +15,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { Text } from "@earendil-works/pi-tui";
-import { createBackend, killOnHostTeardown } from "./lib/backend";
+import { createBackend, handleSessionShutdown } from "./lib/backend";
 
 const backend = createBackend("pi-lg");
 function notify(ctx, text, level = "info") {
@@ -27,7 +27,7 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => killOnHostTeardown(backend, event));
+  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
   pi.registerCommand("lg", {
     description: "Open lazygit full-screen over the pi TUI (esc to quit and return)",
     handler: async (args, ctx) => {
