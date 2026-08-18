@@ -138,7 +138,7 @@ pub fn gitRoot(arena: Allocator, io: std.Io, cwd: []const u8) !?[]const u8 {
 // ---------------------------------------------------------------------------
 // Self-check helpers (shared by every backend's --self-check)
 
-// Result of a one-shot backend op. The wt/search/vision-style backends
+// Result of a one-shot backend op. The search/vision-style backends
 // return one of these from every op and dispatch on ok/text/err in the main
 // loop (respondOutcome). `usage` is an optional pre-serialized JSON object
 // appended to the success response line (vision/search report the delegated
@@ -187,7 +187,7 @@ pub fn expect(cond: bool, msg: []const u8) void {
     }
 }
 
-// Scratch directory for a self-check under /tmp, e.g. "pi-wt-selfcheck-…".
+// Scratch directory for a self-check under /tmp, e.g. "pi-commit-selfcheck-…".
 // The caller defers the deletion: `defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};`.
 pub fn selfCheckDir(arena: Allocator, io: std.Io, name: []const u8) ![]const u8 {
     const dir = try std.fmt.allocPrint(arena, "/tmp/pi-{s}-selfcheck-{d}", .{ name, nowMs() });

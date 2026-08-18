@@ -103,24 +103,6 @@ autonomously: `/goal <objective> [--min-time 1h] [--max-time 1h] [--min-tokens 1
 
 `extensions/footer.ts`. Pure TS, no Zig backend. Replaces pi's built-in footer with an opencode-style two-line footer: `π  ~/Projects/pi  main` workspace line on top (nerd font icons), token/cost/context stats on the bottom with the model and reasoning level right-aligned (context shown as absolute tokens over the window, e.g. `38,234/1.0M`, compaction-aware: `?/1.0M` right after /compact until the next response). Drops the built-in footer's R (cache read), W (cache write), CH (cache hit %) and (auto) compaction segments, and adds a tok/s readout (estimated from streamed characters; always visible, reset to 0.0 at session start, live while streaming and frozen at the last value when idle, placed last so the line never shifts) and an always-visible cost segment starting at $0.000 before the first billed response. Enabled automatically at session start; `/footer` toggles back to the built-in footer. See [docs/architecture.md](docs/architecture.md).
 
-### wt - parallel agents via git worktrees
-
-`extensions/wt.ts` + `src/wt.zig`. The `/wt` command creates a git worktree
-from the current branch head (never carrying uncommitted changes) and
-switches the current pi session into a fresh session there, so you can run
-parallel agents on one repo, each isolated. Bare `/wt` names the worktree
-`wt/<adjective>-<noun>` (e.g. `wt/angry-aardvark`), `/wt <topic>` names it
-`wt/<topic>` (and re-enters an existing worktree with that topic, resuming
-its most recent session). All commands work from inside a worktree too:
-`/wt list` shows every worktree relative to the repo root, and new
-worktrees are always created under the main checkout. Worktrees live in
-`<repo>/.wt/`, excluded from git status via `.git/info/exclude`.
-`/wt list` shows all worktrees,
-`/wt merge <topic>` brings the worktree branch into your current branch
-(fast-forward when possible, conflicts left for normal resolution) and
-auto-prunes unless `--keep`, `/wt prune <topic>` removes a worktree and its
-branch. See [docs/architecture.md](docs/architecture.md).
-
 ### btw - quick side questions via /btw
 
 `extensions/btw.ts` + `src/btw.zig`. The `/btw [question]` command opens a

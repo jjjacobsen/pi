@@ -85,19 +85,6 @@ extension glue, grep for bare node globals (`path.`, `process.`, `Buffer.`)
 after any import shuffling, and consider a tsc --noEmit pass over
 extensions/ as a hk step.
 
-## 2026-05-13: pi-wt backend Zig 0.16 API surprises
-
-- `std.crypto.random` does not exist in 0.16 (removed). Had to seed the name
-  generator from `nowMs()` mixed with a stack address
-- `std.ArrayList(T).init(alloc)` is gone: `std.ArrayList` is now the
-  unmanaged `array_list.Aligned`, so use `.empty` + `append(alloc, item)`
-- `json.parseFromSlice(...).value` must be accessed as `parsed.value`, and
-  `dir ++ "/suffix"` only works for comptime slices, so path assertions in
-  self-checks need `allocPrint`
-- `/tmp` on macOS is a symlink to `/private/tmp`: git canonicalizes the
-  worktree root, so self-check assertions must compare against
-  `git rev-parse --show-toplevel`, not the raw temp dir
-
 ## 2026-05-13: pi rpc mode cannot service extension child-pipe I/O
 
 - Any `await backend.call(...)` on a `createBackend` child in `pi --mode
@@ -105,9 +92,9 @@ extensions/ as a hk step.
   the response line never reaches the glue, and the pending promise never
   settles, even on child exit. Backends hang around as idle processes until
   pi exits. Affects every createBackend extension (commit, lg, browser,
-  goal, peon, wt), not just wt. TUI mode is fine
+  goal, peon). TUI mode is fine
 - Workaround: guard commands that need the backend with `ctx.mode !== "tui"`
-  and refuse before touching the backend, which is what `/wt` does
+  and refuse before touching the backend
 
 ## 2026-08-15: Zig 0.16 API churn hit while writing pi-usage
 
@@ -178,11 +165,10 @@ extensions/ as a hk step.
 - `git merge` refuses outright when a file the merge rewrites has uncommitted
   local changes ("Your local changes ... would be overwritten by merge"),
   even when the local diff and the merge both touch disjoint regions of the
-  file (docs/architecture.md: local wt-section edits vs branch appends).
+  file.
   Fix: `git stash push`, merge, resolve, `git stash pop` — the pop
   auto-merges the local diff back in, and the working tree ends up identical
-  to what you had. The /wt dirty-worktree reporting work in src/wt.zig makes
-  the error friendlier but cannot fix the underlying refusal.
+  to what you had.
 
 ## 2026-08-21 — backend lifecycle hardening
 

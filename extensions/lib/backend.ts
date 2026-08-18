@@ -32,8 +32,8 @@
 //   leave the new session with a permanently dead backend, so reset kills
 //   the child and respawns a fresh one instead, wiping in-memory state
 //   (browser page, peon counters) so it never bleeds across sessions.
-//   /clone goes through the same fork path, and /wt switches emit "resume",
-//   so every session replacement starts with a clean backend.
+//   /clone goes through the same fork path, so every session replacement
+//   starts with a clean backend.
 //
 // Child lifecycle:
 // - Pending calls are scoped to their child generation, so a stale child's

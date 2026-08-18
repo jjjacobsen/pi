@@ -1,6 +1,6 @@
 // Small shared helpers for the extension glue: abort/tool-error shaping for
 // the HTTP-delegating tools (search, vision) and command argument
-// completions for commands that take a subcommand or flag (goal, wt).
+// completions for commands that take a subcommand or flag (goal).
 
 import { calculateCost } from "@earendil-works/pi-ai/compat";
 

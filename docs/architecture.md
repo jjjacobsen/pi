@@ -46,7 +46,7 @@ shared parts live in two files:
   session with a permanently dead backend, and instead the child is killed
   and respawned fresh, wiping in-memory state (browser page, peon counters)
   so nothing bleeds across sessions. `/clone` goes through the same fork
-  path and `/wt` switches emit "resume", so every session replacement
+  path, so every session replacement
   starts with a clean backend. Teardown is
   stdin EOF with SIGTERM insurance, instead of orphaning the process until
   pi exits.
@@ -226,7 +226,7 @@ exercises the whole stack and is the gate for `mise check`.
   reload), so a reload after editing Zig or TS code runs the new build with
   no orphaned processes. In-flight backend calls during a reload fail fast
   ("backend killed"), which is intended: reload is terminal for the old
-  instance. Session replacement (`/new`, `/resume`, `/fork`, /wt switches)
+  instance. Session replacement (`/new`, `/resume`, `/fork`)
   resets the backend instead: pi reuses the loaded extension instances, so
   a terminal kill there would leave the new session permanently dead, and
   reset kills the child and respawns fresh, dropping the loaded page so no
@@ -782,152 +782,6 @@ Fields: volume (10%..100%), paused (active|paused), silent_window_seconds
   and the backend self-terminates on stdin EOF like the other backends.
 - Sessions with no UI (print mode) never fire the event ops, so no sounds.
 
-# Worktree extension (pi-wt)
-
-## Goal
-
-Run multiple pi agents in parallel on one repo, each isolated in its own git
-worktree. `/wt` creates a worktree from the current branch head (never
-carrying uncommitted changes), then replaces the current pi session with a
-fresh session rooted at the worktree. Merging the worktree back and cleaning
-up is part of the same command.
-
-## Architecture
-
-```
-pi (coding agent)
-  └─ extensions/wt.ts     TS glue: /wt command, session replacement, auto-prune
-       └─ src/wt.zig      Zig backend: all git logic (create/list/merge/prune)
-```
-
-Why this split:
-
-- Session replacement must run inside the pi process: only code loaded into
-  pi can call `ctx.switchSession`. The glue writes the new session file's
-  header itself (via `SessionManager.create(path)` for the path and session
-  dir, then a direct header write): interactive mode drops `cwdOverride`
-  from `ctx.switchSession` (pi's `handleResumeSession` only forwards
-  `withSession`), so the file must carry the worktree path in its header
-  before the switch, or the new session falls back to the process cwd and
-  keeps operating on the main checkout.
-- Everything git-related lives in Zig: worktree creation and discovery,
-  name generation, the `.git/info/exclude` write, merge execution with
-  conflict detection, and safe pruning. The glue never runs git.
-
-## Protocol (newline-delimited JSON on stdin/stdout)
-
-```json
-{"id":1,"op":"create","cwd":"/path","topic":"optional"}        -> Zig
-{"id":1,"ok":true,"result":"{\"path\":...,\"branch\":...,\"topic\":...,\"base\":...}"}
-{"id":2,"op":"list","cwd":"/path"}                             ->
-{"id":2,"ok":true,"result":"* main   .  clean\n  wt/x   .wt/x  clean"} <-
-{"id":3,"op":"merge","cwd":"/path","topic":"x"}                ->
-{"id":3,"ok":true,"result":"{\"merged\":true,\"up_to_date\":false,\"branch\":...,\"text\":...}"}
-{"id":4,"op":"prune","cwd":"/path","topic":"x"}                ->
-{"id":4,"ok":true,"result":"removed ... , deleted branch ..."} <-
-{"id":5,"op":"find","cwd":"/path","topic":"x"}               ->
-{"id":5,"ok":true,"result":"{\"path\":...,\"branch\":...,\"topic\":...}"} <-
-```
-
-create, find, and merge return a JSON object string in `result` that the
-glue parses. All other ops return plain text.
-
-## Zig behavior
-
-- `create` validates the repo (must be a git repo with at least one commit),
-  computes the topic (user word sanitized to `[a-z0-9-]`, or a generated
-  adjective-noun name like `angry-aardvark`), and checks collisions. Explicit
-  topics error on collision; generated names re-roll up to 25 times. It then
-  writes `.wt/` into `.git/info/exclude` (a local, never-committed file, so
-  worktrees never show as untracked noise) and runs
-  `git worktree add -b wt/<topic> <root>/.wt/<topic> <head>`. Worktrees
-  always land under the main checkout, and the new branch starts from the
-  caller's checkout head (a plain `HEAD` would branch from the main
-  checkout), so `/wt <topic>` also works from inside a worktree. The
-  response carries the absolute worktree path, branch, topic, and the base
-  branch label. The name generator is seeded from the monotonic clock mixed
-  with a stack address; collision re-rolls guard against repeats.
-- `list` parses `git worktree list --porcelain` and reports branch (or
-  `(detached)`), path relative to the main checkout, and clean/dirty via a
-  `status --porcelain` probe per worktree. The worktree containing the
-  caller's cwd gets a `*` marker. The display base is the main checkout
-  (parent of the shared `--git-common-dir`), not `git rev-parse
-  --show-toplevel`: from inside a linked worktree that command returns the
-  worktree itself, which would render every other entry as a full absolute
-  path. Column padding uses saturating subtraction, so very long topics or
-  out-of-root worktrees cannot overflow (Zig debug builds panic on integer
-  overflow).
-- `merge` finds the worktree for a topic (branch `wt/<topic>`, branch
-  `<topic>`, or path ending in `/.<topic>`), refuses to merge a worktree into
-  itself, and runs `git merge --no-edit` in the caller's checkout. One rule:
-  bring `wt/<topic>` into whatever branch the caller is on. Fast-forward
-  when possible, merge commit otherwise, `--no-edit` so no editor can hang
-  the backend. A failed merge with unmerged paths is reported as
-  `merge conflicts in <files>; resolve and commit`; any other failure
-  surfaces git's own stderr (e.g. local changes would be overwritten). An
-  up-to-date merge whose worktree holds uncommitted changes reports those
-  files and tells the user to commit or stash first, instead of a
-  misleading "already up to date".
-- `prune` runs `git worktree remove` (refuses on a dirty worktree, no
-  `--force`) then `git branch -d` (refuses on an unmerged branch, no `-D`).
-  A dirty worktree is reported with the offending files (git's own error
-  suggests `--force`, which would delete the user's work); a leftover
-  branch is reported, never force-deleted.
-- `find` resolves a topic to an existing worktree (same matching as
-  `merge`: branch `wt/<topic>`, branch `<topic>`, or path ending in
-  `/.<topic>`), returning its path, branch, and topic. Unknown topics error
-  with `no worktree for '<topic>'; /wt list to see what exists`, which the
-  glue uses as the signal to create instead. It is what makes `/wt <topic>`
-  re-enter an existing worktree.
-- **Self-check**: `zig build run -- --self-check` builds a scratch repo and
-  exercises create (explicit and auto-named), the exclude write, listing
-  (from the main checkout and from inside a worktree), find (existing
-  worktree and unknown topic), create from inside a worktree (placement
-  under the main checkout, base branch and head), a fast-forward merge,
-  prune, duplicate-topic rejection, self-merge rejection, a real conflict,
-  pruning an unmerged branch, an up-to-date merge with a dirty worktree
-  (merge and prune both report the uncommitted files), a long topic that
-  exceeds the list column padding, and the non-repo error. It is the gate
-  for `mise check`.
-
-## Flow
-
-`/wt` -> create worktree (Zig) -> session file for the worktree ->
-`ctx.switchSession` (cwdOverride also passed, harmless) -> notify on the new
-session. `/wt <topic>` -> find the worktree (Zig): if it exists, switch into
-it; if not, create it first. The session file is the most recent session
-whose header cwd is the worktree path (resumes its history), or a fresh
-session file with an explicit header write (`SessionManager.create` for the
-path and session dir) when there is none. `/wt merge <topic>` -> merge
-(Zig) -> on success auto-prune (Zig) unless `--keep` -> notify. `/wt list`
-and `/wt prune` are one-shot ops.
-
-## Notes
-
-- Sessions are stored per-directory, so the main checkout session and the
-  worktree session are fully isolated files. A new worktree session starts
-  fresh with no carried-over context, matching the command's purpose.
-  Re-entering an existing worktree with `/wt <topic>` resumes its most
-  recent session (history intact) when one exists, and starts fresh
-  otherwise (for example a worktree created outside pi).
-- Opening a second pi in the main repo while another pi is active there
-  continues the same session file; `/wt` switches away immediately, which
-  self-corrects. Type it before doing anything else in that terminal.
-- The worktree directory is a new path for pi's project trust store, so the
-  first switch prompts once to trust it, like any new directory.
-- The glue unrefs the backend child and its pipes (shared `createBackend`),
-  and the backend self-terminates on stdin EOF like the other backends.
-- Zig 0.16 API notes for future backends: `std.ArrayList(T)` is now the
-  unmanaged list (`append(self, gpa, item)`, init with `.empty`),
-  `std.crypto.random` was removed (seed name generators from the clock
-  instead), and `std.fmt.allocPrint` used inside a struct-literal return
-  needs `try` before `allocPrint`.
-- **RPC mode hangs on backend I/O (upstream pi quirk)**: any extension await
-  on a `createBackend` child pipe stalls in rpc mode, so `/wt` guards
-  `ctx.mode !== "tui"` and refuses there. The worktree would still be
-  created (the backend runs) before the hang, which is why the guard sits at
-  the top of the handler.
-
 # Usage extension (pi-usage)
 
 ## Goal
@@ -1132,7 +986,7 @@ follow-ups: `ask` op, queue while streaming, one at a time -> `c` copy /
   current session is the simpler match for "bring the by the way session
   back into the main chat".
 - `/btw` requires TUI mode: RPC mode hangs on `createBackend` child-pipe
-  I/O (the same upstream pi quirk documented for `/wt`), so the guard sits
+  I/O (an upstream pi quirk), so the guard sits
   at the top of the handler.
 - The model call happens through pi's provider registry, so any configured
   provider/model works, with pi's own auth handling. Thinking is fixed at
