@@ -2141,94 +2141,12 @@ fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, b
 }
 
 // =============================================================================
-// Self-check
-// =============================================================================
-
-fn selfCheck(gpa: Allocator, io: std.Io) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const pid: i64 = @intCast(posix.system.getpid());
-    const tmp_root = try std.fmt.allocPrint(arena, "/tmp/pi-usage-selfcheck-{d}", .{pid});
-    std.Io.Dir.createDirPath(.cwd(), io, tmp_root) catch {};
-    defer std.Io.Dir.deleteTree(.cwd(), io, tmp_root) catch {};
-
-    // A tiny session file exercising session/thinking/assistant/toolResult/
-    // compaction entries. The toolResult carries delegated-model usage
-    // (describe_image/web_search report their tokens there).
-    const session = try std.fmt.allocPrint(arena, "{{\"type\":\"session\",\"id\":\"sc-session-1\",\"timestamp\":\"2026-08-10T10:00:00.000Z\",\"cwd\":\"{s}\"}}\n" ++
-        "{{\"type\":\"thinking_level_change\",\"id\":\"t1\",\"timestamp\":\"2026-08-10T10:00:01.000Z\",\"thinkingLevel\":\"max\"}}\n" ++
-        "{{\"type\":\"message\",\"id\":\"m1\",\"timestamp\":\"2026-08-10T10:00:02.000Z\",\"message\":{{\"role\":\"assistant\",\"provider\":\"opencode-go\",\"model\":\"deepseek-v4-flash\",\"timestamp\":1786400002000,\"usage\":{{\"input\":1000,\"output\":200,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.01}}}}}}}}\n" ++
-        "{{\"type\":\"message\",\"id\":\"m2\",\"timestamp\":\"2026-08-10T10:00:03.000Z\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"x\"}}]}}}}\n" ++
-        "{{\"type\":\"compaction\",\"id\":\"c1\",\"timestamp\":\"2026-08-10T10:00:04.000Z\",\"usage\":{{\"input\":500,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.005}}}}}}\n" ++
-        "{{\"type\":\"message\",\"id\":\"m3\",\"timestamp\":\"2026-08-10T10:00:05.000Z\",\"message\":{{\"role\":\"assistant\",\"provider\":\"opencode-go\",\"model\":\"deepseek-v4-flash\",\"timestamp\":1786400005000,\"usage\":{{\"input\":900,\"output\":100,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.002}}}}}}}}\n" ++
-        "{{\"type\":\"message\",\"id\":\"m4\",\"timestamp\":\"2026-08-10T10:00:06.000Z\",\"message\":{{\"role\":\"toolResult\",\"toolName\":\"describe_image\",\"timestamp\":1786400006000,\"usage\":{{\"input\":300,\"output\":40,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":{{\"total\":0.003}}}}}}}}\n", .{tmp_root});
-
-    const sessions_dir = try std.fmt.allocPrint(arena, "{s}/sessions", .{tmp_root});
-    std.Io.Dir.createDirPath(.cwd(), io, sessions_dir) catch {};
-    const session_file = try std.fmt.allocPrint(arena, "{s}/sessions/--tmp--/sc.jsonl", .{tmp_root});
-    std.Io.Dir.createDirPath(.cwd(), io, std.fs.path.dirname(session_file).?) catch {};
-    {
-        const f = try std.Io.Dir.createFileAbsolute(io, session_file, .{});
-        defer f.close(io);
-        try writeAllIo(io, f, session);
-    }
-
-    const bounds = Bounds{
-        .todayMs = 1786550400000,
-        .weekStartMs = 1786320000000,
-        .lastWeekStartMs = 1785715200000,
-        .last30DaysStartMs = 1783958400000,
-        .nowMs = 1786550499999,
-    };
-
-    // Run the real pipeline with the agent dir pointed at the temp root.
-    var environ = std.process.Environ.Map.init(gpa);
-    defer environ.deinit();
-    try environ.put("PI_CODING_AGENT_DIR", tmp_root);
-    try environ.put("HOME", "/nonexistent");
-
-    const json_out = try runCollect(arena, io, &environ, bounds);
-    common.expect(json_out.len >= 100, "collect output is non-trivial");
-
-    // Verify the cache file was written and is loadable.
-    const cache_path = try std.fmt.allocPrint(arena, "{s}/pi-usage-cache.bin", .{tmp_root});
-    const reloaded = try loadCache(io, arena, cache_path);
-    common.expect(reloaded.files.count() == 1, "cache holds the session file");
-    const cached = reloaded.files.get(session_file).?;
-    common.expect(cached.messages.len == 4, "cache holds all four messages");
-
-    // Verify the aggregated payload shape.
-    common.expect(std.mem.indexOf(u8, json_out, "\"allTime\"") != null, "payload has allTime");
-    common.expect(std.mem.indexOf(u8, json_out, "\"opencode-go\"") != null, "payload has opencode-go");
-    common.expect(std.mem.indexOf(u8, json_out, "\"Tools\"") != null, "payload has auxiliary provider");
-    common.expect(std.mem.indexOf(u8, json_out, "\"deepseek-v4-flash\"") != null, "payload has the model");
-    common.expect(std.mem.indexOf(u8, json_out, "\"describe_image\"") != null, "payload aggregates the tool-result usage under the tool name");
-    common.expect(std.mem.indexOf(u8, json_out, "\"warnings\":[]") != null, "payload has an empty warnings list on a clean scan");
-
-    // Limits op must fail gracefully with no credentials (no network in
-    // self-check); the glue passes Codex credentials through the request.
-    const limits_json = try buildLimitsJson(arena, io, &environ, null, null, null);
-    common.expect(std.mem.indexOf(u8, limits_json, "\"opencode-go\"") != null, "limits payload has opencode-go");
-    common.expect(std.mem.indexOf(u8, limits_json, "OPENCODE_API_KEY") != null, "limits payload reports the missing key");
-    common.expect(std.mem.indexOf(u8, limits_json, "log in with /login") != null, "limits payload reports missing codex credentials");
-
-    std.debug.print("PASS: pi-usage self-check ok\n", .{});
-}
-
-// =============================================================================
 // Main loop
 // =============================================================================
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-
-    const argv = init.minimal.args.vector;
-    if (argv.len > 1 and mem.eql(u8, std.mem.sliceTo(argv[1], 0), "--self-check")) {
-        try selfCheck(gpa, io);
-        return;
-    }
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();

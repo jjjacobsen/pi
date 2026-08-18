@@ -2,11 +2,11 @@
 
 ## 2026-08-13
 
-- `zig build run -- --self-check` does not update `zig-out/bin/pi-browser`:
-  `addRunArtifact` runs from the build cache, only `installArtifact` writes
-  zig-out. After editing `src/`, run plain `zig build` before driving the
-  binary directly, or you test a stale build (cost a full repro cycle while
-  debugging the browser log spam).
+- A `b.addRunArtifact` run does not update `zig-out/bin/pi-browser`: it
+  runs from the build cache, only `installArtifact` writes zig-out. After
+  editing `src/`, run plain `zig build` before driving the binary directly,
+  or you test a stale build (cost a full repro cycle while debugging the
+  browser log spam).
 - Zig 0.16 removed `std.time.milliTimestamp()`. The supported way to read a
   clock is `std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts)` with a
   `std.posix.timespec`; note the field names are `sec`/`nsec` on macOS and
@@ -138,9 +138,8 @@ extensions/ as a hk step.
   from the main thread (macOS wakes the blocked reader)
 - `http.Server.Request.readerExpectNone` returns `*Reader` (no error union)
 - Debug allocator prints leaks at exit; the first deadline design leaked the
-  worker structs on every timeout, which showed up as noise in self-check
-  output. Fixed by main-thread-only freeing after join, with a bounded
-  wait for the worker post-shutdown
+  worker structs on every timeout. Fixed by main-thread-only freeing after
+  join, with a bounded wait for the worker post-shutdown
 - sips defaults its OUTPUT format to the INPUT format, and its WebP writer is
   broken ("Can't write format: org.webmproject.webp"). Resizing a WebP
   without an explicit `-s format` fails, so the `-s format` flag must always
@@ -197,8 +196,8 @@ extensions/ as a hk step.
   (or blocking on the next readVec) silently loses the buffered events.
   Fix in src/search.zig's SSE loop: drain `reader.buffered()` before each
   read, `toss()` what was consumed, and re-check it after any 0-return
-  readVec. The flake only showed up as an intermittent results-mode timeout
-  in the self-check, ~50% of runs.
+  readVec. The flake only showed up as an intermittent results-mode timeout,
+  ~50% of runs.
 
 ## 2026-08-15
 
@@ -223,10 +222,10 @@ extensions/ as a hk step.
   backend answered with the unmatchable id 0, the glue's pending map had no
   entry for it, and the caller's promise never settled: an infinite hang,
   no error, no log.
-- What made it invisible: `zig build run -- --self-check` passes (it calls
-  `Browser.call` directly, bypassing the wire protocol), and my first
-  harness drove the binary with the documented `tool` format instead of
-  reading what the glue actually sends. The bug only shows through the real
+- What made it invisible: exercising `Browser.call` directly bypasses the
+  wire protocol, and my first harness drove the binary with the documented
+  `tool` format instead of reading what the glue actually sends. The bug
+  only shows through the real
   glue (Node) or by sending `op` yourself. Repro: feed the backend
   `{"id":5,"op":"goto","params":"{}"}` and watch it reply
   `{"id":0,"ok":false,"error":"MissingField"}` while the caller waits.
@@ -284,11 +283,10 @@ extensions/ as a hk step.
   miss or hit the wrong entry, and `grow` panics on the duplicate. Dupe
   keys into an arena before `put`. Diagnosed via a map-iterator debug
   print showing two entries with the same key.
-- `zig build run -- --self-check` does not refresh `zig-out/bin/<name>`:
-  the run artifact goes to the build cache, so hand-testing the installed
-  binary after a source change runs a stale build (panics/old behavior
-  that the self-check does not show). Run `zig build` first to install
-  the new binary, then exercise it.
+- A `b.addRunArtifact` run does not refresh `zig-out/bin/<name>`: the run
+  artifact goes to the build cache, so hand-testing the installed binary
+  after a source change runs a stale build (panics/old behavior). Run
+  `zig build` first to install the new binary, then exercise it.
 
 ## 2026-08-17
 

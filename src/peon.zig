@@ -123,7 +123,7 @@ const OldState = struct {
 // Runtime state
 
 const Peon = struct {
-    home: []const u8, // ~/.pi/agent (or a temp dir in the self-check)
+    home: []const u8, // ~/.pi/agent
     old_config_path: []const u8,
     old_state_path: []const u8,
     config: Config = .{},
@@ -135,7 +135,6 @@ const Peon = struct {
     last_stop_time: i64 = 0,
     current: ?std.process.Child = null, // afplay still running
     rng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
-    dry: bool = false, // self-check: decide and pick but never spawn afplay
 
     fn onSessionStart(peon: *Peon, io: std.Io, arena: Allocator) ?sounds.Category {
         // Plays on every session start, reload included (matches the original).
@@ -179,7 +178,6 @@ const Peon = struct {
     fn play(peon: *Peon, io: std.Io, arena: Allocator, cat: sounds.Category) bool {
         const s = peon.pick(cat) orelse return false;
         const path = std.fmt.allocPrint(arena, "{s}/peon-sounds/{s}", .{ peon.home, s.name }) catch return false;
-        if (peon.dry) return true;
 
         if (peon.current) |*child| {
             child.kill(io); // kill the previous sound and reap it
@@ -304,8 +302,8 @@ fn loadOrMigrate(peon: *Peon, io: std.Io, arena: Allocator) !void {
     peon.config = parsed.value;
 }
 
-// Extracts the embedded wavs to ~/.pi/agent/peon-sounds/ (or the self-check
-// temp home). Idempotent: files that already exist are skipped.
+// Extracts the embedded wavs to ~/.pi/agent/peon-sounds/. Idempotent:
+// files that already exist are skipped.
 fn extractSounds(peon: *const Peon, io: std.Io, arena: Allocator) !void {
     const dir_path = try std.fmt.allocPrint(arena, "{s}/peon-sounds", .{peon.home});
     try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
@@ -418,9 +416,9 @@ fn opEvent(peon: *Peon, io: std.Io, arena: Allocator, req: *const Request, resp:
 }
 
 // ---------------------------------------------------------------------------
-// Randomness (sound picking, self-check temp dirs). No global RNG in
-// Zig 0.16, so we seed a per-process PRNG from wall time and an ASLR-mixed
-// stack address. Good enough for picking sounds.
+// Randomness (sound picking). No global RNG in Zig 0.16, so we seed a
+// per-process PRNG from wall time and an ASLR-mixed stack address. Good
+// enough for picking sounds.
 
 fn seedFromEntropy() u64 {
     var seed: u64 = @bitCast(nowRealtimeMs());
@@ -429,159 +427,11 @@ fn seedFromEntropy() u64 {
 }
 
 // ---------------------------------------------------------------------------
-// self-check
-
-fn writeText(io: std.Io, path: []const u8, text: []const u8) !void {
-    const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
-    defer file.close(io);
-    try writeAllIo(io, file, text);
-}
-
-fn selfCheck(gpa: Allocator, io: std.Io) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const expect = common.expect;
-
-    const tmp = try std.fmt.allocPrint(arena, "/tmp/pi-peon-selfcheck-{x}", .{seedFromEntropy()});
-    try std.Io.Dir.createDirPath(.cwd(), io, tmp);
-    try std.Io.Dir.createDirPath(.cwd(), io, try std.fmt.allocPrint(arena, "{s}/old", .{tmp}));
-
-    // Fresh install: defaults.
-    var peon = Peon{
-        .home = tmp,
-        .old_config_path = try std.fmt.allocPrint(arena, "{s}/old/config.json", .{tmp}),
-        .old_state_path = try std.fmt.allocPrint(arena, "{s}/old/state.json", .{tmp}),
-        .dry = true,
-    };
-    try loadOrMigrate(&peon, io, arena);
-    expect(peon.config.volume == 50, "default volume is 50");
-    expect(peon.config.categories.@"task.complete", "default task.complete on");
-    expect(!peon.config.paused, "default unpaused");
-    expect(sounds.by_category.len == 5, "one sound list per category");
-
-    // Migration from a fake old pi-peon-ping install.
-    try writeText(io, peon.old_config_path, "{\"volume\":0.4,\"categories\":{\"task.complete\":true,\"task.error\":false,\"session.start\":false},\"annoyed_threshold\":2,\"annoyed_window_seconds\":7,\"silent_window_seconds\":3,\"default_pack\":\"peon\",\"relay_mode\":\"auto\"}");
-    try writeText(io, peon.old_state_path, "{\"paused\":true,\"last_played\":{}}");
-    var migrated = Peon{
-        .home = tmp,
-        .old_config_path = peon.old_config_path,
-        .old_state_path = peon.old_state_path,
-        .dry = true,
-    };
-    try loadOrMigrate(&migrated, io, arena);
-    expect(migrated.config.volume == 40, "migration converts 0.4 to 40%");
-    expect(migrated.config.paused, "migration carries paused");
-    expect(migrated.config.categories.@"task.complete", "migration carries task.complete on");
-    expect(!migrated.config.categories.@"task.error", "migration carries task.error off");
-    expect(!migrated.config.categories.@"session.start", "migration carries session.start off");
-    expect(migrated.config.categories.@"task.acknowledge", "unset category keeps its default");
-    expect(migrated.config.silent_window_seconds == 3, "migration carries silent window");
-    expect(migrated.config.annoyed_threshold == 2, "migration carries spam threshold");
-    expect(migrated.config.annoyed_window_seconds == 7, "migration carries spam window");
-    // The migrated config is persisted: a fresh load sees it, not the old file.
-    var reloaded = Peon{
-        .home = tmp,
-        .old_config_path = peon.old_config_path,
-        .old_state_path = peon.old_state_path,
-        .dry = true,
-    };
-    try loadOrMigrate(&reloaded, io, arena);
-    expect(reloaded.config.volume == 40 and reloaded.config.paused, "migrated config persisted");
-
-    // Extraction writes the embedded wavs to the cache dir.
-    try extractSounds(&reloaded, io, arena);
-    const first_path = try std.fmt.allocPrint(arena, "{s}/peon-sounds/{s}", .{ tmp, sounds.sounds[0].name });
-    _ = std.Io.Dir.accessAbsolute(io, first_path, .{}) catch expect(false, "sound extracted to cache");
-
-    // Events. reloaded.config starts paused (carried from the fake state);
-    // resume for the event tests.
-    reloaded.config.paused = false;
-    reloaded.config.categories.@"session.start" = true;
-    expect(reloaded.onSessionStart(io, arena) == .session_start, "session_start plays when enabled");
-    reloaded.config.categories.@"session.start" = false;
-    expect(reloaded.onSessionStart(io, arena) == null, "session_start respects its toggle");
-    reloaded.config.categories.@"session.start" = true;
-
-    const t0: i64 = 1_000_000;
-    reloaded.config.annoyed_threshold = 3;
-    reloaded.config.annoyed_window_seconds = 10;
-    expect(reloaded.onAgentStart(io, arena, t0) == .task_acknowledge, "first prompt acknowledges");
-    expect(reloaded.onAgentStart(io, arena, t0 + 1000) == .task_acknowledge, "second prompt acknowledges");
-    expect(reloaded.onAgentStart(io, arena, t0 + 2000) == .user_spam, "third prompt inside the window is spam");
-    reloaded.config.categories.@"user.spam" = false;
-    expect(reloaded.onAgentStart(io, arena, t0 + 3000) == null, "spam toggle off silences spam prompts");
-    reloaded.config.categories.@"user.spam" = true;
-
-    reloaded.config.categories.@"task.complete" = true;
-    expect(reloaded.onAgentEnd(io, arena, t0 + 50_000, true) == null, "errored run plays nothing");
-    reloaded.config.silent_window_seconds = 2;
-    _ = reloaded.onAgentStart(io, arena, t0 + 100_000);
-    expect(reloaded.onAgentEnd(io, arena, t0 + 100_500, false) == null, "run shorter than the silent window is silent");
-    expect(reloaded.onAgentEnd(io, arena, t0 + 106_000, false) == .task_complete, "run past the silent window completes");
-    expect(reloaded.onAgentEnd(io, arena, t0 + 106_500, false) == null, "second agent_end inside the debounce is silent");
-    reloaded.config.silent_window_seconds = 0;
-
-    reloaded.config.categories.@"task.error" = true;
-    expect(reloaded.onToolError(io, arena) == .task_error, "tool error plays when enabled");
-    reloaded.config.categories.@"task.error" = false;
-    expect(reloaded.onToolError(io, arena) == null, "tool error respects its toggle");
-
-    reloaded.config.paused = true;
-    expect(reloaded.onToolError(io, arena) == null and reloaded.onSessionStart(io, arena) == null, "paused silences everything");
-    reloaded.config.paused = false;
-
-    // Set ops.
-    var resp = Response{ .id = 1, .ok = true };
-    opSet(&reloaded, io, arena, &Request{ .id = 1, .op = "set", .field = "volume", .value = "75%" }, &resp);
-    expect(resp.ok and reloaded.config.volume == 75, "set volume 75%");
-    resp = Response{ .id = 1, .ok = true };
-    opSet(&reloaded, io, arena, &Request{ .id = 1, .op = "set", .field = "volume", .value = "5%" }, &resp);
-    expect(!resp.ok, "volume below 10% rejected");
-    resp = Response{ .id = 1, .ok = true };
-    opSet(&reloaded, io, arena, &Request{ .id = 1, .op = "set", .field = "cat:task.error", .value = "on" }, &resp);
-    expect(resp.ok and reloaded.config.categories.@"task.error", "set category on");
-    resp = Response{ .id = 1, .ok = true };
-    opSet(&reloaded, io, arena, &Request{ .id = 1, .op = "set", .field = "cat:input.required", .value = "on" }, &resp);
-    expect(!resp.ok, "unknown category rejected");
-    resp = Response{ .id = 1, .ok = true };
-    opSet(&reloaded, io, arena, &Request{ .id = 1, .op = "set", .field = "silent_window_seconds", .value = "5s" }, &resp);
-    expect(resp.ok and reloaded.config.silent_window_seconds == 5, "set silent window");
-    resp = Response{ .id = 1, .ok = true };
-    opSet(&reloaded, io, arena, &Request{ .id = 1, .op = "set", .field = "paused", .value = "active" }, &resp);
-    expect(resp.ok and !reloaded.config.paused, "set sounds active");
-
-    var persisted = Peon{
-        .home = tmp,
-        .old_config_path = peon.old_config_path,
-        .old_state_path = peon.old_state_path,
-        .dry = true,
-    };
-    try loadOrMigrate(&persisted, io, arena);
-    expect(persisted.config.volume == 75, "set volume persisted");
-
-    const t = reloaded.pick(.task_complete);
-    expect(t != null, "pick returns a sound");
-    expect(reloaded.last_played[@intFromEnum(sounds.Category.task_complete)] != null, "pick records last played");
-
-    try std.Io.Dir.deleteTree(.cwd(), io, tmp);
-
-    std.debug.print("PASS: pi-peon self-check ok\n", .{});
-}
-
-// ---------------------------------------------------------------------------
 // main
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-
-    const argv = init.minimal.args.vector;
-    if (argv.len > 1 and mem.eql(u8, std.mem.sliceTo(argv[1], 0), "--self-check")) {
-        try selfCheck(gpa, io);
-        return;
-    }
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();

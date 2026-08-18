@@ -6,7 +6,7 @@
 // one JSON request line on stdin, one JSON response line on stdout. These
 // helpers are the shared part of both (line reader with deadline, buffered
 // writer, JSON-escaped responder, process runner). Each backend keeps its
-// own request parsing, op dispatch, protocol structs, and self-check.
+// own request parsing, op dispatch, and protocol structs.
 
 const std = @import("std");
 const posix = std.posix;
@@ -138,7 +138,7 @@ pub fn gitRoot(arena: Allocator, io: std.Io, cwd: []const u8) !?[]const u8 {
 }
 
 // ---------------------------------------------------------------------------
-// Self-check helpers (shared by every backend's --self-check)
+// One-shot response helpers (shared by the one-shot backends)
 
 // Result of a one-shot backend op. The search/vision-style backends
 // return one of these from every op and dispatch on ok/text/err in the main
@@ -151,10 +151,6 @@ pub const Outcome = struct {
     text: []const u8 = "",
     usage: ?[]const u8 = null,
 };
-
-pub fn okOutcome(text: []const u8) Outcome {
-    return .{ .ok = true, .text = text };
-}
 
 pub fn failOutcome(arena: Allocator, comptime fmt: []const u8, args: anytype) !Outcome {
     return .{ .ok = false, .err = try std.fmt.allocPrint(arena, fmt, args) };
@@ -208,28 +204,6 @@ pub fn respondOutcome(arena: Allocator, io: std.Io, id: i64, outcome: Outcome) v
     } else {
         respond(arena, io, id, false, outcome.err) catch {};
     }
-}
-
-// Fails the self-check with a message; every backend's self-check aliases
-// this as fail/check/expect and calls it per assertion.
-pub fn expect(cond: bool, msg: []const u8) void {
-    if (!cond) {
-        std.debug.print("FAIL: {s}\n", .{msg});
-        std.process.exit(1);
-    }
-}
-
-// Scratch directory for a self-check under /tmp, e.g. "pi-commit-selfcheck-…".
-// The caller defers the deletion: `defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};`.
-pub fn selfCheckDir(arena: Allocator, io: std.Io, name: []const u8) ![]const u8 {
-    const dir = try std.fmt.allocPrint(arena, "/tmp/pi-{s}-selfcheck-{d}", .{ name, nowMs() });
-    const cwd_dir = std.Io.Dir.cwd();
-    cwd_dir.deleteTree(io, dir) catch {};
-    cwd_dir.createDirPath(io, dir) catch |err| {
-        std.debug.print("FAIL: mkdir {s}: {s}\n", .{ dir, @errorName(err) });
-        std.process.exit(1);
-    };
-    return dir;
 }
 
 // ---------------------------------------------------------------------------

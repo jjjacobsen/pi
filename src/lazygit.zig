@@ -96,10 +96,8 @@ fn termText(arena: Allocator, term: std.process.Child.Term) ![]const u8 {
     };
 }
 
-// Spawns lazygit attached to the real terminal. binary is an optional
-// explicit path (self-check uses a fake script); null resolves "lazygit"
-// from PATH like the real flow.
-fn runLazygit(arena: Allocator, io: std.Io, cwd: []const u8, binary: ?[]const u8) !RunOutcome {
+// Spawns lazygit attached to the real terminal, resolved from PATH.
+fn runLazygit(arena: Allocator, io: std.Io, cwd: []const u8) !RunOutcome {
     // /dev/tty is the controlling terminal, the same one pi's TUI renders
     // on. The backend's own stdin/stdout are pipes to the glue, so lazygit
     // cannot inherit them; handing it the tty directly is the handoff.
@@ -107,7 +105,7 @@ fn runLazygit(arena: Allocator, io: std.Io, cwd: []const u8, binary: ?[]const u8
         return .{ .err = "cannot open controlling terminal /dev/tty" };
     defer tty.close(io);
 
-    const argv: []const []const u8 = if (binary) |b| &[_][]const u8{b} else &[_][]const u8{"lazygit"};
+    const argv: []const []const u8 = &[_][]const u8{"lazygit"};
     var child = std.process.spawn(io, .{
         .argv = argv,
         .cwd = .{ .path = cwd },
@@ -120,80 +118,9 @@ fn runLazygit(arena: Allocator, io: std.Io, cwd: []const u8, binary: ?[]const u8
     return .{ .ok = true, .text = try termText(arena, term) };
 }
 
-// ---------------------------------------------------------------------------
-// self-check
-
-fn selfCheck(gpa: Allocator, io: std.Io) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const fail = common.expect;
-
-    const check = try runCmd(arena, io, &.{ "lazygit", "--version" }, 4096);
-    fail(check.ok, "lazygit must be installed (brew install lazygit)");
-
-    const dir = try common.selfCheckDir(arena, io, "lg");
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
-
-    const init = try runCmd(arena, io, &.{ "git", "init", "-q", dir }, 4096);
-    fail(init.ok, "git init in temp repo");
-
-    const prep_ok = try prepare(arena, io, dir);
-    fail(prep_ok.ok, "prepare succeeds in a git repo");
-    fail(mem.eql(u8, std.fs.path.basename(prep_ok.repo), std.fs.path.basename(dir)), "prepare reports the repo root");
-
-    const non_repo = try std.fmt.allocPrint(arena, "{s}/nope", .{dir});
-    const prep_bad = try prepare(arena, io, non_repo);
-    fail(!prep_bad.ok, "prepare fails outside a git repo");
-
-    // Exercise the spawn + wait + report path with a fake lazygit that
-    // exits 42. No real lazygit is spawned in self-check. Skipped when the
-    // process has no controlling terminal (CI, detached shells), because
-    // /dev/tty is the whole point of the run op.
-    const tty = std.Io.Dir.openFileAbsolute(io, "/dev/tty", .{ .mode = .read_write }) catch {
-        std.debug.print("SKIP: no controlling terminal, spawn path not exercised\n", .{});
-        std.debug.print("PASS: pi-lg self-check ok\n", .{});
-        return;
-    };
-    tty.close(io);
-
-    const fake_dir = try std.fmt.allocPrint(arena, "{s}/fakebin", .{dir});
-    std.Io.Dir.cwd().createDirPath(io, fake_dir) catch |err| {
-        std.debug.print("FAIL: mkdir {s}: {s}\n", .{ fake_dir, @errorName(err) });
-        std.process.exit(1);
-    };
-    const script_path = try std.fmt.allocPrint(arena, "{s}/lazygit", .{fake_dir});
-    const script = std.Io.Dir.createFileAbsolute(io, script_path, .{}) catch |err| {
-        std.debug.print("FAIL: create {s}: {s}\n", .{ script_path, @errorName(err) });
-        std.process.exit(1);
-    };
-    try writeAllIo(io, script, "#!/bin/sh\nexit 42\n");
-    script.close(io);
-    std.Io.Dir.cwd().setFilePermissions(io, script_path, .executable_file, .{}) catch |err| {
-        std.debug.print("FAIL: chmod {s}: {s}\n", .{ script_path, @errorName(err) });
-        std.process.exit(1);
-    };
-
-    const run = try runLazygit(arena, io, dir, script_path);
-    fail(run.ok, "run spawns the fake lazygit");
-    fail(mem.eql(u8, run.text, "exited 42"), "run reports the exit code");
-
-    std.debug.print("PASS: pi-lg self-check ok\n", .{});
-}
-
-// ---------------------------------------------------------------------------
-// main
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-
-    const argv = init.minimal.args.vector;
-    if (argv.len > 1 and mem.eql(u8, std.mem.sliceTo(argv[1], 0), "--self-check")) {
-        try selfCheck(gpa, io);
-        return;
-    }
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -233,7 +160,7 @@ pub fn main(init: std.process.Init) !void {
                 respond(arena, io, id, false, "missing cwd") catch {};
                 continue;
             };
-            const outcome = runLazygit(arena, io, cwd, null) catch |err| {
+            const outcome = runLazygit(arena, io, cwd) catch |err| {
                 respond(arena, io, id, false, @errorName(err)) catch {};
                 continue;
             };

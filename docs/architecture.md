@@ -19,7 +19,7 @@ the binary cannot take down pi. The shared parts live in two files:
   lifecycle (socket shutdown on deadline, abandoned-worker self-cleanup
   when a worker is stuck before registering its socket) lives once. Each
   backend aliases only what it needs and keeps its own request parsing,
-  op dispatch, protocol structs, and self-check. `goal.zig` aliases
+  op dispatch, and protocol structs. `goal.zig` aliases
   `nowRealtimeMs` because its deadlines must be comparable to the glue's
   wall time; the others use the monotonic clock. The old id-based
   `respond` / `respondOutcome` and the line reader (`readLine`) remain for
@@ -183,12 +183,6 @@ matched by id; unrelated notifications are skipped.
   the model's context or bloat the session file below the 64MB protocol
   limit.
 
-## Self-check
-
-`zig build run -- --self-check` spawns lightpanda, handshakes, fetches
-https://example.com as markdown, and asserts "Example Domain" appears. This
-exercises the whole stack and is the gate for `mise check`.
-
 ## Known limitations and upgrade paths
 
 - **No screenshots, by design**: lightpanda has no graphical rendering
@@ -270,8 +264,7 @@ Why this split:
 ```
 
 `params` is a JSON string containing the raw arguments object (same shape
-as pi-browser). `bin`, `shots_dir`, and `timeout_ms` are optional request
-fields used only by the self-check; the glue never sends them.
+as pi-browser). The glue sends only op/tool/params.
 
 ## Zig behavior
 
@@ -292,7 +285,7 @@ fields used only by the self-check; the glue never sends them.
     "Permission denied: tool 'x' has no reviewed risk classification"),
     falling back to the exit term.
   - Exit codes are never used to judge success (invalid args exit 0).
-  - The 120s default deadline (`timeout_ms` override) is enforced via the
+  - The 120s default deadline is enforced via the
     shared poll-based readLine; on expiry the child is SIGTERMed and
     reaped (`child.kill` closes its pipes, which also unblocks the stderr
     thread). A missing binary surfaces "failed to spawn ...", not a hang.
@@ -320,14 +313,6 @@ fields used only by the self-check; the glue never sends them.
 - Result text is capped at 256KB with head/tail truncation (shared
   pattern with pi-browser), so a huge tree cannot flood the model's
   context or the session file.
-- **Self-check**: `zig build run -- --self-check` exercises the whole
-  dispatch against a fake `cua-driver` shell script (which records its
-  argv to a log, writes screenshot files, and serves canned responses):
-  passthrough, tree extraction, zoom path prefix, the args log proving
-  the `--screenshot-out-file` argv shape, a stderr failure, an in-band
-  error payload, the timeout path (a 2s fake call with a 300ms deadline),
-  and a missing binary. No daemon or OS permissions needed; it is the gate
-  for `mise check`.
 
 ## Flow
 
@@ -420,8 +405,6 @@ Why this split:
   run as normal. The child's stdout and stderr are drained concurrently via
   `std.Io.File.MultiReader`, so a verbose pre-commit hook that fills stderr
   cannot deadlock the drain (reading one pipe to EOF before the other would).
-- `--self-check` builds a scratch repo under /tmp and exercises analyze,
-  validate, and commit end to end. It is the gate for `mise check`.
 
 ## Flow
 
@@ -510,15 +493,6 @@ Why this split:
 notify, no screen change) -> `tui.stop()` -> run (Zig spawns lazygit on the
 terminal, waits) -> `tui.start()` + full redraw + close component -> notify
 `lazygit exited N`.
-
-## Self-check
-
-`zig build run -- --self-check` requires lazygit on PATH, builds a scratch
-repo under /tmp, verifies prepare succeeds on it and fails on a non-repo
-path, and exercises the spawn+wait+report path with a fake `lazygit` script
-that exits 42 (no real lazygit is spawned). If the process has no controlling
-terminal (CI, detached shells) the spawn portion is skipped with a note,
-because /dev/tty is the whole point of the run op.
 
 ## Known limitations and upgrade paths
 
@@ -619,9 +593,6 @@ as a system-prompt addition).
   non-goal wake message does.
 - **--no-ask**: the goal prompt tells the model the user is unavailable, to
   make reasonable assumptions, and to never ask questions.
-- **Self-check**: `zig build run -- --self-check` exercises parse, start,
-  event decisions, complete, blocked, wait, pause, resume, clear, status,
-  restore, and the inject action. It is the gate for `mise check`.
 
 ## Flow
 
@@ -752,10 +723,6 @@ Fields: volume (10%..100%), paused (active|paused), silent_window_seconds
 - State (last played per category, timestamps, debounce clock) is
   in-memory; nothing survives a backend restart except peon.json. The
   original's state.json carried nothing that mattered across sessions.
-- **Self-check**: `zig build run -- --self-check` exercises defaults,
-  migration (with a fake old install in a temp home), extraction, all
-  event decisions with synthetic clocks, set validation, and persistence.
-  It is the gate for `mise check`.
 
 ## Notes
 
@@ -845,11 +812,6 @@ Why this split:
   exit path (success, or a write failure after the main loop abandons a
   timed-out request), so it can never read reused stack memory, write into a
   later request's pipe, or leak.
-- **Self-check**: `zig build run -- --self-check` builds a scratch session
-  tree, runs the real parse/aggregate/cache pipeline with
-  `PI_CODING_AGENT_DIR` pointed at it, verifies the payload and cache round
-  trip, and checks that the limits op fails gracefully without credentials
-  (no network in the self-check).
 
 ## Notes
 
@@ -945,14 +907,9 @@ thread has content, so draft text is never hijacked.
   turns).
 - `format` renders the answered thread as plain conversation text (question
   and answer without Q/A labels) for copy and bringing into the main chat. `copy` pipes that text into `pbcopy` (macOS);
-  a missing pbcopy is reported, never fatal. The `bin` request field
-  overrides the binary for the self-check's fake pbcopy.
+  a missing pbcopy is reported, never fatal.
 - Thread state lives in a dedicated arena reset on `open`; request parsing
   uses a separate per-line arena (reset before each `readLine`).
-- **Self-check**: `zig build run -- --self-check` exercises open (with and
-  without a first question), answer, ask history, abort, format, and copy
-  through a fake pbcopy script that saves stdin to a file. It is the gate
-  for `mise check`.
 
 ## Flow
 
@@ -1061,14 +1018,6 @@ Why this split:
   describe_image tokens and cost appear in pi's footer and /usage totals.
 - TLS uses the std lib's system CA bundle, which on macOS reads the system
   keychains directly; no cert file handling.
-- **Self-check**: `zig build run -- --self-check` spins up an in-process
-  `std.http.Server` on an ephemeral port (no network) and exercises the full
-  pipeline: passthrough of a small PNG (asserts the data URL is image/png),
-  a server-injected 500 proving the single retry, a forced sips resize to
-  JPEG (skipped with a note when sips is missing), a 400 surfacing the
-  provider error, a 300ms deadline against a 2s-slow server, a missing file,
-  a non-image, and an exact server request count (a wrongly retried 4xx
-  would shift it). It is the gate for `mise check`.
 
 ## Glue behavior
 
@@ -1190,15 +1139,6 @@ server to the model.
   thread with a 30s deadline (the shared `httpWithDeadline` machinery in
   `common.zig`, same as pi-vision), so a hung endpoint cannot stall the
   backend.
-- **Self-check**: `./zig-out/bin/pi-search --self-check` spins up an
-  in-process HTTP server (no network) and exercises the whole pipeline: an
-  answer-mode happy path (numbered sources, dedupe, excerpt, usage cost,
-  and body assertions for query/numResults/domains/recency/maxCharacters/
-  useAutoprompt), an injected 500 proving the single retry, a 400 surfacing
-  immediately, results mode (compact excerpt cap), a 300ms deadline against
-  a 2s-slow server, an empty result set, a no-recency body, validation
-  failures (missing query/api key, bad mode), and an exact server request
-  count.
 
 ## Glue behavior
 

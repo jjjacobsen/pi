@@ -84,5 +84,3 @@ When there is nothing worth changing, say `Lean already. Ship.` and stop.
   a bug hunt and not a security review (pi-package-audit covers installed
   packages, a dedicated pass covers threats).
 - One-shot report. The user decides what to change.
-- A single smoke test or assert-based self-check is the minimum, not bloat.
-  Never flag it.

@@ -189,32 +189,9 @@ fn stderrForwarder(fd: posix.fd_t) void {
     }
 }
 
-fn selfCheck(gpa: Allocator, io: std.Io) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var browser = try Browser.spawn(io, gpa);
-    defer browser.deinit();
-
-    const res = try browser.call(arena, "markdown", "{\"url\":\"https://example.com\"}");
-    if (res.ok and mem.indexOf(u8, res.text, "Example Domain") != null) {
-        std.debug.print("PASS: lightpanda mcp round-trip works\n", .{});
-    } else {
-        std.debug.print("FAIL: {s}\n", .{res.text});
-        std.process.exit(1);
-    }
-}
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-
-    const argv = init.minimal.args.vector; // []const [*:0]const u8 on posix
-    if (argv.len > 1 and mem.eql(u8, std.mem.sliceTo(argv[1], 0), "--self-check")) {
-        try selfCheck(gpa, io);
-        return;
-    }
 
     const S = struct {
         fn handler(_: posix.SIG) callconv(.c) void {

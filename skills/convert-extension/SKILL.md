@@ -66,7 +66,7 @@ before converting anything else.
   entries (goal already round-trips its state this way)
 - The old env-with-fallback resolution (`agentDir` in `src/usage.zig`,
   the hardcoded `~/.pi/agent` in `peon.zig` and `cua.zig`) dies with
-  each conversion. cua's existing `shots_dir` request field shows the way
+  each conversion. The `agent_dir` request field is the replacement shape
 
 ## Conversion checklist
 
@@ -99,9 +99,6 @@ In-memory backend state cannot survive a one-shot process. For each piece:
   `common.respondOutcomeExit` (Outcome, carries the optional usage JSON).
   Both are noreturn: they print the envelope and exit 0/1
 - Remove the stdin loop, the `readLine` import, and the `MAX_LINE` const
-- Keep the `--self-check` branch untouched (self-checks leave the project
-  later, not per-extension). Fix request literals in the self-check that
-  set `.id`
 - Template main:
 
 ```zig
@@ -110,12 +107,8 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     const argv = init.minimal.args.vector;
-    if (argv.len > 1 and mem.eql(u8, std.mem.sliceTo(argv[1], 0), "--self-check")) {
-        try selfCheck(gpa, io);
-        return;
-    }
     if (argv.len < 2) {
-        std.debug.print("usage: pi-foo '<request json>' | --self-check\n", .{});
+        std.debug.print("usage: pi-foo '<request json>'\n", .{});
         std.process.exit(2);
     }
 
@@ -171,7 +164,6 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
   - garbage argv: error envelope, exits 1
   - no argv: usage line, exits 2
 - `mise x -- hk check --all` (tsc) stays green
-- While self-checks still exist: `zig build run -- --self-check`
 
 ### 6. Update docs
 

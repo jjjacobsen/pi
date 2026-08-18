@@ -13,7 +13,7 @@
 //                {"id":3,"op":"answer","answer":"model response text"}
 //                {"id":4,"op":"abort"}
 //                {"id":5,"op":"format"}
-//                {"id":6,"op":"copy"}          (pbcopy; optional "bin" override for self-check)
+//                {"id":6,"op":"copy"}          (pbcopy)
 // Response:      {"id":1,"ok":true,"system_prompt":"...","messages":[...],"thinking":"low","max_tokens":800}
 //                {"id":2,"ok":true,"messages":[...]}
 //                {"id":3,"ok":true,"turns":2}
@@ -74,7 +74,6 @@ const Request = struct {
     context: ?[]const u8 = null,
     question: ?[]const u8 = null,
     answer: ?[]const u8 = null,
-    bin: ?[]const u8 = null, // pbcopy override, self-check only
 };
 
 const Response = struct {
@@ -250,7 +249,7 @@ fn opFormat(alloc: Allocator, resp: *Response) !void {
     resp.text = buf.items;
 }
 
-fn opCopy(io: std.Io, alloc: Allocator, resp: *Response, req: *const Request) !void {
+fn opCopy(io: std.Io, alloc: Allocator, resp: *Response) !void {
     if (turns.items.len == 0) {
         fail(resp, "nothing to copy");
         return;
@@ -259,7 +258,7 @@ fn opCopy(io: std.Io, alloc: Allocator, resp: *Response, req: *const Request) !v
     try opFormat(alloc, &format_resp);
     const text = format_resp.text orelse "";
 
-    const bin = req.bin orelse "pbcopy";
+    const bin = "pbcopy";
     var child = std.process.spawn(io, .{
         .argv = &.{bin},
         .stdin = .pipe,
@@ -287,98 +286,9 @@ fn opCopy(io: std.Io, alloc: Allocator, resp: *Response, req: *const Request) !v
     resp.chars = @intCast(text.len);
 }
 
-// ---------------------------------------------------------------------------
-// self-check
-
-fn selfCheck(gpa: Allocator, io: std.Io) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const check = common.expect;
-
-    thread_arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer thread_arena_state.deinit();
-
-    // open with context + first question
-    var resp = Response{ .id = 1, .ok = true };
-    var req = Request{ .id = 1, .op = "open", .context = "the user is debugging a Zig compile error", .question = "what is a monad?" };
-    try opOpen(arena, &resp, &req);
-    check(resp.ok, "open succeeds");
-    check(resp.system_prompt != null and mem.indexOf(u8, resp.system_prompt.?, "15 years old") != null, "system prompt carries the ELI15 rule");
-    check(resp.system_prompt != null and mem.indexOf(u8, resp.system_prompt.?, "debugging a Zig compile error") != null, "system prompt embeds the context");
-    check(resp.messages.?.len == 1 and mem.eql(u8, resp.messages.?[0].role, "user"), "open with question returns one user message");
-    check(resp.messages.?[0].content.len == 1 and mem.eql(u8, resp.messages.?[0].content[0].type, "text"), "messages carry text content blocks");
-    check(mem.eql(u8, resp.thinking.?, "low"), "thinking is low for speed");
-
-    // answer + follow-up: history is included as user/assistant pairs
-    resp = Response{ .id = 2, .ok = true };
-    req = Request{ .id = 2, .op = "answer", .answer = "a box that wraps a value and chains operations" };
-    try opAnswer(arena, &resp, &req);
-    check(resp.turns.? == 1, "answer records the turn");
-
-    resp = Response{ .id = 3, .ok = true };
-    req = Request{ .id = 3, .op = "ask", .question = "and a functor?" };
-    try opAsk(arena, &resp, &req);
-    check(resp.ok, "ask succeeds");
-    check(resp.messages.?.len == 3, "ask returns history plus the new question");
-    check(mem.eql(u8, resp.messages.?[1].role, "assistant"), "history has the assistant answer");
-    check(mem.eql(u8, resp.messages.?[1].content[0].text, "a box that wraps a value and chains operations"), "assistant content is a text block");
-
-    // abort drops the unanswered follow-up
-    resp = Response{ .id = 4, .ok = true };
-    try opAbort(arena, &resp);
-    check(resp.turns.? == 1, "abort drops the unanswered turn");
-
-    // format renders the answered thread
-    resp = Response{ .id = 5, .ok = true };
-    try opFormat(arena, &resp);
-    check(resp.text != null and mem.indexOf(u8, resp.text.?, "what is a monad?") != null, "format has the question");
-    check(resp.text != null and mem.indexOf(u8, resp.text.?, "a box that wraps") != null, "format has the answer");
-
-    // copy pipes the formatted text into a fake pbcopy that saves stdin
-    const dir = try common.selfCheckDir(arena, io, "btw");
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
-    const out_path = try std.fmt.allocPrint(arena, "{s}/clip.txt", .{dir});
-    const script_path = try std.fmt.allocPrint(arena, "{s}/pbcopy", .{dir});
-    const script = std.Io.Dir.createFileAbsolute(io, script_path, .{}) catch |err| {
-        std.debug.print("FAIL: create {s}: {s}\n", .{ script_path, @errorName(err) });
-        std.process.exit(1);
-    };
-    const sh = try std.fmt.allocPrint(arena, "#!/bin/sh\ncat > {s}\n", .{out_path});
-    try writeAllIo(io, script, sh);
-    script.close(io);
-    std.Io.Dir.cwd().setFilePermissions(io, script_path, .executable_file, .{}) catch |err| {
-        std.debug.print("FAIL: chmod {s}: {s}\n", .{ script_path, @errorName(err) });
-        std.process.exit(1);
-    };
-
-    resp = Response{ .id = 6, .ok = true };
-    req = Request{ .id = 6, .op = "copy", .bin = script_path };
-    try opCopy(io, arena, &resp, &req);
-    check(resp.ok, "copy succeeds");
-    check(resp.chars.? > 0, "copy reports the char count");
-    const clip = std.Io.Dir.readFileAlloc(.cwd(), io, out_path, arena, .limited(64 * 1024)) catch |err| {
-        std.debug.print("FAIL: read clip: {s}\n", .{@errorName(err)});
-        std.process.exit(1);
-    };
-    check(mem.indexOf(u8, clip, "what is a monad?") != null, "pbcopy received the formatted thread");
-
-    std.debug.print("PASS: pi-btw self-check ok\n", .{});
-}
-
-// ---------------------------------------------------------------------------
-// main
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-
-    const argv = init.minimal.args.vector;
-    if (argv.len > 1 and mem.eql(u8, std.mem.sliceTo(argv[1], 0), "--self-check")) {
-        try selfCheck(gpa, io);
-        return;
-    }
 
     thread_arena_state = std.heap.ArenaAllocator.init(gpa);
     defer thread_arena_state.deinit();
@@ -420,7 +330,7 @@ pub fn main(init: std.process.Init) !void {
             .answer => opAnswer(thread_alloc, &resp, &req) catch |err| fail(&resp, @errorName(err)),
             .abort => opAbort(thread_alloc, &resp) catch |err| fail(&resp, @errorName(err)),
             .format => opFormat(thread_alloc, &resp) catch |err| fail(&resp, @errorName(err)),
-            .copy => opCopy(io, thread_alloc, &resp, &req) catch |err| fail(&resp, @errorName(err)),
+            .copy => opCopy(io, thread_alloc, &resp) catch |err| fail(&resp, @errorName(err)),
             .unknown => fail(&resp, "unknown op"),
         }
         respondJson(req_alloc, io, &resp) catch {

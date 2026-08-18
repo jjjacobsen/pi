@@ -45,7 +45,6 @@ const Request = struct {
     num_results: ?u32 = null,
     recency: ?[]const u8 = null,
     domains: ?[]const []const u8 = null,
-    endpoint: ?[]const u8 = null, // self-check override; defaults to EXA_URL
     api_key: ?[]const u8 = null,
     timeout_ms: ?u32 = null,
 };
@@ -421,7 +420,7 @@ fn opSearch(gpa: Allocator, arena: Allocator, io: std.Io, req: Request) !Outcome
 
     const num_results = @min(req.num_results orelse 8, MAX_NUM_RESULTS);
     const excerpt_cap: usize = if (results_mode) MAX_SNIPPET else MAX_EXCERPT;
-    const endpoint = mem.trim(u8, req.endpoint orelse EXA_URL, " \t\r\n");
+    const endpoint = EXA_URL;
     const body = try buildBody(arena, query, num_results, req.recency, req.domains, excerpt_cap);
     const timeout_ms = req.timeout_ms orelse DEFAULT_TIMEOUT_MS;
 
@@ -439,196 +438,13 @@ fn opSearch(gpa: Allocator, arena: Allocator, io: std.Io, req: Request) !Outcome
     }
 }
 
-// ---------------------------------------------------------------------------
-// Self-check: exercises the full pipeline against an in-process HTTP server
-// (no network, no external API). The server serves scripted Exa-style JSON
-// responses and injects a 500 (retry), a 400 (no retry), an empty result
-// set, and a slow response (deadline).
-
-const EXA_HAPPY = "{\"results\":[{\"id\":\"a\",\"title\":\"Alpha Example\",\"url\":\"https://example.com/alpha\",\"publishedDate\":\"2026-08-01T00:00:00.000Z\",\"text\":\"Alpha results here. Alpha results here.\"},{\"id\":\"b\",\"title\":\"Beta Example\",\"url\":\"https://example.com/beta\",\"text\":\"Beta results here.\"},{\"id\":\"a2\",\"title\":\"Alpha Duplicate\",\"url\":\"https://example.com/alpha\",\"text\":\"Duplicate alpha.\"}],\"costDollars\":{\"total\":0.007}}";
-const EXA_SINGLE = "{\"results\":[{\"id\":\"a\",\"title\":\"Alpha Example\",\"url\":\"https://example.com/alpha\",\"text\":\"Alpha results here.\"}],\"costDollars\":{\"total\":0.0}}";
-const EXA_EMPTY = "{\"results\":[],\"costDollars\":{\"total\":0.0}}";
-const EXA_ERROR_500 = "{\"error\":\"self-check injected 500\"}";
-const EXA_ERROR_400 = "{\"error\":\"self-check injected 400\"}";
-
-const SELFCHECK_REQUESTS = 8;
-
-const SelfCheckCtx = struct {
-    gpa: Allocator,
-    io: std.Io,
-    port: std.atomic.Value(u16) = std.atomic.Value(u16).init(0),
-    bodies: [SELFCHECK_REQUESTS][64 * 1024]u8 = undefined,
-    body_lens: [SELFCHECK_REQUESTS]usize = [_]usize{0} ** SELFCHECK_REQUESTS,
-    served: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-};
-
-fn serveThread(ctx: *SelfCheckCtx) void {
-    const io = ctx.io;
-    var server = std.Io.net.IpAddress.listen(&.{ .ip4 = std.Io.net.Ip4Address.loopback(0) }, io, .{ .mode = .stream }) catch return;
-    defer server.deinit(io);
-    const port = switch (server.socket.address) {
-        .ip4 => |a| a.port,
-        else => return,
-    };
-    ctx.port.store(port, .release);
-
-    var idx: usize = 0;
-    while (idx < SELFCHECK_REQUESTS) : (idx += 1) {
-        const stream = server.accept(io) catch continue;
-        defer stream.close(io);
-        var rbuf: [16 * 1024]u8 = undefined;
-        var wbuf: [8192]u8 = undefined;
-        var sr = stream.reader(io, &rbuf);
-        var sw = stream.writer(io, &wbuf);
-        var hs = std.http.Server.init(&sr.interface, &sw.interface);
-        var req = hs.receiveHead() catch continue;
-        if (!mem.eql(u8, req.head.target, "/search")) continue;
-
-        var transfer: [8192]u8 = undefined;
-        var body_storage: [64 * 1024]u8 = undefined;
-        const br = req.readerExpectNone(&transfer);
-        var bw = std.Io.Writer.fixed(&body_storage);
-        _ = br.streamRemaining(&bw) catch continue;
-        const blen = bw.end;
-        @memcpy(ctx.bodies[idx][0..blen], body_storage[0..blen]);
-        ctx.body_lens[idx] = blen;
-
-        const json_headers: []const std.http.Header = &.{.{ .name = "content-type", .value = "application/json" }};
-        switch (idx) {
-            0 => req.respond(EXA_HAPPY, .{ .extra_headers = json_headers }) catch {},
-            1 => req.respond(EXA_ERROR_500, .{ .status = .internal_server_error }) catch {},
-            2 => req.respond(EXA_HAPPY, .{ .extra_headers = json_headers }) catch {},
-            3 => req.respond(EXA_ERROR_400, .{ .status = .bad_request }) catch {},
-            4 => req.respond(EXA_SINGLE, .{ .extra_headers = json_headers }) catch {},
-            5 => {
-                // Deadline test: stall 2s so the 300ms client deadline fires.
-                std.Io.sleep(io, std.Io.Duration.fromMilliseconds(2000), .awake) catch {};
-                req.respond(EXA_HAPPY, .{ .extra_headers = json_headers }) catch {};
-            },
-            6 => req.respond(EXA_EMPTY, .{ .extra_headers = json_headers }) catch {},
-            else => req.respond(EXA_SINGLE, .{ .extra_headers = json_headers }) catch {},
-        }
-        ctx.served.store(idx + 1, .release);
-    }
-}
-
-fn selfCheck(gpa: Allocator, io: std.Io) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const fail = common.expect;
-
-    const sctx = try gpa.create(SelfCheckCtx);
-    sctx.* = .{ .gpa = gpa, .io = io };
-    defer gpa.destroy(sctx);
-    const server_thread = std.Thread.spawn(.{}, serveThread, .{sctx}) catch return error.ThreadSpawnFailed;
-    defer server_thread.join();
-
-    while (sctx.port.load(.acquire) == 0) {
-        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(10), .awake) catch {};
-    }
-    const endpoint = try std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/search", .{sctx.port.load(.acquire)});
-
-    const mkreq = struct {
-        fn f(ep: []const u8, query: []const u8, mode: []const u8, num_results: u32, recency: ?[]const u8, domains: ?[]const []const u8, timeout_ms: u32) Request {
-            return .{ .op = "search", .query = query, .mode = mode, .num_results = num_results, .recency = recency, .domains = domains, .endpoint = ep, .api_key = "selfcheck-key", .timeout_ms = timeout_ms };
-        }
-    }.f;
-
-    // 1. answer mode happy path: numbered sources, dedupe, excerpt, usage
-    //    cost, and body assertions for query/numResults/domains/recency.
-    const r1 = try opSearch(gpa, arena, io, mkreq(endpoint, "alpha docs", "answer", 5, "week", &.{ "example.com", "-bad.com" }, 10000));
-    fail(r1.ok, "answer mode succeeds");
-    fail(mem.indexOf(u8, r1.text, "1. Alpha Example (https://example.com/alpha)") != null, "source list has the numbered alpha entry");
-    fail(mem.indexOf(u8, r1.text, "2. Beta Example (https://example.com/beta)") != null, "source list has the numbered beta entry");
-    fail(mem.indexOf(u8, r1.text, "Alpha results here") != null, "excerpt is included");
-    fail(mem.indexOf(u8, r1.text, "3.") == null, "duplicate urls are deduped");
-    fail(r1.usage != null and mem.indexOf(u8, r1.usage.?, "\"total\":0.007") != null, "usage carries the Exa cost");
-    const b1 = sctx.bodies[0][0..sctx.body_lens[0]];
-    fail(mem.indexOf(u8, b1, "\"query\":\"alpha docs\"") != null, "body carries the query");
-    fail(mem.indexOf(u8, b1, "\"numResults\":5") != null, "body carries numResults");
-    fail(mem.indexOf(u8, b1, "\"includeDomains\":[\"example.com\"]") != null, "allowed domains become includeDomains");
-    fail(mem.indexOf(u8, b1, "\"excludeDomains\":[\"bad.com\"]") != null, "blocked domains become excludeDomains");
-    fail(mem.indexOf(u8, b1, "\"startPublishedDate\":\"") != null, "recency becomes startPublishedDate");
-    fail(mem.indexOf(u8, b1, "\"maxCharacters\":900") != null, "answer mode requests longer excerpts");
-    fail(mem.indexOf(u8, b1, "\"useAutoprompt\":false") != null, "the query is not rewritten by autoprompt");
-
-    // 2. retry: the injected 500 is retried once and succeeds.
-    const r2 = try opSearch(gpa, arena, io, mkreq(endpoint, "retry me", "answer", 5, null, null, 10000));
-    fail(r2.ok, "a 500 is retried and succeeds");
-    fail(mem.indexOf(u8, r2.text, "1. Alpha Example") != null, "retried request returns the sources");
-
-    // 3. a 400 surfaces immediately with Exa's message.
-    const r3 = try opSearch(gpa, arena, io, mkreq(endpoint, "fail me", "answer", 5, null, null, 10000));
-    fail(!r3.ok and mem.indexOf(u8, r3.err, "self-check injected 400") != null, "4xx surfaces the Exa error");
-
-    // 4. results mode: short excerpts and a compact source list.
-    const r4 = try opSearch(gpa, arena, io, mkreq(endpoint, "quick look", "results", 3, "day", null, 10000));
-    fail(r4.ok, "results mode succeeds");
-    const b4 = sctx.bodies[4][0..sctx.body_lens[4]];
-    fail(mem.indexOf(u8, b4, "\"maxCharacters\":250") != null, "results mode requests short excerpts");
-    fail(mem.indexOf(u8, b4, "\"startPublishedDate\":\"") != null, "recency day becomes startPublishedDate");
-    fail(mem.indexOf(u8, b4, "\"numResults\":3") != null, "results mode carries numResults");
-
-    // 5. the deadline fires on a slow endpoint.
-    var r5_ok = false;
-    var r5_err: []const u8 = "";
-    if (opSearch(gpa, arena, io, mkreq(endpoint, "slow", "answer", 5, null, null, 300))) |r| {
-        r5_ok = r.ok;
-        r5_err = r.err;
-    } else |err| {
-        r5_ok = false;
-        r5_err = @errorName(err);
-    }
-    fail(!r5_ok and mem.indexOf(u8, r5_err, "timed out") != null, "deadline reported as a timeout");
-
-    // 6. zero results is a clean outcome.
-    const r6 = try opSearch(gpa, arena, io, mkreq(endpoint, "nothing", "answer", 5, null, null, 10000));
-    fail(r6.ok and mem.eql(u8, r6.text, "No results found."), "empty results return a clean message");
-
-    // 7. no recency: no startPublishedDate in the body.
-    const r7 = try opSearch(gpa, arena, io, mkreq(endpoint, "no recency", "answer", 5, null, null, 10000));
-    fail(r7.ok, "no-recency search succeeds");
-    const b7 = sctx.bodies[7][0..sctx.body_lens[7]];
-    fail(mem.indexOf(u8, b7, "startPublishedDate") == null, "no recency means no date filter");
-
-    // 8. validation: missing query / api key / bad mode fail before any HTTP.
-    const r8 = try opSearch(gpa, arena, io, .{ .op = "search", .query = "", .api_key = "selfcheck-key", .timeout_ms = 1000 });
-    fail(!r8.ok and mem.indexOf(u8, r8.err, "missing query") != null, "missing query fails");
-    const r9 = try opSearch(gpa, arena, io, .{ .op = "search", .query = "x", .mode = "bogus", .api_key = "selfcheck-key", .timeout_ms = 1000 });
-    fail(!r9.ok and mem.indexOf(u8, r9.err, "mode must be") != null, "bad mode fails");
-    const r10 = try opSearch(gpa, arena, io, .{ .op = "search", .query = "x", .api_key = "", .timeout_ms = 1000 });
-    fail(!r10.ok and mem.indexOf(u8, r10.err, "missing api_key") != null, "missing api key fails");
-
-    // The server must have served exactly 8 requests (happy, 500, retry,
-    // 400, results, timeout, empty, no-recency). Wait for the server to
-    // finish (the timeout test's response lands ~2s after the client gave
-    // up) before counting.
-    var waited: i64 = 0;
-    while (sctx.served.load(.acquire) != SELFCHECK_REQUESTS) : (waited += 10) {
-        if (waited > 10000) break;
-        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(10), .awake) catch {};
-    }
-    fail(sctx.served.load(.acquire) == SELFCHECK_REQUESTS, "server request count is exact");
-
-    std.debug.print("PASS: pi-search self-check ok\n", .{});
-}
-
-// ---------------------------------------------------------------------------
-// main
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
     const argv = init.minimal.args.vector;
-    if (argv.len > 1 and mem.eql(u8, std.mem.sliceTo(argv[1], 0), "--self-check")) {
-        try selfCheck(gpa, io);
-        return;
-    }
     if (argv.len < 2) {
-        std.debug.print("usage: pi-search '<request json>' | --self-check\n", .{});
+        std.debug.print("usage: pi-search '<request json>'\n", .{});
         std.process.exit(2);
     }
 

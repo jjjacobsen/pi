@@ -565,70 +565,9 @@ fn commitChanges(arena: Allocator, io: std.Io, cwd: []const u8, message: []const
     return .{ .ok = true, .text = out.items };
 }
 
-// ---------------------------------------------------------------------------
-// self-check
-
-fn selfCheck(gpa: Allocator, io: std.Io) !void {
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const dir = try common.selfCheckDir(arena, io, "commit");
-    defer std.Io.Dir.cwd().deleteTree(io, dir) catch {};
-
-    const fail = common.expect;
-
-    const init = try runGit(arena, io, &.{ "git", "init", "-q", dir }, 4096);
-    fail(init.ok, "git init in temp repo");
-    const email = try runGit(arena, io, &.{ "git", "-C", dir, "config", "user.email", "selfcheck@local" }, 4096);
-    fail(email.ok, "git config user.email");
-    const name = try runGit(arena, io, &.{ "git", "-C", dir, "config", "user.name", "selfcheck" }, 4096);
-    fail(name.ok, "git config user.name");
-
-    const file_path = try std.fmt.allocPrint(arena, "{s}/hello.ts", .{dir});
-    const file = std.Io.Dir.createFileAbsolute(io, file_path, .{}) catch |err| {
-        std.debug.print("FAIL: create {s}: {s}\n", .{ file_path, @errorName(err) });
-        std.process.exit(1);
-    };
-    defer file.close(io);
-    try writeAllIo(io, file, "export function greet(name: string): string {\n  return `hello ${name}`;\n}\n");
-
-    const outcome = try analyzeContext(arena, io, dir);
-    fail(outcome.ok and !outcome.empty, "analyze on dirty repo");
-    fail(mem.indexOf(u8, outcome.context, "hello.ts") != null, "digest mentions hello.ts");
-    fail(mem.indexOf(u8, outcome.context, "greet") != null, "digest shows changed symbol");
-
-    const good = "feat(greet): add hello greeting\n\nAdd a greet function so callers can produce a greeting without duplicating the template string. The template keeps formatting consistent across call sites.";
-    fail((try validateMessage(arena, good)).len == 0, "valid message passes validation");
-
-    const vague = "chore: update files\n\nTouched a few things to keep the repo tidy.";
-    fail((try validateMessage(arena, vague)).len > 0, "vague message rejected");
-
-    const no_body = "feat: add thing";
-    fail((try validateMessage(arena, no_body)).len > 0, "thin message rejected");
-
-    const done = try commitChanges(arena, io, dir, good);
-    fail(done.ok, "commit succeeds");
-    fail(done.text.len > 8, "commit returns hash + header");
-
-    const clean = try analyzeContext(arena, io, dir);
-    fail(clean.ok and clean.empty, "analyze on clean repo reports empty");
-
-    std.debug.print("PASS: pi-commit self-check ok\n", .{});
-}
-
-// ---------------------------------------------------------------------------
-// main
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
-
-    const argv = init.minimal.args.vector;
-    if (argv.len > 1 and mem.eql(u8, std.mem.sliceTo(argv[1], 0), "--self-check")) {
-        try selfCheck(gpa, io);
-        return;
-    }
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
