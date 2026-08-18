@@ -24,17 +24,17 @@ const strOpt = (description: string) => T.Optional(T.String({ description }));
 // name: tool name exposed to the model. mcp: lightpanda MCP tool behind it.
 // params are passed through as-is, so keys must match the MCP argument names.
 const TOOLS: { name: string; mcp?: string; description: string; params: TProperties }[] = [
-  { name: "browser_open", mcp: "goto", description: "Navigate to a URL. The page stays loaded for later browser_* calls.",
+  { name: "browser_open", mcp: "goto", description: "Navigate to a URL. The page stays loaded for later browser_* calls. Backed by lightpanda, a headless browser engine, not Chrome: no visible window, no screenshots, no vision, no Chrome-only features. Inspect and interact through the DOM tools only.",
     params: { url: T.String({ description: "The URL to navigate to." }), waitUntil: enumOpt(["load", "domcontentloaded", "networkalmostidle", "networkidle", "done"], "Event that completes navigation. Default 'load'. Prefer 'domcontentloaded' + browser_wait_selector on ad-heavy pages."), timeout: intOpt("Timeout in ms. Default 10000.") } },
-  { name: "browser_read", mcp: "markdown", description: "Read the current page (or a url/selector) as token-efficient markdown.",
+  { name: "browser_read", mcp: "markdown", description: "Read the current page (or a url/selector) as token-efficient markdown. The primary way to see page content in this headless browser, never expect a screenshot.",
     params: { url: strOpt("Optional URL to navigate to before reading."), selector: strOpt("Optional CSS selector; read only that element's subtree."), backendNodeId: intOpt("Optional node id; read only that subtree."), maxBytes: intOpt("Soft cap on output size in bytes."), timeout: intOpt("Timeout in ms. Default 10000.") } },
   { name: "browser_html", mcp: "html", description: "Get the raw serialized HTML of the page (or a node/selector).",
     params: { url: strOpt("Optional URL to navigate to first."), selector: strOpt("Optional CSS selector; dump only that element's outerHTML."), backendNodeId: intOpt("Optional node id; dump only that node's outerHTML."), timeout: intOpt("Timeout in ms. Default 10000.") } },
-  { name: "browser_tree", mcp: "tree", description: "Semantic DOM tree (role, name, value, backendNodeId per node). Best starting point for an unfamiliar page.",
+  { name: "browser_tree", mcp: "tree", description: "Semantic DOM tree (role, name, value, backendNodeId per node). Best starting point for an unfamiliar page: the DOM is the only view of the page, so never look for screenshots or a visible browser.",
     params: { url: strOpt("Optional URL to navigate to first."), maxDepth: intOpt("Maximum tree depth; start shallow."), backendNodeId: intOpt("Optional node id; tree for that element only."), timeout: intOpt("Timeout in ms. Default 10000.") } },
   { name: "browser_links", mcp: "links", description: "Extract all links from the loaded page as absolute URLs, one per line.",
     params: { url: strOpt("Optional URL to navigate to first."), timeout: intOpt("Timeout in ms. Default 10000.") } },
-  { name: "browser_click", mcp: "click", description: "Click an element by CSS selector or backendNodeId. Returns the resulting URL and title.",
+  { name: "browser_click", mcp: "click", description: "Click an element by CSS selector or backendNodeId. Returns the resulting URL and title. Clicks target DOM nodes, not pixels, since the browser is headless.",
     params: { selector: strOpt("CSS selector of the element to click. Preferred."), backendNodeId: intOpt("Node id of the element to click.") } },
   { name: "browser_fill", mcp: "fill", description: "Fill text into an input element by CSS selector or backendNodeId.",
     params: { selector: strOpt("CSS selector of the input. Preferred."), backendNodeId: intOpt("Node id of the input."), value: T.String({ description: "The text to fill." }) } },
