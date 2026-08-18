@@ -23,8 +23,8 @@
  * Pure TS glue, no Zig backend: everything comes from the extension API
  * (ctx.sessionManager / ctx.getContextUsage / ctx.model) plus
  * footerData (git branch, extension statuses). Nerd Font icons used:
- * fa-folder U+F07B, fa-code-fork U+F126 (all present in FiraCode Nerd
- * Font). Enabled at session start; /footer toggles.
+ * fae-pi U+E22C, fa-folder U+F07B, fa-code-fork U+F126 (all present in
+ * FiraCode Nerd Font). Enabled at session start; /footer toggles.
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -34,6 +34,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 // Nerd Font glyphs (verified against FiraCode Nerd Font)
 const ICONS = {
+	pi: "\u{e22c}", // fae-pi
 	folder: "\u{F07B}", // nf-fa-folder
 	git: "\u{F126}", // nf-fa-code_fork
 };
@@ -184,7 +185,7 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	const lines: string[] = [];
 
 	// Line 1: workspace — π  folder ~/path  git branch
-	let line1 = theme.fg("accent", "π") + "  " + theme.fg("dim", `${ICONS.folder} ${formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE || "")}`);
+	let line1 = theme.fg("accent", ICONS.pi) + "  " + theme.fg("dim", `${ICONS.folder} ${formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE || "")}`);
 	const branch = footerData.getGitBranch();
 	if (branch) line1 += "  " + theme.fg("success", `${ICONS.git} ${branch}`);
 	const sessionName = ctx.sessionManager.getSessionName();

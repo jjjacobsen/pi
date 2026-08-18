@@ -1442,8 +1442,8 @@ extensions, so there is no protocol and no backend binary.
   average). Providers only report real token usage at stream end, so a
   character-based estimate is the only live option; it is an
   approximation.
-- Nerd Font icons: fa-folder U+F07B and fa-code-fork U+F126,
-  plus a plain `π`. Verified present in FiraCode Nerd Font.
+- Nerd Font icons: fae-pi U+E22C (the `π` logo), fa-folder U+F07B
+  and fa-code-fork U+F126. Verified present in FiraCode Nerd Font.
 
 ## Glue behavior
 
