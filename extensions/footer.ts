@@ -2,7 +2,7 @@
  * /footer - custom status footer (opencode-style, minimal)
  *
  * Replaces pi's built-in footer with a cleaner two-line layout:
- *   line 1:  π  ~/Projects/pi  main            (workspace, git branch)
+ *   line 1:  π  ~/Projects/pi  main *1 ?2 +1          (workspace, git branch + status)
  *   line 2:  ↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   ...   deepseek-v4-flash • max
  *
  * vs the built-in footer this drops the R (cache read), W (cache write),
@@ -14,7 +14,11 @@
  * Model + reasoning level stay right-aligned.
  *
  * Context is shown as absolute tokens over the window (38,234/1.0M) instead
- * of a percent; ctx.getContextUsage() already handles compaction correctly
+ * of a percent; it is colored on the absolute token count (yellow past
+ * ~100k, red past ~200k, with a fraction-of-window fallback for small
+ * windows) rather than the percentage of the window that is full, since
+ * quality degrades with raw token count (context rot), not window fill.
+ * ctx.getContextUsage() already handles compaction correctly
  * (tokens: null right after /compact until the next LLM response, shown as
  * ?/1.0M, then anchored on the first post-compaction response's verified
  * usage). A session_compact listener re-renders so the ?/1.0M state appears
@@ -23,23 +27,40 @@
  * Pure TS glue, no Zig backend: everything comes from the extension API
  * (ctx.sessionManager / ctx.getContextUsage / ctx.model) plus
  * footerData (git branch, extension statuses). Nerd Font icons used:
- * fae-pi U+E22C, fa-folder U+F07B, fa-code-fork U+F126 (all present in
+ * fae-pi U+E22C, md-folder_open U+F0770, fa-code-fork U+F126 (all present in
  * FiraCode Nerd Font). Enabled at session start; /footer toggles.
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
+import { execFile } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 // Nerd Font glyphs (verified against FiraCode Nerd Font)
 const ICONS = {
 	pi: "\u{e22c}", // fae-pi
-	folder: "\u{F07B}", // nf-fa-folder
+	folder: "\u{f0770}", // nf-md-folder_open
 	git: "\u{F126}", // nf-fa-code_fork
 };
 
-// Cost is always shown, starting at $0.000 before the first billed response
+// Context-window coloring. Quality degrades with the raw number of tokens in
+// context ("context rot"), not with the percentage of the window that is full,
+// so color on absolute tokens: yellow once degradation is noticeable, red once
+// it is substantial. Research basis: NoLiMa (ICML 2025) finds most models are
+// at half their short-context performance by 32K tokens; Anthropic describes a
+// continuous performance gradient (not a cliff) as context grows; practitioner
+// reports see heavy recall loss in agentic sessions past ~100K and serious
+// degradation around ~200K+. The fraction-of-window values are only a fallback
+// so small windows don't stay green until their hard limit.
+const WARN_CTX_TOKENS = 100_000; // degradation noticeably begins
+const ERROR_CTX_TOKENS = 200_000; // substantial degradation, time to compact / start fresh
+const WARN_CTX_FRACTION = 0.6;
+const ERROR_CTX_FRACTION = 0.9;
+
+// How often to re-run `git status --porcelain` so the changed-file counters
+// stay fresh while the footer is showing (~10-40ms per spawn on a normal repo).
+const GIT_STATUS_POLL_MS = 5000;
 
 // Rough chars-per-token for the live tok/s estimate
 const CHARS_PER_TOKEN = 4;
@@ -63,6 +84,15 @@ interface StreamState {
 	chars: number;
 	samples: { t: number; chars: number }[];
 }
+
+interface GitStatus {
+	changed: number; // files with unstaged working-tree changes (*N)
+	untracked: number; // untracked files (?N)
+	staged: number; // files staged for commit (+N)
+}
+
+let gitStatus: GitStatus | null = null; // null = not in a repo / unknown
+let gitStatusTimer: ReturnType<typeof setInterval> | null = null;
 
 let footerEnabled = true;
 let footerTui: TUI | null = null;
@@ -96,6 +126,46 @@ function formatCwd(cwd: string, home: string): string {
 
 function sanitizeStatusText(text: string): string {
 	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+}
+
+function refreshGitStatus(ctx: ExtensionContext): void {
+	execFile(
+		"git",
+		["--no-optional-locks", "status", "--porcelain", "-b"],
+		{ cwd: ctx.sessionManager.getCwd(), encoding: "utf8" },
+		(error, stdout) => {
+			if (error) {
+				// Not a repo, git missing, or cwd gone: nothing to show
+				gitStatus = null;
+			} else {
+				let changed = 0;
+				let untracked = 0;
+				let staged = 0;
+				for (const line of stdout.split("\n")) {
+					if (line.startsWith("##")) continue; // branch header line
+					if (line.length < 2) continue;
+					const [x, y] = [line[0]!, line[1]!];
+					if (x === "?") untracked++;
+					else {
+						if (x !== " ") staged++;
+						if (y !== " " && y !== "?") changed++;
+					}
+				}
+				gitStatus = { changed, untracked, staged };
+			}
+			if (footerTui) footerTui.requestRender();
+		},
+	);
+}
+
+// omp-style status suffix appended to the branch: " *1 ?2 +3" (order: changed,
+// untracked, staged), empty string when the working tree is clean
+function gitStatusSuffix(status: GitStatus): string {
+	const parts: string[] = [];
+	if (status.changed > 0) parts.push(`*${status.changed}`);
+	if (status.untracked > 0) parts.push(`?${status.untracked}`);
+	if (status.staged > 0) parts.push(`+${status.staged}`);
+	return parts.length > 0 ? " " + parts.join(" ") : "";
 }
 
 function sessionTotals(ctx: ExtensionContext): { input: number; output: number; cost: number } {
@@ -184,30 +254,37 @@ function justify(left: string, right: string, width: number): string {
 function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterData, width: number): string[] {
 	const lines: string[] = [];
 
-	// Line 1: workspace — π  folder ~/path  git branch
-	let line1 = theme.fg("accent", ICONS.pi) + "  " + theme.fg("dim", `${ICONS.folder} ${formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE || "")}`);
+	// Line 1: workspace — π  folder ~/path  git branch + status  • session
+	// Segments separated by exactly two spaces (no glyph delimiter).
+	const segments: string[] = [];
+	// fae-pi (π) renders double-width in the terminal, so pad it with one extra
+	// space to keep the visible gap to the folder glyph at the two columns the
+	// other segments get
+	segments.push(theme.fg("accent", ICONS.pi) + " ");
+	segments.push(theme.fg("dim", `${ICONS.folder} ${formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE || "")}`));
 	const branch = footerData.getGitBranch();
-	if (branch) line1 += "  " + theme.fg("success", `${ICONS.git} ${branch}`);
+	if (branch) {
+		segments.push(theme.fg("success", `${ICONS.git} ${branch}${gitStatus ? gitStatusSuffix(gitStatus) : ""}`));
+	}
 	const sessionName = ctx.sessionManager.getSessionName();
-	if (sessionName) line1 += theme.fg("dim", ` • ${sessionName}`);
-	lines.push(truncateToWidth(line1, width, theme.fg("dim", "...")));
+	if (sessionName) segments.push(theme.fg("dim", `• ${sessionName}`));
+	lines.push(truncateToWidth(segments.join("  "), width, theme.fg("dim", "...")));
 
 	// Line 2 left: token/cost/context stats
 	const { input, output, cost } = sessionTotals(ctx);
 	const contextUsage = ctx.getContextUsage();
 	const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 	const contextTokens = contextUsage?.tokens ?? null;
-	const contextPercent = contextTokens !== null && contextWindow > 0 ? (contextTokens / contextWindow) * 100 : null;
 	const contextDisplay =
 		contextTokens === null
 			? `?/${formatTokens(contextWindow)}`
 			: `${contextTokens.toLocaleString("en-US")}/${formatTokens(contextWindow)}`;
 	const contextColor: "error" | "warning" | "dim" =
-		contextPercent === null
+		contextTokens === null
 			? "dim"
-			: contextPercent > 90
+			: contextTokens >= ERROR_CTX_TOKENS || (contextWindow > 0 && contextTokens >= ERROR_CTX_FRACTION * contextWindow)
 				? "error"
-				: contextPercent > 70
+				: contextTokens >= WARN_CTX_TOKENS || (contextWindow > 0 && contextTokens >= WARN_CTX_FRACTION * contextWindow)
 					? "warning"
 					: "dim";
 
@@ -244,12 +321,26 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 }
 
 function enableFooter(ctx: ExtensionContext): void {
+	gitStatus = null; // clear any stale status from a previous session/cwd
+	if (gitStatusTimer) {
+		clearInterval(gitStatusTimer);
+		gitStatusTimer = null;
+	}
 	ctx.ui.setFooter((tui, theme, footerData) => {
 		footerTui = tui;
-		const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
+		const unsubscribe = footerData.onBranchChange(() => {
+			refreshGitStatus(ctx); // a branch switch usually means a fresh status too
+			tui.requestRender();
+		});
+		refreshGitStatus(ctx); // paint the git status as soon as it resolves
+		gitStatusTimer = setInterval(() => refreshGitStatus(ctx), GIT_STATUS_POLL_MS);
 		return {
 			dispose: () => {
 				if (footerTui === tui) footerTui = null;
+				if (gitStatusTimer) {
+					clearInterval(gitStatusTimer);
+					gitStatusTimer = null;
+				}
 				unsubscribe();
 			},
 			invalidate: () => {},
@@ -316,7 +407,13 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.mode !== "tui") return;
 			footerEnabled = !footerEnabled;
 			if (footerEnabled) enableFooter(ctx);
-			else ctx.ui.setFooter(undefined);
+			else {
+				ctx.ui.setFooter(undefined);
+				if (gitStatusTimer) {
+					clearInterval(gitStatusTimer);
+					gitStatusTimer = null;
+				}
+			}
 			ctx.ui.notify(footerEnabled ? "Custom footer enabled" : "Default footer restored", "info");
 		},
 	});

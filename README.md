@@ -61,7 +61,10 @@ omp (can1357/oh-my-pi)
 ### footer - custom status footer via /footer
 
 Replaces pi's status bar with an opencode-style footer showing your
-workspace, token count, and cost. `/footer` switches back to the built-in
+workspace, git branch + status (omp-style `*N ?N +N` worktree-changed /
+untracked / staged counters, polled from `git status`), token/cost stats,
+and a context color set on absolute tokens (warning ~100k, error ~200k)
+instead of window percentage. `/footer` switches back to the built-in
 
 ### btw - quick side questions via /btw
 

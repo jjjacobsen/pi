@@ -1254,7 +1254,7 @@ Replace pi's built-in status footer with a cleaner, opencode-inspired
 footer. Two lines plus optional extension statuses:
 
 ```
-π  ~/Projects/pi  main                       <- workspace
+π  ~/Projects/pi  main *1 ?2 +1                       <- workspace + git status
 ↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   deepseek-v4-flash • max   <- stats, model right
 ```
 
@@ -1272,8 +1272,13 @@ extensions, so there is no protocol and no backend binary.
   (assistant, toolResult, compaction and branch_summary usage), the same
   data the built-in footer uses.
 - Context usage: `ctx.getContextUsage()` absolute tokens over the window
-  (`38,234/1.0M`, thousands-separated numerator), threshold-colored like
-  the built-in footer (warning above 70%, error above 90%). The source is
+  (`38,234/1.0M`, thousands-separated numerator), colored on the absolute
+  token count (warning past 100k, error past 200k, with a fraction-of-
+  window fallback of 60%/90% for small windows) instead of the percentage
+  of the window that is full, because quality degrades with raw token
+  count ("context rot"): NoLiMa (ICML 2025) finds most models at half
+  their short-context performance by 32k tokens and Anthropic describes a
+  continuous gradient, not a cliff. The source is
   compaction-aware: right after /compact the tokens are unknown until the
   next LLM response, so it shows `?/1.0M`; a `session_compact` listener
   re-renders at that moment (session_info_changed only fires on session
@@ -1281,6 +1286,14 @@ extensions, so there is no protocol and no backend binary.
   verified usage, which reflects the actual post-compaction context.
 - Git branch, extension statuses, provider count: `footerData` passed to
   the `ctx.ui.setFooter()` factory. `onBranchChange` triggers re-renders.
+- Git status counters (omp-style): pi only exposes the branch, so the
+  extension spawns `git status --porcelain -b` itself on a 5s interval
+  while the footer is enabled (plus on branch change) and parses the
+  porcelain output into per-file counters appended to the branch:
+  `main *1 ?2 +1` = 1 file with unstaged worktree changes, 2 untracked,
+  1 staged. A clean tree shows just the branch. The interval is cleared
+  on footer dispose and on `/footer` toggle (one `git` spawn every 5s,
+  ~10-40ms on a normal repo).
 - Model + reasoning level: `ctx.model` and `ctx.thinkingLevel` (live
   getters), right-aligned like the built-in footer, with the `(provider)`
   prefix when more than one provider has models.
@@ -1296,7 +1309,7 @@ extensions, so there is no protocol and no backend binary.
   average). Providers only report real token usage at stream end, so a
   character-based estimate is the only live option; it is an
   approximation.
-- Nerd Font icons: fae-pi U+E22C (the `π` logo), fa-folder U+F07B
+- Nerd Font icons: fae-pi U+E22C (the `π` logo), md-folder_open U+F0770
   and fa-code-fork U+F126. Verified present in FiraCode Nerd Font.
 
 ## Glue behavior
@@ -1307,6 +1320,7 @@ extensions, so there is no protocol and no backend binary.
   `thinking_level_select` / `session_info_changed` / `session_compact`
   handlers call `tui.requestRender()` through a module-level handle that
   `dispose()` clears (identity-checked so a replaced footer cannot null a
-  newer one).
+  newer one). The `git status` interval is cleared in the same `dispose()`
+  and on explicit footer disable.
 - Extension statuses set via `ctx.ui.setStatus()` still render on a third
   footer line, same as the built-in footer.
