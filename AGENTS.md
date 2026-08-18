@@ -1,4 +1,4 @@
-Custom pi extensions repo, built in house (no third-party pi packages).
+Custom pi extensions repo, built mostly in house. Most extensions are my own Zig, to learn the language and stay minimal, a few come from people or orgs I know and trust when a rewrite adds no value
 
 - Extensions: thin TS glue in `extensions/`, all logic in Zig backends in `src/` (add to the `bins` list in `build.zig`)
 - Extension glue that spawns a backend child must unref the child and its stdin/stdout pipes (`child.unref(); child.stdin.unref(); child.stdout.unref();`) so pi can exit in print mode and on shutdown; the backend self-terminates when its stdin closes

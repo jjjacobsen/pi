@@ -1,8 +1,12 @@
 # pi
 
-All of my custom pi stuff: extensions, skills, and config. The goal is
-zero dependence on third-party pi extensions; everything here is built in
-house, piece by piece
+All of my custom pi stuff: extensions, skills, and config. The goal is a
+minimal personal setup, not a rule that every extension is mine. Most
+extensions are built in house, piece by piece: writing them in Zig is how
+I learn the language, and keeping them minimal means no third-party bloat.
+Extensions run with a lot of power, so code from an untrusted person is an
+easy place to slip something dangerous in. A few extensions from people or
+orgs I know and trust are welcome when rewriting them myself adds no value
 
 ## Layout
 
