@@ -1435,13 +1435,14 @@ extensions, so there is no protocol and no backend binary.
   openai-codex, xai), matching the built-in footer's visibility rule.
 - tok/s: estimated from streamed characters (`text_delta` +
   `thinking_delta` lengths from `message_update` events, ~4 chars per
-  token), smoothed over a sliding 5-second window. It is the last segment
+  token), smoothed over a sliding 15-second window. It is the last segment
   on the stats line so the rest of the line never shifts when it appears.
-  Once it appears it persists: it updates live while a stream is active
-  and freezes at the last measured value on `message_end` (a stream too
-  short to measure live freezes its overall average). Providers only
-  report real token usage at stream end, so a character-based estimate is
-  the only live option; it is an approximation.
+  It is always visible: resets to 0.0 at session start, updates live while
+  a stream is active and freezes at the last measured value on
+  `message_end` (a stream too short to measure live freezes its overall
+  average). Providers only report real token usage at stream end, so a
+  character-based estimate is the only live option; it is an
+  approximation.
 - Nerd Font icons: fa-folder U+F07B, fa-code-fork U+F126, fa-gauge U+F0E4,
   plus a plain `π`. Verified present in FiraCode Nerd Font.
 

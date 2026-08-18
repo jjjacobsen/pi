@@ -7,9 +7,10 @@
  *
  * vs the built-in footer this drops the R (cache read), W (cache write),
  * CH (cache hit %) and (auto) compaction segments, and adds a tok/s
- * readout: live while streaming, frozen at the last value once idle. The
- * live value is a rolling average over the last ~15s of streaming, excluding
- * downtime pauses, so it reads steady instead of jumping chunk to chunk.
+ * readout: always visible (starts at 0.0 until the first stream), live
+ * while streaming, frozen at the last value once idle. The live value is a
+ * rolling average over the last ~15s of streaming, excluding downtime
+ * pauses, so it reads steady instead of jumping chunk to chunk.
  * Model + reasoning level stay right-aligned.
  *
  * Context is shown as absolute tokens over the window (38,234/1.0M) instead
@@ -68,7 +69,7 @@ let footerEnabled = true;
 let footerTui: TUI | null = null;
 let stream: StreamState | null = null;
 let streaming = false;
-let lastTokPerSec: string | null = null;
+let lastTokPerSec = "0.0"; // always shown; "0.0" until the first measurement
 let streamFrozen = false; // a tok/s value was frozen during the current stream
 
 // =============================================================================
@@ -123,7 +124,8 @@ function sessionTotals(ctx: ExtensionContext): { input: number; output: number; 
 }
 
 // =============================================================================
-// tok/s (live while streaming, frozen at the last value when idle)
+// tok/s (always visible, resets to 0.0 per session; live while streaming,
+// frozen at the last value when idle)
 //
 // The reading is a rolling average over the last ~15s of streaming, so a
 // single burst or hiccup doesn't move it much. Only active streaming time
@@ -153,7 +155,7 @@ function activeRatePerSec(samples: { t: number; chars: number }[]): number | nul
 	return (chars / CHARS_PER_TOKEN) / (activeMs / 1000);
 }
 
-function currentTokPerSec(): string | null {
+function currentTokPerSec(): string {
 	if (stream && streaming) {
 		const perSec = activeRatePerSec(stream.samples);
 		if (perSec !== null) freezeTokPerSec(perSec);
@@ -216,8 +218,7 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	if (cost > 0 || isSubscription) parts.push(theme.fg("dim", `$${cost.toFixed(3)}`));
 	parts.push(theme.fg(contextColor, contextDisplay));
 	// tok/s last so the rest of the line never shifts when it appears
-	const tokPerSec = currentTokPerSec();
-	if (tokPerSec !== null) parts.push(theme.fg("accent", `${ICONS.gauge} ${tokPerSec} tok/s`));
+	parts.push(theme.fg("accent", `${ICONS.gauge} ${currentTokPerSec()} tok/s`));
 	const left = parts.join("  ");
 
 	// Line 2 right: model + reasoning level
@@ -307,6 +308,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", rerender);
 
 	pi.on("session_start", (_event, ctx) => {
+		lastTokPerSec = "0.0"; // fresh session starts at 0.0, not a stale frozen value
 		if (footerEnabled && ctx.mode === "tui") enableFooter(ctx);
 	});
 
