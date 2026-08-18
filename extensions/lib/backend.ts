@@ -75,7 +75,7 @@ function newestSourceMtime(root) {
     }
   }
   const srcRoot = path.join(root, "src");
-  for (const name of readdirSync(srcRoot, { recursive: true })) {
+  for (const name of readdirSync(srcRoot, { recursive: true }) as string[]) {
     const m = statSync(path.join(srcRoot, name)).mtimeMs;
     if (m > newest) newest = m;
   }
@@ -120,7 +120,10 @@ export function handleSessionShutdown(backend, event) {
   else backend.reset();
 }
 
-export function createBackend(binaryName, hooks = {}) {
+export function createBackend(
+  binaryName,
+  hooks: { onOk?: (msg: any) => any; onError?: (msg: any) => any } = {},
+) {
   const root = path.resolve(import.meta.dirname, "../.."); // extensions/lib/backend.ts -> repo root
   const bin = path.join(root, "zig-out", "bin", binaryName);
 
@@ -150,8 +153,8 @@ export function createBackend(binaryName, hooks = {}) {
     // Unref so pi can exit in print mode (and on shutdown) without waiting on
     // the backend's pipes; the backend self-terminates when stdin closes.
     c.unref();
-    c.stdin.unref();
-    c.stdout.unref();
+    (c.stdin as any).unref();
+    (c.stdout as any).unref();
     // A write to a just-dead child's stdin surfaces as an async EPIPE here;
     // the pending call rejects via the exit handler, so nothing to do.
     c.stdin.on("error", () => {});
@@ -200,8 +203,8 @@ export function createBackend(binaryName, hooks = {}) {
   };
 
   return {
-    call(op, params) {
-      return new Promise((resolve, reject) => {
+    call(op, params = {}) {
+      return new Promise<any>((resolve, reject) => {
         if (killed) return reject(new Error(`${binaryName} backend killed`));
         const send = () => {
           const id = nextId++;

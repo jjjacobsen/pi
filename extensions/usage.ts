@@ -480,7 +480,7 @@ class UsageComponent {
 		this.requestRender();
 		this.resolveLimitsArgs()
 			.then((args) => backend.call("limits", args))
-			.then((res: { result: string }) => {
+			.then((res: any) => {
 				if (this.disposed) return;
 				try {
 					this.setLimits(JSON.parse(res.result));
@@ -1245,7 +1245,7 @@ export default function (pi: ExtensionAPI) {
 				loader.onAbort = () => finish(null);
 
 				(backend.call("collect", { bounds }) as Promise<{ result: string }>)
-					.then((res: { result: string }) => {
+					.then((res: any) => {
 						try {
 							finish(JSON.parse(res.result));
 						} catch {

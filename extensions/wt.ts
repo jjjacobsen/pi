@@ -62,6 +62,7 @@ async function sessionFileForWorktree(worktreePath) {
   // path pi would use for that cwd (SessionManager.create mkdirs the dir and
   // generates the timestamped filename; the file itself is written lazily).
   const sessionFile = SessionManager.create(worktreePath).getSessionFile();
+  if (!sessionFile) throw new Error(`worktree session file missing for ${worktreePath}`);
   writeFileSync(
     sessionFile,
     JSON.stringify({
@@ -75,7 +76,7 @@ async function sessionFileForWorktree(worktreePath) {
   return { sessionFile, resumed: false };
 }
 
-async function switchToWorktree(ctx, worktreePath, branch, base) {
+async function switchToWorktree(ctx, worktreePath, branch, base = undefined) {
   const { sessionFile, resumed } = await sessionFileForWorktree(worktreePath);
   const result = await ctx.switchSession(sessionFile, {
     cwdOverride: worktreePath,

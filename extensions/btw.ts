@@ -86,6 +86,16 @@ function extractText(content) {
 // Side-chat window component
 
 class SideChatWindow {
+  tui: any;
+  theme: any;
+  keybindings: any;
+  input: any;
+  state: any;
+  onDismiss: any;
+  onCopy: any;
+  onBranch: any;
+  cachedWidth: any;
+  cachedLines: any;
   constructor({ tui, theme, keybindings, input, state, onDismiss, onCopy, onBranch }) {
     this.tui = tui;
     this.theme = theme;
@@ -343,7 +353,7 @@ function registerBtwCommand(pi) {
           ? Promise.resolve(messagesOverride)
           : backend.call("ask", { question: q }).then((r) => r.messages);
         return messagesPromise.then((messages) => {
-          return new Promise((resolve) => {
+          return new Promise<void>((resolve) => {
             streamAnswer(messages, (text, err) => {
               const turn = turns[turns.length - 1];
               if (err) {
@@ -372,7 +382,7 @@ function registerBtwCommand(pi) {
 
       // Start answering a question that is already the last turn, then run
       // queued follow-ups one at a time as each answer completes.
-      const startAsk = (q, messagesOverride) => {
+      const startAsk = (q, messagesOverride = undefined) => {
         state.answering = true;
         windowRef?.requestRender();
         return askQuestion(q, messagesOverride).then(() => {
@@ -444,7 +454,7 @@ function registerBtwCommand(pi) {
       };
 
       let windowRef = null;
-      let doneRef = () => {};
+      let doneRef: (value: unknown) => void = () => {};
 
       await ctx.ui.custom((tui, theme, keybindings, done) => {
         windowRows = tui.terminal?.rows ?? 24;

@@ -58,6 +58,41 @@ Per-backend protocol details are documented in each extension's section
 below; the wire format is identical everywhere: one JSON request line on
 stdin, one JSON response line on stdout.
 
+# TypeScript glue tooling (tsconfig, tsc, hk)
+
+The extension glue imports `@earendil-works/pi-*` (pi-coding-agent, pi-tui,
+pi-ai) and `typebox`, which live only in bun's global install at
+`~/.bun/install/global/node_modules`, not in this repo. Pi resolves them at
+runtime by aliasing them to its own bundled copies inside its extension
+loader, so the repo needs no local install for the extensions to work.
+
+The editor typechecker does need them, so `tsconfig.json` points at the
+live global install instead of a local `node_modules`:
+
+- `paths` maps `@earendil-works/pi-ai/*` into the package's `dist/`
+  (subpath exports like `@earendil-works/pi-ai/compat` live there and
+  `paths` does not consult the target package's `exports` map), and maps
+  every other `@earendil-works/*` specifier plus `typebox` to their
+  packages. These paths are absolute and machine-specific.
+- `typeRoots` points at the global `@types` dir so `node:*` builtins and
+  the `types: ["node"]` entry resolve without installing `@types/node`.
+- `strict: false` is explicit because TypeScript 6.0 flips strict on by
+  default, and this glue is deliberately un-annotated per the repo's
+  conventions. TS 6.0 also no longer infers `never` for un-annotated
+  throwing functions, which is why the shared helpers' return types are
+  annotated (`toolError(...): never`).
+
+Advantages of pointing at the live install: types always match the running
+pi version (a `pi update` updates them automatically, no drift), and the
+repo holds no pinned copies that could corrupt or drift from the real API.
+The tradeoff is that the tsconfig breaks on any machine without a matching
+global install, so it is not shareable as-is.
+
+`hk.pkl` runs the `tsc` builtin (`tsc --noEmit -p tsconfig.json`) whenever a
+`.ts` file or `tsconfig.json` changes, and `mise.toml` pins
+`npm:typescript = "6.0.3"` so the check and the editor use the same
+compiler. `mise x -- hk check --all` must stay green.
+
 # Headless browser extension (pi-browser)
 
 ## Goal

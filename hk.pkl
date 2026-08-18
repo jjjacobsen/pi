@@ -39,6 +39,13 @@ local linters = new Mapping<String, Step> {
     glob = "**/*.zig"
     check = "zig build"
   }
+
+  // typescript: whole-project typecheck via the builtin (tsc --noEmit -p
+  // tsconfig.json). tsconfig paths point at the global pi install, see
+  // docs/architecture.md. No fix command, tsc does not autofix.
+  ["tsc"] = (Builtins.tsc) {
+    glob = List("**/*.ts", "tsconfig.json")
+  }
 }
 
 hooks {

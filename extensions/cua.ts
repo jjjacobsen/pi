@@ -17,7 +17,7 @@
 //   <- {"id":1,"ok":true,"result":"..."} | {"id":1,"ok":false,"error":"..."}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type TProperties } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { createBackend, handleSessionShutdown } from "./lib/backend";
 import { withAbort } from "./lib/toolkit";
@@ -46,7 +46,7 @@ const target = {
 // name: tool name exposed to the model. mcp: cua-driver MCP tool behind it.
 // params are passed through as-is, so keys must match the MCP argument
 // names (verified against `cua-driver describe`).
-const TOOLS = [
+const TOOLS: { name: string; mcp?: string; description: string; params: TProperties }[] = [
   { name: "computer_list_apps", mcp: "list_apps", description: "List macOS apps (running and installed-but-not-running) with pid, bundle_id, and window state. Start here to find what is open.",
     params: {} },
   { name: "computer_list_windows", mcp: "list_windows", description: "List all layer-0 top-level windows with window_id, bounds, and owner pid. Use to find a window's window_id and to check what is on screen.",
@@ -105,7 +105,7 @@ export default function cuaExtension(pi: ExtensionAPI) {
         // orphaned and finishes on its own, matching vision/search abort
         // semantics.
         const result = await withAbort(backend, backend.call("call", { tool: t.mcp, params: JSON.stringify(params) }), signal, t.name);
-        return { content: [{ type: "text", text: result }], details: {} };
+        return { content: [{ type: "text" as const, text: result }], details: {} };
       },
     });
   }

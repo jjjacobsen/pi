@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "paths": {
+      "@earendil-works/*": [
+        "/Users/jonahjacobsen/.bun/install/global/node_modules/@earendil-works/*"
+      ],
+      "@earendil-works/pi-ai/*": [
+        "/Users/jonahjacobsen/.bun/install/global/node_modules/@earendil-works/pi-ai/dist/*"
+      ],
+      "typebox": [
+        "/Users/jonahjacobsen/.bun/install/global/node_modules/typebox"
+      ]
+    },
+    "skipLibCheck": true,
+    "strict": false,
+    "target": "esnext",
+    "typeRoots": [
+      "/Users/jonahjacobsen/.bun/install/global/node_modules/@types"
+    ],
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "extensions"
+  ]
+}

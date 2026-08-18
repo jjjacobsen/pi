@@ -22,6 +22,13 @@ house, piece by piece
   backend), `toolError` (throws, since pi only treats thrown errors as tool
   failures), and `toToolUsage` (turns backend token accounting into
   `AgentToolResult.usage` with cost from the model's pricing)
+- `tsconfig.json` - editor and hk typechecking only, no local `node_modules`.
+  `paths`/`typeRoots` point at the live global pi install
+  (`~/.bun/install/global/node_modules`) so the extension types always match
+  the running pi; pi itself resolves the `@earendil-works/*` imports at
+  runtime from its own loader. `hk.pkl` runs the `tsc` builtin
+  (`tsc --noEmit -p tsconfig.json`) on any TS change; details in
+  docs/architecture.md
 - `prompts/` - prompt templates (slash commands); served to pi via the package manifest
 - `src/` - Zig backends. One binary per extension, built by `build.zig`;
   `src/common.zig` holds the IO/JSON/process helpers they all share

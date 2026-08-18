@@ -43,7 +43,7 @@ export function withAbort(backend, call, signal, label = "tool call") {
 // Shape a failure as a tool error: pi marks returned tool results as
 // successful and only thrown errors as failures, so this throws. The model
 // sees the message as a failed tool call.
-export function toolError(text) {
+export function toolError(text): never {
   throw new Error(text);
 }
 
@@ -104,9 +104,9 @@ export function toToolUsage(model, u) {
     cacheRead,
     cacheWrite,
     totalTokens: u.totalTokens ?? input + output + cacheRead + cacheWrite,
+    reasoning: u.reasoning ?? undefined,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
-  if (u.reasoning != null) usage.reasoning = u.reasoning;
   try {
     calculateCost(model, usage);
   } catch {

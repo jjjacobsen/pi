@@ -10,7 +10,7 @@
 //   <- {"id":1,"ok":true,"result":"..."} | {"id":1,"ok":false,"error":"..."}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type TProperties } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { createBackend, handleSessionShutdown } from "./lib/backend";
 import { withAbort } from "./lib/toolkit";
@@ -23,7 +23,7 @@ const strOpt = (description: string) => T.Optional(T.String({ description }));
 
 // name: tool name exposed to the model. mcp: lightpanda MCP tool behind it.
 // params are passed through as-is, so keys must match the MCP argument names.
-const TOOLS = [
+const TOOLS: { name: string; mcp?: string; description: string; params: TProperties }[] = [
   { name: "browser_open", mcp: "goto", description: "Navigate to a URL. The page stays loaded for later browser_* calls.",
     params: { url: T.String({ description: "The URL to navigate to." }), waitUntil: enumOpt(["load", "domcontentloaded", "networkalmostidle", "networkidle", "done"], "Event that completes navigation. Default 'load'. Prefer 'domcontentloaded' + browser_wait_selector on ad-heavy pages."), timeout: intOpt("Timeout in ms. Default 10000.") } },
   { name: "browser_read", mcp: "markdown", description: "Read the current page (or a url/selector) as token-efficient markdown.",
@@ -94,7 +94,7 @@ export default function (pi: ExtensionAPI) {
         // an MCP call that can wait 120s); the loaded page is lost, matching
         // vision/search abort semantics.
         const result = await withAbort(backend, backend.call(t.mcp, { params: JSON.stringify(params) }), signal, t.name);
-        return { content: [{ type: "text", text: result }], details: {} };
+        return { content: [{ type: "text" as const, text: result }], details: {} };
       },
     });
   }

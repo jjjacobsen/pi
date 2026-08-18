@@ -92,7 +92,7 @@ function resourceLoader() {
 // session gets a clean value.
 function serializableModel(model) {
   if (!model || typeof model !== "object") return undefined;
-  const copy = {};
+  const copy: Record<string, any> = {};
   for (const key of [
     "provider", "id", "name", "api", "baseUrl", "reasoning",
     "input", "cost", "contextWindow", "maxTokens",

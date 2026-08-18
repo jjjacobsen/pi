@@ -83,7 +83,7 @@ export default function searchExtension(pi: ExtensionAPI) {
         );
         // Exa's cost (USD) rides on the backend usage JSON; forward it so
         // /usage aggregates web_search under the Tools provider.
-        return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usage ? { usage: res.usage } : {}) };
+        return { content: [{ type: "text" as const, text: res.result }], details: {}, ...(res.usage ? { usage: res.usage } : {}) };
       } catch (e) {
         return toolError(e instanceof Error ? e.message : String(e));
       }

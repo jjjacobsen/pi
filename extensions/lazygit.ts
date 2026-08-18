@@ -53,7 +53,7 @@ export default function (pi: ExtensionAPI) {
             } finally {
               tui.start();
               tui.requestRender(true);
-              done();
+              done(null);
             }
             if (outcome?.error) {
               notify(ctx, outcome.error, "error");

@@ -14,6 +14,7 @@ taplo = "latest"
 typos = "latest"
 zig = "0.16.0"
 zls = "0.16.0"
+"npm:typescript" = "6.0.3"
 
 [env]
 HK_MISE = 1

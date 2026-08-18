@@ -135,7 +135,7 @@ export default function visionExtension(pi: ExtensionAPI) {
       }
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(visionModel);
       if (!auth.ok) {
-        return toolError(`Cannot resolve auth for ${config.provider}: ${auth.error}`);
+        return toolError(`Cannot resolve auth for ${config.provider}/${config.model}`);
       }
       const headers =
         auth.headers && Object.keys(auth.headers).length > 0
@@ -160,7 +160,7 @@ export default function visionExtension(pi: ExtensionAPI) {
           "describe_image",
         );
         const usage = toToolUsage(visionModel, res.usage);
-        return { content: [{ type: "text", text: res.result }], details: {}, ...(usage ? { usage } : {}) };
+        return { content: [{ type: "text" as const, text: res.result }], details: {}, ...(usage ? { usage } : {}) };
       } catch (e) {
         return toolError(e instanceof Error ? e.message : String(e));
       }

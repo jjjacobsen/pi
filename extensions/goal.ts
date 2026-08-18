@@ -186,7 +186,7 @@ function scheduleWaitDeadline(pi, ctx) {
 // ----- tools -----
 
 function toolText(text) {
-  return { content: [{ type: "text", text }], details: {} };
+  return { content: [{ type: "text" as const, text }], details: {} };
 }
 
 function toolDetails(extra = {}) {
