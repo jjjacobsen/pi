@@ -27,7 +27,7 @@ const SPINNER_WIDGET = "commit";
 function showSpinner(ctx, label) {
   try {
     ctx.ui.setWidget(SPINNER_WIDGET, (tui, theme) => {
-      const text = new Text(theme.fg("dim", `${SPINNER_FRAMES[0]} ${label}`), 0, 0);
+      const text = new Text(theme.fg("dim", `${SPINNER_FRAMES[0]} ${label}`), 1, 0);
       let frame = 0;
       const timer = setInterval(() => {
         frame = (frame + 1) % SPINNER_FRAMES.length;
