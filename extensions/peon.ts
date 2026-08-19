@@ -3,21 +3,37 @@
 // Thin TS: wires pi events and the /peon settings panel to the Zig backend
 // (src/peon.zig), which owns every decision: when a sound plays, which
 // sound (randomly from both the orc peon and human peasant packs), the
-// volume, and the afplay spawn. This file only moves events and settings
-// between pi and the backend. It replaces the third-party pi-peon-ping
-// extension: no pack picker, no relay, no desktop notifications, no preview
-// sound, and no input.required / resource.limit categories (pi has no events
-// for those).
+// volume, and the afplay spawn. The backend is a one-shot child: each call
+// spawns pi-peon with the request as one JSON argv element (shared callZig
+// helper), gets one JSON envelope back, and exits. Backend counters (spam
+// ring, debounce, last played, the running afplay's pid) round-trip through
+// peon-state.json in the agent dir, so event calls are serialized here
+// through a promise chain: two back-to-back events must not interleave
+// their state read/write.
+//
+// This file only moves events and settings between pi and the backend. It
+// replaces the third-party pi-peon-ping extension: no pack picker, no relay,
+// no desktop notifications, no preview sound, and no input.required /
+// resource.limit categories (pi has no events for those).
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
-import { createBackend, handleSessionShutdown } from "./lib/backend";
+import { callZig } from "./lib/zig";
 
-const backend = createBackend("pi-peon", {
-  onOk: (msg) => msg.config, // resolve the config op with its config payload
-  onError: (msg) => msg.error ?? "peon backend error",
-});
+const EVENT_TIMEOUT_MS = 10000;
+
+// Event calls are one-shot spawns that read and rewrite peon-state.json, so
+// back-to-back events must run one at a time (the old persistent backend
+// serialized them on its pipe for free). Chain every event call on this
+// promise; a failed call must not stall the chain.
+let eventQueue = Promise.resolve();
+
+function fireEvent(pi, event, extra = {}) {
+  eventQueue = eventQueue.then(() =>
+    callZig(pi, "pi-peon", { op: "event", event, ...extra, agent_dir: getAgentDir() }, { timeout: EVENT_TIMEOUT_MS }).catch(() => {}),
+  );
+}
 
 const CATEGORY_LABELS = [
   ["session.start", "Session start"],
@@ -44,22 +60,22 @@ function lastStopReason(messages) {
 function registerLifecycle(pi) {
   pi.on("session_start", (event, ctx) => {
     if (!ctx.hasUI) return;
-    backend.call("event", { event: "session_start", reason: event.reason }).catch(() => {});
+    fireEvent(pi, "session_start", { reason: event.reason });
   });
 
   pi.on("agent_start", (_event, ctx) => {
     if (!ctx.hasUI) return;
-    backend.call("event", { event: "agent_start" }).catch(() => {});
+    fireEvent(pi, "agent_start");
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
     if (!ctx.hasUI || !event.isError) return;
-    backend.call("event", { event: "tool_error" }).catch(() => {});
+    fireEvent(pi, "tool_error");
   });
 
   pi.on("agent_end", (event, ctx) => {
     if (!ctx.hasUI) return;
-    backend.call("event", { event: "agent_end", error: lastStopReason(event.messages) === "error" }).catch(() => {});
+    fireEvent(pi, "agent_end", { error: lastStopReason(event.messages) === "error" });
   });
 }
 
@@ -69,7 +85,9 @@ function registerPeonCommand(pi) {
     handler: async (_args, ctx) => {
       let config;
       try {
-        config = await backend.call("config");
+        // The config op carries the config serialized in its result text.
+        const res = await callZig(pi, "pi-peon", { op: "config", agent_dir: getAgentDir() }, { timeout: EVENT_TIMEOUT_MS });
+        config = JSON.parse(res.result);
       } catch (err) {
         return ctx.ui.notify(`peon: ${err?.message ?? err}`, "error");
       }
@@ -113,7 +131,7 @@ function registerPeonCommand(pi) {
           Math.min(items.length + 2, 15),
           getSettingsListTheme(),
           (id, newValue) => {
-            backend.call("set", { field: id, value: newValue }).catch(() => {});
+            callZig(pi, "pi-peon", { op: "set", field: id, value: newValue, agent_dir: getAgentDir() }, { timeout: EVENT_TIMEOUT_MS }).catch(() => {});
           },
           () => done(undefined),
         );
@@ -133,7 +151,6 @@ function registerPeonCommand(pi) {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
   registerLifecycle(pi);
   registerPeonCommand(pi);
 }

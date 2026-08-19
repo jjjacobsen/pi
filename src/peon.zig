@@ -1,30 +1,34 @@
 // pi-peon: Warcraft peon/peasant sound notifications for pi.
 //
-// The pi extension (extensions/peon.ts) sends one JSON request per line on
-// stdin, we answer with one JSON response line on stdout. The extension owns
-// the pi event wiring and the /peon settings panel; this backend owns every
-// decision: when a sound plays, which sound, at what volume, and how to play
-// it. The peon and peasant sound packs are embedded in the binary (see
-// src/peon/sounds.zig), extracted to ~/.pi/agent/peon-sounds/ on startup,
-// and played with afplay. Config lives in ~/.pi/agent/peon.json; a one-time
-// migration carries values over from the old pi-peon-ping config at
-// ~/.config/peon-ping/.
+// The pi extension (extensions/peon.ts) sends one JSON request per call as a
+// single argv element via pi.exec, we answer with one JSON envelope on
+// stdout and exit 0/1. The extension owns the pi event wiring and the /peon
+// settings panel; this backend owns every decision: when a sound plays,
+// which sound, at what volume, and how to play it. The peon and peasant
+// sound packs are embedded in the binary (src/peon/sounds.zig), extracted
+// to <agent_dir>/peon-sounds/ on every call (idempotent), and played with
+// afplay. Config lives in <agent_dir>/peon.json. Cross-call counters live in
+// <agent_dir>/peon-state.json (see the State struct).
 //
-// Request line:  {"id":1,"op":"config"}
-//                {"id":2,"op":"set","field":"volume","value":"75%"}
-//                {"id":3,"op":"event","event":"session_start","reason":"startup"}
-//                {"id":4,"op":"event","event":"agent_start"}
-//                {"id":5,"op":"event","event":"tool_error"}
-//                {"id":6,"op":"event","event":"agent_end","error":true}
-// Response:     {"id":1,"ok":true,"config":{...}}
-//               {"id":2,"ok":true}
-//               {"id":3,"ok":false,"error":"..."}
+// Request:  {"op":"config","agent_dir":"..."}
+//           {"op":"set","field":"volume","value":"75%","agent_dir":"..."}
+//           {"op":"set","field":"cat:task.error","value":"on","agent_dir":"..."}
+//           {"op":"event","event":"session_start","reason":"startup","agent_dir":"..."}
+//           {"op":"event","event":"agent_start","agent_dir":"..."}
+//           {"op":"event","event":"tool_error","agent_dir":"..."}
+//           {"op":"event","event":"agent_end","error":true,"agent_dir":"..."}
+// Response: {"ok":true,"result":"<config json>"} | {"ok":true}
+//           {"ok":false,"error":"..."}
 //
 // Events: session_start (plays session.start on every reason, reload
 // included), agent_start (task.acknowledge, or user.spam when prompts arrive
 // faster than the spam threshold), tool_error (task.error), agent_end
 // (task.complete, gated on the run not ending in error, a debounce, and the
-// silent window).
+// silent window). Every event is its own process, so the counters that used
+// to live in memory now round-trip through peon-state.json: the debounce
+// clock, the spam timestamp ring, the last played index per category, and
+// the pid of the afplay still running (one sound at a time = read, kill,
+// spawn, write).
 
 const std = @import("std");
 const mem = std.mem;
@@ -33,17 +37,17 @@ const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const sounds = @import("peon/sounds.zig");
-const List = common.List;
 const nowRealtimeMs = common.nowRealtimeMs;
-const readLine = common.readLine;
 const writeAllIo = common.writeAllIo;
+const respondExit = common.respondExit;
+const respondOutcomeExit = common.respondOutcomeExit;
+const failOutcome = common.failOutcome;
 
-const MAX_LINE = 64 * 1024;
-const DEBOUNCE_MS = 5000; // min gap between two task.complete sounds
 const MAX_PROMPT_TRACK = 16; // ring buffer size for spam detection
+const DEBOUNCE_MS = 5000; // min gap between two task.complete sounds
 
 // ---------------------------------------------------------------------------
-// Config
+// Config (<agent_dir>/peon.json)
 
 const Categories = struct {
     @"session.start": bool = true,
@@ -96,44 +100,32 @@ const Config = struct {
     categories: Categories = .{},
 };
 
-// Old pi-peon-ping config shape; only the fields we carry over. Unknown keys
-// (default_pack, relay_mode, desktop_notifications, input.required,
-// resource.limit, ...) are ignored.
-const OldCategories = struct {
-    @"session.start": ?bool = null,
-    @"task.acknowledge": ?bool = null,
-    @"task.complete": ?bool = null,
-    @"task.error": ?bool = null,
-    @"user.spam": ?bool = null,
-};
-
-const OldConfig = struct {
-    volume: ?f64 = null,
-    annoyed_threshold: ?i64 = null,
-    annoyed_window_seconds: ?i64 = null,
-    silent_window_seconds: ?i64 = null,
-    categories: ?OldCategories = null,
-};
-
-const OldState = struct {
-    paused: ?bool = null,
-};
-
 // ---------------------------------------------------------------------------
-// Runtime state
+// Cross-call state (<agent_dir>/peon-state.json)
 
-const Peon = struct {
-    home: []const u8, // ~/.pi/agent
-    old_config_path: []const u8,
-    old_state_path: []const u8,
-    config: Config = .{},
+// One event per process means nothing survives in memory, so the counters
+// that used to be the backend's live state are this struct: the debounce
+// clock (last_stop_time), the silent-window baseline (last_agent_start),
+// the spam timestamp ring, the last played index per category, and the pid
+// of the still-running afplay so the next play can cut it off. Loaded at the
+// start of every event op, written atomically after it.
+const State = struct {
     last_played: [sounds.by_category.len]?u32 = [_]?u32{null} ** sounds.by_category.len,
-    timestamps: [MAX_PROMPT_TRACK]i64 = undefined,
+    timestamps: [MAX_PROMPT_TRACK]i64 = [_]i64{0} ** MAX_PROMPT_TRACK,
     timestamp_count: usize = 0,
     timestamp_head: usize = 0,
     last_agent_start: i64 = 0,
     last_stop_time: i64 = 0,
-    current: ?std.process.Child = null, // afplay still running
+    afplay_pid: ?posix.pid_t = null,
+};
+
+// ---------------------------------------------------------------------------
+// Runtime
+
+const Peon = struct {
+    agent_dir: []const u8,
+    config: Config = .{},
+    state: State = .{},
     rng: std.Random.DefaultPrng = std.Random.DefaultPrng.init(0),
 
     fn onSessionStart(peon: *Peon, io: std.Io, arena: Allocator) ?sounds.Category {
@@ -142,7 +134,7 @@ const Peon = struct {
     }
 
     fn onAgentStart(peon: *Peon, io: std.Io, arena: Allocator, now: i64) ?sounds.Category {
-        peon.last_agent_start = now;
+        peon.state.last_agent_start = now;
         peon.pushTimestamp(now);
         const window_ms = peon.config.annoyed_window_seconds * 1000;
         const threshold: usize = @intCast(@max(peon.config.annoyed_threshold, 1));
@@ -158,11 +150,11 @@ const Peon = struct {
 
     fn onAgentEnd(peon: *Peon, io: std.Io, arena: Allocator, now: i64, error_run: bool) ?sounds.Category {
         if (error_run) return null; // a failed run never gets the cheerful complete sound
-        if (now - peon.last_stop_time < DEBOUNCE_MS) return null;
-        peon.last_stop_time = now;
+        if (now - peon.state.last_stop_time < DEBOUNCE_MS) return null;
+        peon.state.last_stop_time = now;
         const silent_ms = peon.config.silent_window_seconds * 1000;
         if (silent_ms > 0) {
-            const run_ms = now - peon.last_agent_start;
+            const run_ms = now - peon.state.last_agent_start;
             if (run_ms >= 0 and run_ms < silent_ms) return null;
         }
         return peon.maybePlay(io, arena, .task_complete);
@@ -177,11 +169,14 @@ const Peon = struct {
 
     fn play(peon: *Peon, io: std.Io, arena: Allocator, cat: sounds.Category) bool {
         const s = peon.pick(cat) orelse return false;
-        const path = std.fmt.allocPrint(arena, "{s}/peon-sounds/{s}", .{ peon.home, s.name }) catch return false;
+        const path = std.fmt.allocPrint(arena, "{s}/peon-sounds/{s}", .{ peon.agent_dir, s.name }) catch return false;
 
-        if (peon.current) |*child| {
-            child.kill(io); // kill the previous sound and reap it
-            peon.current = null;
+        // One sound at a time: the previous event's afplay is still running
+        // (its pid is in state), finish it before starting this one. The pid
+        // could already have exited (harmless ESRCH) or be long gone.
+        if (peon.state.afplay_pid) |pid| {
+            posix.kill(pid, posix.SIG.TERM) catch {};
+            peon.state.afplay_pid = null;
         }
 
         const vol: u8 = @min(@max(peon.config.volume, 0), 100);
@@ -197,14 +192,14 @@ const Peon = struct {
             std.debug.print("pi-peon: afplay spawn failed ({s})\n", .{@errorName(err)});
             return false;
         };
-        peon.current = child;
+        peon.state.afplay_pid = child.id; // fresh spawn, id is always set
         return true;
     }
 
     fn pick(peon: *Peon, cat: sounds.Category) ?*const sounds.Sound {
         const all = sounds.by_category[@intFromEnum(cat)];
         if (all.len == 0) return null;
-        const last = peon.last_played[@intFromEnum(cat)];
+        const last = peon.state.last_played[@intFromEnum(cat)];
         var idx = peon.rng.random().intRangeLessThanBiased(usize, 0, all.len);
         if (all.len > 1 and last != null) {
             var tries: usize = 0;
@@ -212,26 +207,26 @@ const Peon = struct {
                 idx = peon.rng.random().intRangeLessThanBiased(usize, 0, all.len);
             }
         }
-        peon.last_played[@intFromEnum(cat)] = @intCast(idx);
+        peon.state.last_played[@intFromEnum(cat)] = @intCast(idx);
         return all[idx];
     }
 
     fn pushTimestamp(peon: *Peon, now: i64) void {
-        const cap = peon.timestamps.len;
-        if (peon.timestamp_count < cap) {
-            peon.timestamps[(peon.timestamp_head + peon.timestamp_count) % cap] = now;
-            peon.timestamp_count += 1;
+        const cap = peon.state.timestamps.len;
+        if (peon.state.timestamp_count < cap) {
+            peon.state.timestamps[(peon.state.timestamp_head + peon.state.timestamp_count) % cap] = now;
+            peon.state.timestamp_count += 1;
         } else {
-            peon.timestamps[peon.timestamp_head] = now;
-            peon.timestamp_head = (peon.timestamp_head + 1) % cap;
+            peon.state.timestamps[peon.state.timestamp_head] = now;
+            peon.state.timestamp_head = (peon.state.timestamp_head + 1) % cap;
         }
     }
 
     fn countRecent(peon: *const Peon, now: i64, window_ms: i64) usize {
         var count: usize = 0;
         var i: usize = 0;
-        while (i < peon.timestamp_count) : (i += 1) {
-            const t = peon.timestamps[(peon.timestamp_head + i) % peon.timestamps.len];
+        while (i < peon.state.timestamp_count) : (i += 1) {
+            const t = peon.state.timestamps[(peon.state.timestamp_head + i) % peon.state.timestamps.len];
             const age = now - t;
             if (age >= 0 and age <= window_ms) count += 1;
         }
@@ -243,7 +238,7 @@ const Peon = struct {
 // Config persistence
 
 fn saveConfig(peon: *const Peon, io: std.Io, arena: Allocator) !void {
-    const path = try std.fmt.allocPrint(arena, "{s}/peon.json", .{peon.home});
+    const path = try std.fmt.allocPrint(arena, "{s}/peon.json", .{peon.agent_dir});
     const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
     defer file.close(io);
     const bytes = try json.Stringify.valueAlloc(arena, peon.config, .{});
@@ -251,61 +246,47 @@ fn saveConfig(peon: *const Peon, io: std.Io, arena: Allocator) !void {
     try writeAllIo(io, file, "\n");
 }
 
-// One-time carry-over from the old pi-peon-ping install. Only runs when
-// peon.json does not exist yet; after the old install is deleted this is a
-// no-op and defaults apply instead.
-fn migrate(peon: *Peon, io: std.Io, arena: Allocator) !void {
-    const old_data = std.Io.Dir.readFileAlloc(.cwd(), io, peon.old_config_path, arena, .limited(64 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return,
-        else => return err,
-    };
-    const old = json.parseFromSlice(OldConfig, arena, old_data, .{ .ignore_unknown_fields = true }) catch {
-        std.debug.print("pi-peon: could not parse old config, using defaults\n", .{});
-        return;
-    };
-    if (old.value.volume) |v| {
-        const pct = @round(v * 100);
-        peon.config.volume = @intFromFloat(@min(@max(pct, 10), 100));
-    }
-    if (old.value.annoyed_threshold) |v| peon.config.annoyed_threshold = v;
-    if (old.value.annoyed_window_seconds) |v| peon.config.annoyed_window_seconds = v;
-    if (old.value.silent_window_seconds) |v| peon.config.silent_window_seconds = v;
-    if (old.value.categories) |c| {
-        if (c.@"session.start") |v| peon.config.categories.@"session.start" = v;
-        if (c.@"task.acknowledge") |v| peon.config.categories.@"task.acknowledge" = v;
-        if (c.@"task.complete") |v| peon.config.categories.@"task.complete" = v;
-        if (c.@"task.error") |v| peon.config.categories.@"task.error" = v;
-        if (c.@"user.spam") |v| peon.config.categories.@"user.spam" = v;
-    }
-    const old_state = std.Io.Dir.readFileAlloc(.cwd(), io, peon.old_state_path, arena, .limited(64 * 1024)) catch null;
-    if (old_state) |data| {
-        const st = json.parseFromSlice(OldState, arena, data, .{ .ignore_unknown_fields = true }) catch null;
-        if (st) |s| {
-            if (s.value.paused) |v| {
-                peon.config.paused = v;
-            }
-        }
-    }
-    try saveConfig(peon, io, arena);
-}
-
-fn loadOrMigrate(peon: *Peon, io: std.Io, arena: Allocator) !void {
-    const path = try std.fmt.allocPrint(arena, "{s}/peon.json", .{peon.home});
+fn loadConfig(peon: *Peon, io: std.Io, arena: Allocator) !void {
+    const path = try std.fmt.allocPrint(arena, "{s}/peon.json", .{peon.agent_dir});
     const data = std.Io.Dir.readFileAlloc(.cwd(), io, path, arena, .limited(64 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => {
-            try migrate(peon, io, arena);
-            return;
-        },
+        error.FileNotFound => return, // defaults apply
         else => return err,
     };
     const parsed = json.parseFromSlice(Config, arena, data, .{ .ignore_unknown_fields = true }) catch |err| return err;
     peon.config = parsed.value;
 }
 
-// Extracts the embedded wavs to ~/.pi/agent/peon-sounds/. Idempotent:
-// files that already exist are skipped.
+// ---------------------------------------------------------------------------
+// Cross-call state persistence
+
+fn loadState(peon: *Peon, io: std.Io, arena: Allocator) !void {
+    const path = try std.fmt.allocPrint(arena, "{s}/peon-state.json", .{peon.agent_dir});
+    const data = std.Io.Dir.readFileAlloc(.cwd(), io, path, arena, .limited(64 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return, // first event: defaults apply
+        else => return err,
+    };
+    const parsed = json.parseFromSlice(State, arena, data, .{ .ignore_unknown_fields = true }) catch |err| return err;
+    peon.state = parsed.value;
+}
+
+// Atomic-ish write: temp file + rename so a crash never truncates the state.
+fn saveState(peon: *const Peon, io: std.Io, arena: Allocator) !void {
+    const path = try std.fmt.allocPrint(arena, "{s}/peon-state.json", .{peon.agent_dir});
+    const bytes = try json.Stringify.valueAlloc(arena, peon.state, .{});
+    const tmp_path = try std.fmt.allocPrint(arena, "{s}.tmp", .{path});
+    {
+        const file = try std.Io.Dir.createFileAbsolute(io, tmp_path, .{});
+        defer file.close(io);
+        try writeAllIo(io, file, bytes);
+        try writeAllIo(io, file, "\n");
+    }
+    std.Io.Dir.renameAbsolute(tmp_path, path, io) catch {};
+}
+
+// Extracts the embedded wavs to <agent_dir>/peon-sounds/. Idempotent: files
+// that already exist are skipped.
 fn extractSounds(peon: *const Peon, io: std.Io, arena: Allocator) !void {
-    const dir_path = try std.fmt.allocPrint(arena, "{s}/peon-sounds", .{peon.home});
+    const dir_path = try std.fmt.allocPrint(arena, "{s}/peon-sounds", .{peon.agent_dir});
     try std.Io.Dir.createDirPath(.cwd(), io, dir_path);
     for (sounds.sounds) |s| {
         const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, s.name });
@@ -318,11 +299,11 @@ fn extractSounds(peon: *const Peon, io: std.Io, arena: Allocator) !void {
 }
 
 // ---------------------------------------------------------------------------
-// Protocol
+// Ops
 
 const Request = struct {
-    id: i64,
     op: []const u8,
+    agent_dir: ?[]const u8 = null,
     event: ?[]const u8 = null,
     reason: ?[]const u8 = null,
     @"error": ?bool = null,
@@ -330,42 +311,22 @@ const Request = struct {
     value: ?[]const u8 = null,
 };
 
-const Response = struct {
-    id: i64,
-    ok: bool,
-    config: ?Config = null,
-    @"error": ?[]const u8 = null,
-};
-
-fn respondJson(arena: Allocator, io: std.Io, resp: *const Response) !void {
-    var buf = List.init(arena);
-    const bytes = try json.Stringify.valueAlloc(arena, resp.*, .{});
-    try buf.appendSlice(bytes);
-    try buf.append('\n');
-    try writeAllIo(io, std.Io.File.stdout(), buf.items);
-}
-
-fn fail(resp: *Response, msg: []const u8) void {
-    resp.ok = false;
-    resp.@"error" = msg;
-}
-
-fn opSet(peon: *Peon, io: std.Io, arena: Allocator, req: *const Request, resp: *Response) void {
-    const field = req.field orelse return fail(resp, "set: missing field");
-    const value = req.value orelse return fail(resp, "set: missing value");
+fn opSet(peon: *Peon, io: std.Io, arena: Allocator, req: *const Request) !common.Outcome {
+    const field = req.field orelse return failOutcome(arena, "set: missing field", .{});
+    const value = req.value orelse return failOutcome(arena, "set: missing value", .{});
     if (mem.eql(u8, field, "paused")) {
         if (mem.eql(u8, value, "paused")) {
             peon.config.paused = true;
         } else if (mem.eql(u8, value, "active")) {
             peon.config.paused = false;
         } else {
-            return fail(resp, "set: paused expects active|paused");
+            return failOutcome(arena, "set: paused expects active|paused", .{});
         }
     } else if (mem.eql(u8, field, "volume")) {
-        const v = parsePercent(value) orelse return fail(resp, "set: volume expects 10%..100%");
+        const v = parsePercent(value) orelse return failOutcome(arena, "set: volume expects 10%..100%", .{});
         peon.config.volume = v;
     } else if (mem.eql(u8, field, "silent_window_seconds")) {
-        const v = parseSeconds(value) orelse return fail(resp, "set: silent_window_seconds expects 0s..3600s");
+        const v = parseSeconds(value) orelse return failOutcome(arena, "set: silent_window_seconds expects 0s..3600s", .{});
         peon.config.silent_window_seconds = v;
     } else if (mem.startsWith(u8, field, "cat:")) {
         const on = if (mem.eql(u8, value, "on"))
@@ -373,14 +334,15 @@ fn opSet(peon: *Peon, io: std.Io, arena: Allocator, req: *const Request, resp: *
         else if (mem.eql(u8, value, "off"))
             false
         else
-            return fail(resp, "set: category expects on|off");
+            return failOutcome(arena, "set: category expects on|off", .{});
         if (!peon.config.categories.apply(field[4..], on)) {
-            return fail(resp, "set: unknown category");
+            return failOutcome(arena, "set: unknown category", .{});
         }
     } else {
-        return fail(resp, "set: unknown field");
+        return failOutcome(arena, "set: unknown field", .{});
     }
-    saveConfig(peon, io, arena) catch |err| return fail(resp, @errorName(err));
+    saveConfig(peon, io, arena) catch |err| return failOutcome(arena, "{s}", .{@errorName(err)});
+    return .{ .ok = true };
 }
 
 fn parsePercent(s: []const u8) ?u8 {
@@ -399,8 +361,13 @@ fn parseSeconds(s: []const u8) ?i64 {
     return n;
 }
 
-fn opEvent(peon: *Peon, io: std.Io, arena: Allocator, req: *const Request, resp: *Response) void {
-    const event = req.event orelse return fail(resp, "event: missing event");
+fn opEvent(peon: *Peon, io: std.Io, arena: Allocator, req: *const Request) !common.Outcome {
+    const event = req.event orelse return failOutcome(arena, "event: missing event", .{});
+    // State problems never break a notification: a missing or unreadable
+    // state file just means the counters reset to defaults for this event.
+    loadState(peon, io, arena) catch |err| {
+        std.debug.print("pi-peon: state load failed ({s}), using defaults\n", .{@errorName(err)});
+    };
     const now = nowRealtimeMs();
     if (mem.eql(u8, event, "session_start")) {
         _ = peon.onSessionStart(io, arena);
@@ -411,13 +378,18 @@ fn opEvent(peon: *Peon, io: std.Io, arena: Allocator, req: *const Request, resp:
     } else if (mem.eql(u8, event, "agent_end")) {
         _ = peon.onAgentEnd(io, arena, now, req.@"error" orelse false);
     } else {
-        return fail(resp, "event: unknown event");
+        return failOutcome(arena, "event: unknown event", .{});
     }
+    saveState(peon, io, arena) catch |err| {
+        std.debug.print("pi-peon: state save failed ({s})\n", .{@errorName(err)});
+    };
+    return .{ .ok = true };
 }
 
 // ---------------------------------------------------------------------------
 // Randomness (sound picking). No global RNG in Zig 0.16, so we seed a
-// per-process PRNG from wall time and an ASLR-mixed stack address. Good
+// per-process PRNG from wall time and an ASLR-mixed stack address. Each
+// event is a fresh process, so the seed genuinely differs every call. Good
 // enough for picking sounds.
 
 fn seedFromEntropy() u64 {
@@ -433,55 +405,42 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
+    const argv = init.minimal.args.vector;
+    if (argv.len < 2) {
+        std.debug.print("usage: pi-peon '<request json>'\n", .{});
+        std.process.exit(2);
+    }
+
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    var stdin_buf = List.init(gpa);
-    defer stdin_buf.deinit();
+    const arena = arena_state.allocator();
 
-    const home_raw = init.environ_map.get("HOME") orelse {
-        std.debug.print("pi-peon: HOME not set\n", .{});
-        return;
-    };
-    const home = std.fmt.allocPrint(init.arena.allocator(), "{s}/.pi/agent", .{home_raw}) catch return;
+    const req = json.parseFromSlice(Request, arena, std.mem.sliceTo(argv[1], 0), .{ .ignore_unknown_fields = true }) catch |err|
+        respondExit(arena, io, false, @errorName(err));
+
+    // The glue resolves the agent dir (pi's own path resolution) and sends it
+    // here; config, state, and the extracted sounds all live under it.
+    const agent_dir = req.value.agent_dir orelse respondExit(arena, io, false, "missing agent_dir");
+
     var peon = Peon{
-        .home = home,
-        .old_config_path = std.fmt.allocPrint(init.arena.allocator(), "{s}/.config/peon-ping/config.json", .{home_raw}) catch return,
-        .old_state_path = std.fmt.allocPrint(init.arena.allocator(), "{s}/.config/peon-ping/state.json", .{home_raw}) catch return,
+        .agent_dir = agent_dir,
+        .rng = std.Random.DefaultPrng.init(seedFromEntropy()),
     };
-    peon.rng = std.Random.DefaultPrng.init(seedFromEntropy());
-    extractSounds(&peon, io, arena_state.allocator()) catch |err| {
+    extractSounds(&peon, io, arena) catch |err| {
         std.debug.print("pi-peon: sound extraction failed ({s})\n", .{@errorName(err)});
     };
-    loadOrMigrate(&peon, io, arena_state.allocator()) catch |err| {
+    loadConfig(&peon, io, arena) catch |err| {
         std.debug.print("pi-peon: config load failed ({s})\n", .{@errorName(err)});
     };
 
-    while (true) {
-        _ = arena_state.reset(.retain_capacity);
-        const arena = arena_state.allocator();
+    const outcome = if (mem.eql(u8, req.value.op, "config"))
+        common.Outcome{ .ok = true, .text = try json.Stringify.valueAlloc(arena, peon.config, .{}) }
+    else if (mem.eql(u8, req.value.op, "set"))
+        opSet(&peon, io, arena, &req.value) catch |err| respondExit(arena, io, false, @errorName(err))
+    else if (mem.eql(u8, req.value.op, "event"))
+        opEvent(&peon, io, arena, &req.value) catch |err| respondExit(arena, io, false, @errorName(err))
+    else
+        respondExit(arena, io, false, "unknown op");
 
-        const line = readLine(posix.STDIN_FILENO, &stdin_buf, MAX_LINE, arena, null) catch break orelse break;
-        if (line.len == 0) continue;
-
-        const parsed = json.parseFromSlice(Request, arena, line, .{ .ignore_unknown_fields = true }) catch |err| {
-            var err_resp = Response{ .id = 0, .ok = false };
-            err_resp.@"error" = @errorName(err);
-            respondJson(arena, io, &err_resp) catch {};
-            continue;
-        };
-        const req = parsed.value;
-        var resp = Response{ .id = req.id, .ok = true };
-
-        if (mem.eql(u8, req.op, "config")) {
-            resp.config = peon.config;
-        } else if (mem.eql(u8, req.op, "set")) {
-            opSet(&peon, io, arena, &req, &resp);
-        } else if (mem.eql(u8, req.op, "event")) {
-            opEvent(&peon, io, arena, &req, &resp);
-        } else {
-            fail(&resp, "unknown op");
-        }
-
-        respondJson(arena, io, &resp) catch {};
-    }
+    respondOutcomeExit(arena, io, outcome);
 }
