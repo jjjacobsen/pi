@@ -4,8 +4,11 @@
  * Shows an inline view with usage stats grouped by provider, plus provider
  * quota limits (OpenAI Codex subscription + OpenCode Go).
  * - Tab cycles: Today → This Week → Last Week → Last 30 Days → All Time
- * - [v] cycles views: Graphs → Table → Insights → Limits
+ * - [v] cycles views: Limits → Graphs → Table → Insights
  * - Arrow keys navigate providers; Enter expands/collapses models
+ * - The session scan is lazy: opening the panel only fetches provider quotas
+ *   (Limits is the default view); the collect scan starts on the first [v]
+ *   press away from Limits
  *
  * Adapted from @tmustier/pi-usage-extension (MIT,
  * https://github.com/tmustier/pi-extensions): the three original views
@@ -23,7 +26,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { CancellableLoader, Container, Spacer, matchesKey, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Container, Spacer, matchesKey, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 import { callZig } from "./lib/zig";
 import { resolveCodexAuth } from "./lib/toolkit";
@@ -72,7 +75,7 @@ async function resolveLimitsArgs(ctx) {
 
 type ViewMode = "graph" | "table" | "insights" | "limits";
 
-const VIEW_CYCLE: ViewMode[] = ["graph", "table", "insights", "limits"];
+const VIEW_CYCLE: ViewMode[] = ["limits", "graph", "table", "insights"];
 
 const VIEW_LABELS: Record<ViewMode, string> = {
 	graph: "Graphs",
@@ -412,8 +415,9 @@ const TAB_LABELS: Record<TabName, string> = {
 
 class UsageComponent {
 	private activeTab: TabName = "allTime";
-	private viewMode: ViewMode = "graph";
-	private data: UsageData;
+	private viewMode: ViewMode = "limits";
+	private data: UsageData | null;
+	private collectFetcher: () => Promise<string>;
 	private selectedIndex = 0;
 	private expanded = new Set<string>();
 	private providerOrder: string[] = [];
@@ -444,14 +448,25 @@ class UsageComponent {
 	private limitsInFlight = false;
 	private disposed = false;
 
-	constructor(theme: Theme, data: UsageData, requestRender: () => void, done: () => void, limitsFetcher: () => Promise<string>, warnings: string[]) {
+	// Collect state. The session-history scan is lazy: it starts on the first
+	// [v] press away from Limits, not at panel open. Same one-at-a-time and
+	// dispose() rules as the limits fetch.
+	private collectRequested = false;
+	private collectInFlight = false;
+	private collectError: string | null = null;
+
+	constructor(theme: Theme, data: UsageData | null, requestRender: () => void, done: () => void, collectFetcher: () => Promise<string>, limitsFetcher: () => Promise<string>, warnings: string[]) {
 		this.theme = theme;
 		this.requestRender = requestRender;
 		this.done = done;
 		this.data = data;
+		this.collectFetcher = collectFetcher;
 		this.limitsFetcher = limitsFetcher;
 		this.warnings = warnings;
-		this.updateProviderOrder();
+		if (this.data) this.updateProviderOrder();
+		// Limits is the default view, so the quota fetch must start here rather
+		// than waiting for the first [v] switch (handleInput covers that path).
+		if (this.viewMode === "limits") this.ensureLimits();
 	}
 
 	setLimits(limits: LimitsData): void {
@@ -500,7 +515,42 @@ class UsageComponent {
 			});
 	}
 
+	/** Fetch the session-history stats, but only once (on the first [v] away from Limits). */
+	private ensureCollect(): void {
+		if (!this.collectRequested) this.fetchCollect();
+	}
+
+	private fetchCollect(): void {
+		if (this.disposed || this.collectInFlight) return;
+		this.collectRequested = true;
+		this.collectInFlight = true;
+		this.collectError = null;
+		this.requestRender();
+		this.collectFetcher()
+			.then((result: string) => {
+				if (this.disposed) return;
+				try {
+					const raw = JSON.parse(result) as BackendData;
+					this.data = convertBackendData(raw);
+					this.warnings = Array.isArray(raw.warnings) ? raw.warnings : [];
+					this.updateProviderOrder();
+				} catch {
+					this.collectError = "invalid collect response";
+				}
+				this.requestRender();
+			})
+			.catch((err: unknown) => {
+				if (this.disposed) return;
+				this.collectError = err instanceof Error ? err.message : String(err);
+				this.requestRender();
+			})
+			.finally(() => {
+				this.collectInFlight = false;
+			});
+	}
+
 	private updateProviderOrder(): void {
+		if (!this.data) return;
 		const stats = this.data[this.activeTab];
 		this.providerOrder = Array.from(stats.providers.entries())
 			.sort((a, b) => b[1].cost - a[1].cost)
@@ -519,7 +569,7 @@ class UsageComponent {
 	 * the totals row and exports reflect exactly what is on screen.
 	 */
 	private visibleTable(): { providers: Map<string, { messages: number; cost: number; sessions: number; tokens: TotalStats["tokens"]; models: Map<string, { messages: number; cost: number; sessions: number; tokens: TotalStats["tokens"] }> }>; totals: TotalStats } {
-		const stats = this.data[this.activeTab];
+		const stats = this.data![this.activeTab];
 		const q = this.tableFilter.trim().toLowerCase();
 		// Always iterate providerOrder so the map is cost-sorted — selection
 		// indexes and rendered rows must agree on ordering.
@@ -601,6 +651,7 @@ class UsageComponent {
 			this.viewMode = VIEW_CYCLE[(idx + 1) % VIEW_CYCLE.length]!;
 			this.exportNote = null;
 			if (this.viewMode === "limits") this.ensureLimits();
+			else this.ensureCollect();
 			this.requestRender();
 			return;
 		}
@@ -608,6 +659,17 @@ class UsageComponent {
 		if (this.viewMode === "limits") {
 			if (matchesKey(data, "r")) {
 				this.fetchLimits();
+			}
+			return;
+		}
+
+		// The session scan runs lazily on the first [v] away from Limits; until
+		// it lands, only [r] (retry after failure) is meaningful here.
+		if (!this.data) {
+			if (matchesKey(data, "r") && this.collectError) {
+				this.collectRequested = false;
+				this.ensureCollect();
+				this.requestRender();
 			}
 			return;
 		}
@@ -716,7 +778,7 @@ class UsageComponent {
 		const now = new Date();
 		let name: string;
 		let content: string;
-		const stats = this.data[this.activeTab];
+		const stats = this.data![this.activeTab];
 		if (this.viewMode === "graph") {
 			const slice = `${this.graphCumulative ? "cumulative" : "per-bucket"}-${this.graphMetric}-by-${this.graphGroupBy}`;
 			name = exportFileName("graph", this.activeTab, slice, "csv", now);
@@ -761,9 +823,13 @@ class UsageComponent {
 	}
 
 	render(width: number): string[] {
+		// Stats views need the session scan, which runs lazily on the first [v]
+		// away from Limits; until it lands (or fails) they show a status block.
+		const loading = this.viewMode !== "limits" && !this.data ? this.renderCollectStatus(width) : null;
+
 		if (this.viewMode === "graph") {
 			return clampLines(
-				[...this.renderTitle(width), ...this.renderTabs(width, getTableLayout(width)), ...this.renderGraph(width), ...this.renderHelp(width)],
+				[...this.renderTitle(width), ...this.renderTabs(width, getTableLayout(width)), ...(loading ?? this.renderGraph(width)), ...this.renderHelp(width)],
 				width
 			);
 		}
@@ -773,7 +839,7 @@ class UsageComponent {
 				[
 					...this.renderTitle(width),
 					...this.renderTabs(width, getTableLayout(width)),
-					...this.renderInsights(width),
+					...(loading ?? this.renderInsights(width)),
 					...this.renderHelp(width),
 				],
 				width
@@ -788,18 +854,30 @@ class UsageComponent {
 		}
 
 		const layout = getTableLayout(width);
+		// With the scan pending the table has no rows to show: render the status
+		// in place of header/rows/totals/formula-note.
+		const tableBody = loading ?? [...this.renderHeader(layout), ...this.renderRows(layout), ...this.renderTotals(layout), ...this.renderFormulaNote(width)];
 		return clampLines(
 			[
 				...this.renderTitle(width),
 				...this.renderTabs(width, layout),
-				...this.renderHeader(layout),
-				...this.renderRows(layout),
-				...this.renderTotals(layout),
-				...this.renderFormulaNote(width),
+				...tableBody,
 				...this.renderHelp(width),
 			],
 			width
 		);
+	}
+
+	private renderCollectStatus(width: number): string[] {
+		const th = this.theme;
+		if (this.collectError) {
+			return [
+				th.fg("dim", `  Usage data unavailable: ${this.collectError}`),
+				th.fg("dim", "  [r] retries"),
+				"",
+			];
+		}
+		return [th.fg("dim", "  Collecting usage data…"), ""];
 	}
 
 	private renderTitle(width: number): string[] {
@@ -884,7 +962,7 @@ class UsageComponent {
 
 	private renderInsights(width: number): string[] {
 		const th = this.theme;
-		const stats = this.data[this.activeTab];
+		const stats = this.data![this.activeTab];
 		const { insights } = stats.insights;
 		const hasUsage =
 			stats.totals.messages > 0 ||
@@ -1203,8 +1281,8 @@ class UsageComponent {
 
 	invalidate(): void {}
 	dispose(): void {
-		// Drop any in-flight limits fetch: its result must not touch this
-		// component or request renders after the panel closed.
+		// Drop any in-flight limits/collect fetch: their results must not touch
+		// this component or request renders after the panel closed.
 		this.disposed = true;
 	}
 }
@@ -1222,41 +1300,6 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const bounds = computeBounds();
-			const raw = await ctx.ui.custom<BackendData | null>((tui, theme, _kb, done) => {
-				const loader = new CancellableLoader(
-					tui,
-					(s: string) => theme.fg("accent", s),
-					(s: string) => theme.fg("muted", s),
-					"Collecting usage data…"
-				);
-				let finished = false;
-				const finish = (value: BackendData | null) => {
-					if (finished) return;
-					finished = true;
-					loader.dispose();
-					done(value);
-				};
-
-				loader.onAbort = () => finish(null);
-
-				callZig(pi, "pi-usage", { op: "collect", bounds, agent_dir: getAgentDir() }, { signal: ctx.signal, timeout: COLLECT_TIMEOUT_MS })
-					.then((res: any) => {
-						try {
-							finish(JSON.parse(res.result));
-						} catch {
-							finish(null);
-						}
-					})
-					.catch(() => finish(null));
-
-				return loader;
-			});
-
-			if (!raw) {
-				return;
-			}
-
-			const data = convertBackendData(raw);
 
 			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 				const container = new Container();
@@ -1268,17 +1311,22 @@ export default function (pi: ExtensionAPI) {
 
 				const usage = new UsageComponent(
 					theme,
-					data,
+					null,
 					() => tui.requestRender(),
 					() => done(),
+					() =>
+						callZig(pi, "pi-usage", { op: "collect", bounds, agent_dir: getAgentDir() }, { signal: ctx.signal, timeout: COLLECT_TIMEOUT_MS }).then(
+							(res) => res.result
+						),
 					() =>
 						resolveLimitsArgs(ctx).then((args) =>
 							callZig(pi, "pi-usage", { op: "limits", ...args }, { signal: ctx.signal, timeout: LIMITS_TIMEOUT_MS }).then((res) => res.result)
 						),
-					Array.isArray(raw.warnings) ? raw.warnings : []
+					[]
 				);
-				// The provider-limits fetch starts on the first Limits view, not
-				// at panel open (Graphs is the default view).
+				// The provider-limits fetch starts on the first Limits view; as the
+				// default view it fires at panel open. The session scan is lazy and
+				// fires on the first [v] press away from Limits.
 
 				return {
 					render: (w: number) => {
