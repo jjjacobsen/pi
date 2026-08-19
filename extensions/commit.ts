@@ -3,19 +3,22 @@
 // to a Zig backend for git logic and message validation.
 //
 // Thin TS: registers the /commit command, bridges to the Zig backend
-// (src/commit.zig) over a newline-delimited JSON pipe, calls the current
-// model through the pi SDK for commit-message generation, and lets the
-// backend create the commit. All git logic lives in Zig.
+// (src/commit.zig) as a one-shot process: each op travels as one JSON argv
+// element via pi.exec (shared callZig helper), the binary prints one JSON
+// envelope to stdout and exits. The glue calls the current model through the
+// pi SDK for commit-message generation and lets the backend create the
+// commit. All git logic lives in Zig.
 //
-// Protocol (one JSON object per line):
-//   -> {"id":1,"op":"analyze","cwd":"..."}           <- {"id":1,"ok":true,"result":"<context>","empty":false}
-//   -> {"id":2,"op":"validate","message":"..."}      <- {"id":2,"ok":true,"result":"ok"} | ok:false with "- problem" errors
-//   -> {"id":3,"op":"commit","message":"..."}        <- {"id":3,"ok":true,"result":"<hash> <header>"}
+// Protocol:
+//   pi.exec("pi-commit", ['{"op":"analyze","cwd":"..."}'])        -> {"ok":true,"result":"<context>"}
+//   pi.exec("pi-commit", ['{"op":"analyze","cwd":"..."}'])        -> {"ok":true,"result":""}  nothing staged
+//   pi.exec("pi-commit", ['{"op":"validate","message":"..."}'])   -> {"ok":true,"result":"ok"} | {"ok":false,"error":"- problem..."}
+//   pi.exec("pi-commit", ['{"op":"commit","message":"..."}'])     -> {"ok":true,"result":"<hash> <header>"}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { createBackend, handleSessionShutdown } from "./lib/backend";
+import { callZig } from "./lib/zig";
 
 // Animated spinner shown as a widget above the editor while the commit
 // pipeline runs (TUI mode only: RPC mode ignores component factories, print
@@ -51,6 +54,7 @@ function hideSpinner(ctx) {
 
 const THINKING_LEVEL = "low";
 const MAX_SESSION_TAIL = 4000;
+const TIMEOUT_MS = 60000; // per git op cap; Esc aborts the process regardless
 
 // System prompt for the message-generation subagent. The rules mirror what
 // the Zig validator enforces; the model writes, the backend judges.
@@ -67,7 +71,6 @@ Rules:
 - Match the repository's recent commit style when it is consistent.
 - Output only the commit message, nothing else.`;
 
-const backend = createBackend("pi-commit");
 // ----- message generation via the pi SDK (same pattern pi-committer uses) -----
 
 let cachedRuntime;
@@ -144,12 +147,12 @@ function stripFences(text) {
   return text;
 }
 
-async function validate(message) {
+async function validate(pi, message) {
   try {
-    await backend.call("validate", { message });
+    await callZig(pi, "pi-commit", { op: "validate", message });
     return null; // valid
   } catch (err) {
-    return err.message; // "- problem" lines
+    return err?.message ?? String(err); // "- problem" lines
   }
 }
 
@@ -191,15 +194,14 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
   pi.registerCommand("commit", {
     description: "Stage all changes and commit them with an AI-generated conventional message",
     handler: async (args, ctx) => {
       const cwd = ctx.cwd;
       showSpinner(ctx, "analyzing changes");
       try {
-        const analyze = await backend.call("analyze", { cwd });
-        if (analyze.empty) return notify(ctx, "nothing to commit", "info");
+        const analyze = await callZig(pi, "pi-commit", { op: "analyze", cwd }, { signal: ctx.signal, timeout: TIMEOUT_MS });
+        if (analyze.result === "") return notify(ctx, "nothing to commit", "info");
 
         const model = serializableModel(ctx.model);
         if (!model) return notify(ctx, "no model available", "error");
@@ -209,11 +211,11 @@ export default function (pi: ExtensionAPI) {
 
         showSpinner(ctx, "writing commit message");
         let message = stripFences(await askModel(model, prompt, cwd));
-        let problems = await validate(message);
+        let problems = await validate(pi, message);
         if (problems) {
           const retryPrompt = `${prompt}\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
           const retry = stripFences(await askModel(model, retryPrompt, cwd));
-          problems = await validate(retry);
+          problems = await validate(pi, retry);
           if (problems) {
             return notify(ctx, `message rejected after retry:\n${problems}Last attempt:\n${retry}`, "error");
           }
@@ -221,7 +223,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         showSpinner(ctx, "creating commit");
-        const result = await backend.call("commit", { message, cwd });
+        const result = await callZig(pi, "pi-commit", { op: "commit", message, cwd }, { signal: ctx.signal, timeout: TIMEOUT_MS });
         notify(ctx, result.result, "success");
       } catch (err) {
         notify(ctx, err?.message ?? String(err), "error");

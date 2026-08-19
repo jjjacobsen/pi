@@ -1,15 +1,16 @@
 // pi-commit: git analysis, conventional-commit validation, and commit
 // execution for the pi /commit command.
 //
-// The pi extension (extensions/commit.ts) sends one JSON request per line on
-// stdin, we answer with one JSON response line on stdout. The extension calls
-// the model itself; this backend owns everything git-related.
+// The pi extension (extensions/commit.ts) spawns this binary once per op: one
+// JSON request as a single argv element, one JSON envelope on stdout, exit
+// 0/1. The extension calls the model itself; this backend owns everything
+// git-related. One-shot, stateless, no persistent process.
 //
-// Request line:  {"id":1,"op":"analyze","cwd":"/path/to/repo"}
-//                {"id":2,"op":"validate","message":"feat(x): ..."}
-//                {"id":3,"op":"commit","message":"..."}
-// Response line: {"id":1,"ok":true,"result":"..."}   (analyze: +"empty":true when clean)
-//                {"id":1,"ok":false,"error":"..."}   (validate errors are "- problem" lines)
+// Request:  {"op":"analyze","cwd":"/path/to/repo"}   (one JSON argv element)
+//           {"op":"validate","message":"feat(x): ..."}
+//           {"op":"commit","message":"..."}
+// Response: {"ok":true,"result":"..."}   (analyze: "" when nothing is staged)
+//           {"ok":false,"error":"..."}   (validate errors are "- problem" lines)
 //
 // analyze stages everything with `git add -A` and returns a markdown context
 // block for message generation: repo name, primary languages, changed files,
@@ -18,20 +19,19 @@
 // commit creates the commit with `git commit -F -` on the staged snapshot.
 
 const std = @import("std");
-const posix = std.posix;
 const mem = std.mem;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const List = common.List;
-const readLine = common.readLine;
 const writeAllIo = common.writeAllIo;
-const respond = common.respond;
+const respondExit = common.respondExit;
+const respondOutcomeExit = common.respondOutcomeExit;
+const Outcome = common.Outcome;
 const GitResult = common.GitResult;
 const runGit = common.runCmd;
 const gitRoot = common.gitRoot;
 
-const MAX_LINE = 4 * 1024 * 1024; // hard cap on a single request line
 const MAX_GIT_OUT = 32 * 1024 * 1024; // cap on raw diff bytes read from git
 const RAW_DIFF_LIMIT = 6 * 1024; // use the raw diff verbatim below this size
 const DIGEST_LIMIT = 12 * 1024; // cap on the assembled diff digest
@@ -44,7 +44,6 @@ const TYPES = [_][]const u8{
 };
 
 const Request = struct {
-    id: i64,
     op: []const u8,
     cwd: ?[]const u8 = null,
     message: ?[]const u8 = null,
@@ -62,13 +61,6 @@ const CommitOutcome = struct {
     text: []const u8 = "",
     err: []const u8 = "",
 };
-
-// ---------------------------------------------------------------------------
-// analyze
-
-fn respondEmpty(alloc: Allocator, io: std.Io, id: i64) !void {
-    try writeAllIo(io, std.Io.File.stdout(), try std.fmt.allocPrint(alloc, "{{\"id\":{d},\"ok\":true,\"empty\":true,\"result\":\"\"}}\n", .{id}));
-}
 
 // ---------------------------------------------------------------------------
 // Git helpers
@@ -565,74 +557,60 @@ fn commitChanges(arena: Allocator, io: std.Io, cwd: []const u8, message: []const
     return .{ .ok = true, .text = out.items };
 }
 
+// ---------------------------------------------------------------------------
+// ops (one-shot dispatch)
+
+fn opAnalyze(arena: Allocator, io: std.Io, req: Request) !Outcome {
+    const cwd = req.cwd orelse return .{ .ok = false, .err = "missing cwd" };
+    const outcome = try analyzeContext(arena, io, cwd);
+    if (!outcome.ok) return .{ .ok = false, .err = outcome.err };
+    // An empty result string signals nothing staged, which the glue turns
+    // into an info notify rather than an error. The context is never empty
+    // when files changed, so the marker is unambiguous.
+    if (outcome.empty) return .{ .ok = true, .text = "" };
+    return .{ .ok = true, .text = outcome.context };
+}
+
+fn opValidate(arena: Allocator, req: Request) !Outcome {
+    const problems = try validateMessage(arena, req.message orelse "");
+    if (problems.len == 0) return .{ .ok = true, .text = "ok" };
+    return .{ .ok = false, .err = problems };
+}
+
+fn opCommit(arena: Allocator, io: std.Io, req: Request) !Outcome {
+    const cwd = req.cwd orelse return .{ .ok = false, .err = "missing cwd" };
+    const msg = mem.trim(u8, req.message orelse "", " \t\r\n");
+    if (msg.len == 0) return .{ .ok = false, .err = "empty commit message" };
+    const outcome = try commitChanges(arena, io, cwd, msg);
+    if (outcome.ok) return .{ .ok = true, .text = outcome.text };
+    return .{ .ok = false, .err = outcome.err };
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
+    const argv = init.minimal.args.vector;
+    if (argv.len < 2) {
+        std.debug.print("usage: pi-commit '<request json>'\n", .{});
+        std.process.exit(2);
+    }
+
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    var stdin_buf = List.init(gpa);
-    defer stdin_buf.deinit();
+    const arena = arena_state.allocator();
 
-    while (true) {
-        _ = arena_state.reset(.retain_capacity);
-        const arena = arena_state.allocator();
+    const req = json.parseFromSlice(Request, arena, std.mem.sliceTo(argv[1], 0), .{ .ignore_unknown_fields = true }) catch |err|
+        respondExit(arena, io, false, @errorName(err));
 
-        const line = readLine(posix.STDIN_FILENO, &stdin_buf, MAX_LINE, arena, null) catch break orelse break;
-        if (line.len == 0) continue;
+    const outcome = if (mem.eql(u8, req.value.op, "analyze"))
+        opAnalyze(arena, io, req.value) catch |err| respondExit(arena, io, false, @errorName(err))
+    else if (mem.eql(u8, req.value.op, "validate"))
+        opValidate(arena, req.value) catch |err| respondExit(arena, io, false, @errorName(err))
+    else if (mem.eql(u8, req.value.op, "commit"))
+        opCommit(arena, io, req.value) catch |err| respondExit(arena, io, false, @errorName(err))
+    else
+        respondExit(arena, io, false, "unknown op");
 
-        const req = json.parseFromSlice(Request, arena, line, .{ .ignore_unknown_fields = true }) catch |err| {
-            respond(arena, io, 0, false, @errorName(err)) catch {};
-            continue;
-        };
-        const r = req.value;
-        const id = r.id;
-
-        if (mem.eql(u8, r.op, "analyze")) {
-            const cwd = r.cwd orelse {
-                respond(arena, io, id, false, "missing cwd") catch {};
-                continue;
-            };
-            const outcome = analyzeContext(arena, io, cwd) catch |err| {
-                respond(arena, io, id, false, @errorName(err)) catch {};
-                continue;
-            };
-            if (!outcome.ok) {
-                respond(arena, io, id, false, outcome.err) catch {};
-                continue;
-            }
-            if (outcome.empty) {
-                respondEmpty(arena, io, id) catch {};
-                continue;
-            }
-            respond(arena, io, id, true, outcome.context) catch {};
-        } else if (mem.eql(u8, r.op, "validate")) {
-            const problems = validateMessage(arena, r.message orelse "") catch |err| {
-                respond(arena, io, id, false, @errorName(err)) catch {};
-                continue;
-            };
-            if (problems.len == 0) {
-                respond(arena, io, id, true, "ok") catch {};
-            } else {
-                respond(arena, io, id, false, problems) catch {};
-            }
-        } else if (mem.eql(u8, r.op, "commit")) {
-            const msg = mem.trim(u8, r.message orelse "", " \t\r\n");
-            if (msg.len == 0) {
-                respond(arena, io, id, false, "empty commit message") catch {};
-                continue;
-            }
-            const outcome = commitChanges(arena, io, r.cwd orelse "", msg) catch |err| {
-                respond(arena, io, id, false, @errorName(err)) catch {};
-                continue;
-            };
-            if (outcome.ok) {
-                respond(arena, io, id, true, outcome.text) catch {};
-            } else {
-                respond(arena, io, id, false, outcome.err) catch {};
-            }
-        } else {
-            respond(arena, io, id, false, "unknown op") catch {};
-        }
-    }
+    respondOutcomeExit(arena, io, outcome);
 }

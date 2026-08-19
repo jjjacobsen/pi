@@ -372,19 +372,26 @@ Why this split:
   provider credentials are reachable.
 - Zig owns everything git-related and all message judgment: the diff digest,
   repo style sampling, conventional-commit validation with retry feedback,
-  and the commit itself. The model writes, the backend judges.
+  and the commit itself. The model writes, the backend judges. The glue
+  spawns the backend fresh per op via `pi.exec` (shared `callZig` helper);
+  each op is one JSON argv element in, one envelope on stdout, exit 0/1.
+  No persistent bridge exists anymore.
 
-## Protocol (newline-delimited JSON on stdin/stdout)
+## Protocol (one-shot: one JSON request in argv, one JSON envelope on stdout)
 
 ```json
-{"id":1,"op":"analyze","cwd":"/path"}                        -> Zig
-{"id":1,"ok":true,"result":"<markdown context>","empty":false} <- Zig
-{"id":2,"op":"validate","message":"feat(x): ...\n\n..."}     ->
-{"id":2,"ok":true,"result":"ok"}                             <-
-{"id":2,"ok":false,"error":"- problem\n- problem"}           <- problems feed the retry
-{"id":3,"op":"commit","message":"..."}                       ->
-{"id":3,"ok":true,"result":"<short-hash> <header>"}          <-
+{"op":"analyze","cwd":"/path"}          -> {"ok":true,"result":"<markdown context>"}
+{"op":"analyze","cwd":"/path"}          -> {"ok":true,"result":""}        nothing staged
+{"op":"validate","message":"feat(x): ...\n\n..."} -> {"ok":true,"result":"ok"} | {"ok":false,"error":"- problem\n- problem"}
+{"op":"commit","message":"..."}         -> {"ok":true,"result":"<short-hash> <header>"}
 ```
+
+The backend is stateless, so the request carries no `agent_dir` (no config,
+no state file). The clean-repo analyze result is an empty result string,
+which the glue turns into an info notify ("nothing to commit") rather than
+an error; the context block is never empty when files are staged, so the
+marker is unambiguous. Each op runs under a 60s cap in the glue; Esc aborts
+by SIGTERMing the one-shot binary regardless of the cap.
 
 ## Zig behavior
 
