@@ -5,7 +5,7 @@ Instead they talk to long-lived daemons that this repo starts for you:
 
 | Daemon | Drives | Extension | Started by |
 |---|---|---|---|
-| `lightpanda mcp` | the browser_* tools (pi-browser) | launchd LaunchAgent | `mise run daemon-start` |
+| `lightpanda mcp` | the browser_* tools (pi-lightpanda) | launchd LaunchAgent | `mise run daemon-start` |
 | CuaDriver.app | the computer_* tools (pi-cua) | `open -n -g -a CuaDriver --args serve` | `mise run daemon-start` |
 
 Both daemons are per-machine: they hold state (the browser page, the
@@ -27,7 +27,7 @@ time, and failing to start a daemon aborts the task with exit 1.
 ## lightpanda (headless browser)
 
 The browser daemon is `lightpanda mcp --port 8931 --host 127.0.0.1
---http-timeout 0`, run as a launchd LaunchAgent. The extension (pi-browser)
+--http-timeout 0`, run as a launchd LaunchAgent. The extension (pi-lightpanda)
 POSTs one MCP tools/call (JSON-RPC 2.0 over HTTP) to
 `http://127.0.0.1:8931/mcp` with a session id in the header
 `Mcp-Session-Id`, defaulting to the shared `pi-main` tab, so a page stays
@@ -99,6 +99,6 @@ starts it with the same command used manually:
    and CuaDriver
 5. `mise run daemon-status` to confirm both are running
 
-The port 8931 is a constant in two places: `src/browser.zig` (DAEMON_PORT)
+The port 8931 is a constant in two places: `src/lightpanda.zig` (DAEMON_PORT)
 and `scripts/com.pijon.lightpanda.plist`. If it ever needs to change, edit
 both and re-run `mise run daemon-start` (it re-renders the plist).

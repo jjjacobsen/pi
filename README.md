@@ -27,7 +27,7 @@ Technical details for every extension live in [docs/architecture.md](docs/archit
 your repo's style, using your git history, AGENTS.md, and the current
 session for context
 
-### browser - headless browser via Lightpanda
+### lightpanda - headless browser
 
 Gives the model a real headless browser with tools to navigate, read,
 click, fill forms, and extract content from any page. All pi processes

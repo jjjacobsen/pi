@@ -1,4 +1,4 @@
-// pi-browser: headless browser backend for the pi coding agent.
+// pi-lightpanda: headless browser backend for the pi coding agent.
 //
 // One-shot client for the lightpanda MCP daemon. The glue spawns this
 // binary once per tool call with the request as one JSON argv element; we
@@ -11,7 +11,7 @@
 // call attaches to a session, sent as the Mcp-Session-Id header. The
 // default session is "pi-main" (shared by every pi process); the glue can
 // override it per pi process so one pi process can be pointed at its own
-// tab (see browser.ts's browser_pick_session).
+// tab (see lightpanda.ts's browser_pick_session).
 // The MCP initialize handshake is skipped: lightpanda accepts tools/call
 // directly and creates the session on first use (verified against the
 // 2026.08 nightly). If a future build starts requiring the handshake, add
@@ -245,7 +245,7 @@ pub fn main(init: std.process.Init) !void {
 
     const argv = init.minimal.args.vector;
     if (argv.len < 2) {
-        std.debug.print("usage: pi-browser '<request json>'\n", .{});
+        std.debug.print("usage: pi-lightpanda '<request json>'\n", .{});
         std.process.exit(2);
     }
 

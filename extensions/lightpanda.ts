@@ -1,7 +1,7 @@
-// pi-browser: thin TypeScript glue for the Zig headless-browser backend.
+// pi-lightpanda: thin TypeScript glue for the Zig headless-browser backend.
 //
 // pi extensions must be TypeScript modules, so this file only registers
-// tool schemas and bridges tool calls to the Zig backend (src/browser.zig)
+// tool schemas and bridges tool calls to the Zig backend (src/lightpanda.zig)
 // through the shared one-shot callZig helper (one JSON argv element, one
 // JSON envelope on stdout, exit). All browser logic lives in Zig, which
 // posts one MCP tools/call (JSON-RPC 2.0 over HTTP) to the lightpanda MCP
@@ -28,7 +28,7 @@ const enumOpt = (values: string[], description: string) =>
 const intOpt = (description: string) => T.Optional(T.Integer({ description }));
 const strOpt = (description: string) => T.Optional(T.String({ description }));
 
-// Matches the Zig per-call deadline (CALL_TIMEOUT_MS in src/browser.zig).
+// Matches the Zig per-call deadline (CALL_TIMEOUT_MS in src/lightpanda.zig).
 // The pi.exec timeout runs 10s longer so a slow call surfaces as the Zig
 // deadline's clean "TimedOut" envelope instead of a pi.exec kill.
 const CALL_TIMEOUT_MS = 120000;
@@ -137,7 +137,7 @@ export default function (pi: ExtensionAPI) {
           // per session).
           const res = await callZig(
             pi,
-            "pi-browser",
+            "pi-lightpanda",
             { op: t.mcp ?? t.name, params: JSON.stringify(args), session: sess },
             { signal, timeout: CALL_TIMEOUT_MS + 10000 },
           );

@@ -39,7 +39,7 @@
 - `std.process.run` in 0.16 has no stdin pipe (always `.ignore`); for
   `git commit -F -` you must `spawn` manually, write stdin, close it, drain
   stdout/stderr with raw `posix.read`, then `child.wait`. Close the pipe
-  files yourself and null the child fields, like pi-browser does.
+  files yourself and null the child fields, like pi-lightpanda does.
 - `Io.Dir.readFileAlloc(dir, io, path, allocator, limit)` takes an
   `Io.Limit` (`.limited(n)`), not a byte count; wrong arg order silently
   means `error.StreamTooLong` for big files.

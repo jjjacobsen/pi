@@ -103,7 +103,7 @@ global install, so it is not shareable as-is.
 `npm:typescript = "6.0.3"` so the check and the editor use the same
 compiler. `mise x -- hk check --all` must stay green.
 
-# Headless browser extension (pi-browser)
+# Headless browser extension (pi-lightpanda)
 
 ## Goal
 
@@ -116,8 +116,8 @@ the page survives between tool calls and across pi restarts.
 
 ```
 pi (coding agent)
-  └─ extensions/browser.ts     TS glue: tool schemas + one-shot callZig
-       └─ src/browser.zig      one-shot: MCP client over HTTP, exits
+  └─ extensions/lightpanda.ts  TS glue: tool schemas + one-shot callZig
+       └─ src/lightpanda.zig   one-shot: MCP client over HTTP, exits
             └─ lightpanda mcp  daemon (launchd LaunchAgent, port 8931)
 ```
 
@@ -126,7 +126,7 @@ Why this split:
 - pi extensions must be TypeScript modules that pi loads and calls. There is
   no way around the TS entry point, but it can be thin: register tool
   schemas and forward each call as one request to the one-shot Zig binary.
-- Everything else lives in Zig (`src/browser.zig`). It posts one MCP
+- Everything else lives in Zig (`src/lightpanda.zig`). It posts one MCP
   tools/call (JSON-RPC 2.0 over HTTP) to the daemon, extracts the text
   result, prints the envelope, and exits.
 - The browser itself is a long-lived `lightpanda mcp` process started as a
@@ -204,7 +204,7 @@ provides session_new/list/close for lifecycle.
   bytes) and capped by the shared WorkerSlot at 64KiB, with head/tail
   truncation inside that window (RESULT_CAP, 60KiB), so one html/tree dump
   cannot flood the model's context or bloat the session file.
-- `DAEMON_HOST` / `DAEMON_PORT` / `SESSION_ID` are constants in browser.zig;
+- `DAEMON_HOST` / `DAEMON_PORT` / `SESSION_ID` are constants in lightpanda.zig;
   the port also lives in scripts/com.pijon.lightpanda.plist. docs/daemons.md
   covers changing it on another machine.
 - The daemon's stderr is not piped (a launchd log file covers it), so the
@@ -294,7 +294,7 @@ Why this split:
 ```
 
 `params` is a JSON string containing the raw arguments object (same shape
-as pi-browser). The glue sends op/agent_dir/tool/params. The binary
+as pi-lightpanda). The glue sends op/agent_dir/tool/params. The binary
 requires `agent_dir` (pi resolves it via `getAgentDir()`) and fails loudly
 when missing: screenshots live under `{agent_dir}/cua-screenshots/`.
 
@@ -346,7 +346,7 @@ when missing: screenshots live under `{agent_dir}/cua-screenshots/`.
   and the escalation recommendation. A payload without `tree_markdown`
   (in-band errors) passes through raw.
 - Result text is capped at 256KB with head/tail truncation (shared
-  pattern with pi-browser), so a huge tree cannot flood the model's
+  pattern with pi-lightpanda), so a huge tree cannot flood the model's
   context or the session file.
 
 ## Flow
