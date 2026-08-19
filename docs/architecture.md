@@ -994,12 +994,11 @@ Why this split:
   compression, base64, the OpenAI-compatible chat/completions request, the
   response parse, the retry, and the deadline.
 
-## Protocol (newline-delimited JSON on stdin/stdout)
+## Protocol (one-shot: one JSON request in argv, one JSON envelope on stdout)
 
 ```json
-{"id":1,"op":"describe","path":"img.png","cwd":"/repo","prompt":"...","base_url":"https://openrouter.ai/api/v1","api_key":"sk-...","model":"xiaomi/mimo-v2.5","headers":"[[\"h\",\"v\"]]","max_dimension":1568,"jpeg_quality":85,"timeout_ms":60000}
-{"id":1,"ok":true,"result":"<model text>"}
-{"id":1,"ok":false,"error":"..."}
+{"op":"describe","path":"img.png","cwd":"/repo","prompt":"...","base_url":"https://openrouter.ai/api/v1","api_key":"sk-...","model":"xiaomi/mimo-v2.5","headers":"[[\"h\",\"v\"]]","max_dimension":1568,"jpeg_quality":85,"timeout_ms":60000}
+{"ok":true,"result":"<model text>","usage":{"input":...,"output":...}}       <- or {"ok":false,"error":"..."}
 ```
 
 `headers` is a JSON string of name/value pairs from pi's provider auth
@@ -1033,13 +1032,14 @@ Why this split:
   (unblocking its read), waits up to 1s for it to exit, and joins. If the
   worker is stuck before registering its socket (connect/TLS handshake), it
   is abandoned and frees its own heap structs when it finishes, so repeated
-  slow connections cannot accumulate threads or allocations. The glue
-  additionally kills the backend on user abort (Esc), so no request can
-  outlive its turn.
+  slow connections cannot accumulate threads or allocations. Esc aborts the
+  call: pi.exec SIGTERMs the one-shot binary, so no request can outlive its
+  turn.
 - **Usage**: the chat/completions `usage` object (prompt/completion tokens)
-  is returned on the response line; the glue computes cost from the vision
-  model's pricing and reports it as `AgentToolResult.usage`, so delegated
-  describe_image tokens and cost appear in pi's footer and /usage totals.
+  is returned on the response envelope; the glue computes cost from the
+  vision model's pricing and reports it as `AgentToolResult.usage`, so
+  delegated describe_image tokens and cost appear in pi's footer and /usage
+  totals.
 - TLS uses the std lib's system CA bundle, which on macOS reads the system
   keychains directly; no cert file handling.
 
@@ -1059,22 +1059,23 @@ Why this split:
   config; `/vision model <provider/model>` validates against the registry
   (must exist and have image input) and saves; bare `/vision model` opens a
   picker over vision-capable models.
-- `createBackend` `restart()` (kill now, respawn after the old child exits,
-  pending calls reject) is used when an in-flight describe call is aborted;
-  other extensions are unaffected.
+- The call goes through the shared `callZig` helper (pi.exec + argv JSON),
+  so Esc aborts by SIGTERMing the one-shot binary. No backend lifecycle
+  exists anymore.
 
 ## Flow
 
 `describe_image(path, prompt)` -> glue resolves the vision model + auth ->
-backend reads the image, compresses if needed, base64s, POSTs -> on
-retryable failure one retry -> text returned to the model. `Esc` during the
-call kills and respawns the backend. `input` with images on a text-only
-primary -> hint appended -> model calls describe_image.
+Zig reads the image, compresses if needed, base64s, POSTs -> on retryable
+failure one retry -> text returned to the model. `Esc` during the call
+SIGTERMs the one-shot binary. `input` with images on a text-only primary ->
+hint appended -> model calls describe_image.
 
 ## Notes
 
-- The glue unrefs the backend child and its pipes (shared `createBackend`),
-  and the backend self-terminates on stdin EOF like the other backends.
+- The delegated token usage rides the response envelope; the glue's
+  `toToolUsage` converts it into pi's Usage shape (with cost computed from
+  the model's pricing) so /usage counts it.
 - Zig 0.16 API notes: `std.http.Client` is a plain struct
   (`{ .allocator, .io }`), `fetch` discards the body without a
   `response_writer`, `Io.Writer.fixed` buffers capture it (`out.end` is the

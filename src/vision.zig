@@ -1,36 +1,36 @@
 // pi-vision: describe images via a configured vision model.
 //
 // The pi extension (extensions/vision.ts) registers the describe_image tool
-// and bridges calls here. This backend loads the image file, detects its
-// format and dimensions from the header bytes, compresses it via sips when
-// it exceeds the max dimension (JPEG for opaque images, original format for
-// images with alpha), base64-encodes it, and POSTs it to the vision model's
+// and calls this binary as a one-shot process: the request travels as one
+// JSON argv element via pi.exec, this binary prints one JSON envelope to
+// stdout and exits. It loads the image file, detects its format and
+// dimensions from the header bytes, compresses it via sips when it exceeds
+// the max dimension (JPEG for opaque images, original format for images
+// with alpha), base64-encodes it, and POSTs it to the vision model's
 // OpenAI-compatible chat/completions endpoint. The model's text response is
 // returned as-is.
 //
-// Request line:  {"id":1,"op":"describe","path":"/abs/img.png","cwd":"/repo","prompt":"...","base_url":"https://...","api_key":"sk-...","model":"mimo-v2.5","headers":[["h","v"],...],"max_dimension":1568,"jpeg_quality":85,"timeout_ms":60000}
-// Response line: {"id":1,"ok":true,"result":"..."} | {"id":1,"ok":false,"error":"..."}
+// Request:  {"op":"describe","path":"/abs/img.png","cwd":"/repo","prompt":"...","base_url":"https://...","api_key":"sk-...","model":"mimo-v2.5","headers":[["h","v"],...],"max_dimension":1568,"jpeg_quality":85,"timeout_ms":60000}
+// Response: {"ok":true,"result":"...","usage":{...}} | {"ok":false,"error":"..."} (stdout, exit 0/1)
 //
 // The HTTP call runs on a worker thread so a hung provider cannot stall the
-// backend: the main thread enforces the deadline and, on expiry, shuts down
+// process: the main thread enforces the deadline and, on expiry, shuts down
 // the worker's socket to unblock it and lets the worker finish on its own.
 // Retryable failures (429, 5xx, network errors) are retried once after a
-// short backoff. The glue kills the backend on user abort (Esc), so no
+// short backoff. Esc aborts the call: pi.exec SIGTERMs the binary, so no
 // request can outlive its turn.
 
 const std = @import("std");
-const posix = std.posix;
 const mem = std.mem;
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const List = common.List;
 const nowMs = common.nowMs;
-const readLine = common.readLine;
-const respond = common.respond;
+const respondExit = common.respondExit;
+const respondOutcomeExit = common.respondOutcomeExit;
 const runCmd = common.runCmd;
 
-const MAX_LINE = 4 * 1024 * 1024; // hard cap on a single request line
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024; // cap on a source image file
 const FORCE_COMPRESS_BYTES = 10 * 1024 * 1024; // byte cap before forced resize
 const MAX_RESPONSE = 1024 * 1024; // cap on the HTTP response body
@@ -42,7 +42,6 @@ const JPEG_QUALITY = 85;
 var tmp_counter: u32 = 0;
 
 const Request = struct {
-    id: i64,
     op: []const u8,
     path: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
@@ -58,7 +57,6 @@ const Request = struct {
 
 const Outcome = common.Outcome;
 const failOutcome = common.failOutcome;
-const respondOutcome = common.respondOutcome;
 
 // ---------------------------------------------------------------------------
 // Image detection (header bytes only, no decode)
@@ -523,32 +521,23 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
+    const argv = init.minimal.args.vector;
+    if (argv.len < 2) {
+        std.debug.print("usage: pi-vision '<request json>'\n", .{});
+        std.process.exit(2);
+    }
+
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    var stdin_buf = List.init(gpa);
-    defer stdin_buf.deinit();
+    const arena = arena_state.allocator();
 
-    while (true) {
-        _ = arena_state.reset(.retain_capacity);
-        const arena = arena_state.allocator();
+    const req = json.parseFromSlice(Request, arena, std.mem.sliceTo(argv[1], 0), .{ .ignore_unknown_fields = true }) catch |err|
+        respondExit(arena, io, false, @errorName(err));
 
-        const line = readLine(posix.STDIN_FILENO, &stdin_buf, MAX_LINE, arena, null) catch break orelse break;
-        if (line.len == 0) continue;
+    const outcome = if (mem.eql(u8, req.value.op, "describe"))
+        opDescribe(gpa, arena, io, req.value) catch |err| respondExit(arena, io, false, @errorName(err))
+    else
+        respondExit(arena, io, false, "unknown op");
 
-        const req = json.parseFromSlice(Request, arena, line, .{ .ignore_unknown_fields = true }) catch |err| {
-            respond(arena, io, 0, false, @errorName(err)) catch {};
-            continue;
-        };
-        const id = req.value.id;
-
-        if (mem.eql(u8, req.value.op, "describe")) {
-            const outcome = opDescribe(gpa, arena, io, req.value) catch |err| {
-                respond(arena, io, id, false, @errorName(err)) catch {};
-                continue;
-            };
-            respondOutcome(arena, io, id, outcome);
-        } else {
-            respond(arena, io, id, false, "unknown op") catch {};
-        }
-    }
+    respondOutcomeExit(arena, io, outcome);
 }

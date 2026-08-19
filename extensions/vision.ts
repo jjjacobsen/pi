@@ -3,8 +3,10 @@
 // pi extensions must be TypeScript modules, so this file registers the
 // describe_image tool, keeps its visibility in sync with the active model's
 // capability, resolves the configured vision model and its auth from pi's
-// model registry, and bridges calls to src/vision.zig over the shared
-// newline-delimited JSON pipe. All image and HTTP logic lives in Zig.
+// model registry, and calls src/vision.zig as a one-shot process: the
+// request travels as one JSON argv element via pi.exec (shared callZig
+// helper), the binary prints one JSON envelope to stdout and exits. All
+// image and HTTP logic lives in Zig.
 //
 // Rules:
 // - multimodal primary -> describe_image hidden; pi passes images to the
@@ -13,26 +15,21 @@
 //   configured vision model (provider/model in ~/.pi/agent/vision.json)
 //
 // Protocol:
-//   -> {"id":1,"op":"describe","path":"...","cwd":"...","prompt":"...","base_url":"...","api_key":"...","model":"...","headers":"...","max_dimension":1568,"jpeg_quality":85,"timeout_ms":60000}
-//   <- {"id":1,"ok":true,"result":"..."} | {"id":1,"ok":false,"error":"..."}
+//   -> {"op":"describe","path":"...","cwd":"...","prompt":"...","base_url":"...","api_key":"...","model":"...","headers":"...","max_dimension":1568,"jpeg_quality":85,"timeout_ms":60000}
+//   <- {"ok":true,"result":"...","usage":{...}} | {"ok":false,"error":"..."}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
-import { createBackend, handleSessionShutdown } from "./lib/backend";
-import { toToolUsage, toolError, withAbort } from "./lib/toolkit";
+import { callZig } from "./lib/zig";
+import { toToolUsage, toolError } from "./lib/toolkit";
 
 const TOOL_NAME = "describe_image";
 const DEFAULT_MAX_DIMENSION = 1568;
 const DEFAULT_JPEG_QUALITY = 85;
 const TIMEOUT_MS = 60000;
-
-// onOk resolves the full response line: the description text plus the
-// delegated model's token accounting (usage), which the tool result carries
-// so /usage can count it.
-const backend = createBackend("pi-vision", { onOk: (msg) => msg });
 
 // ---------------------------------------------------------------------------
 // Config (~/.pi/agent/vision.json). Unknown keys from older configs are
@@ -60,7 +57,6 @@ function saveConfig(config) {
 // ---------------------------------------------------------------------------
 // Capability sync: hide describe_image from multimodal models (they see
 // images natively), show it for text-only models.
-
 function isMultimodal(model) {
   return !!model?.input?.includes("image");
 }
@@ -77,13 +73,11 @@ function syncToolAvailability(pi, model) {
 }
 
 // ---------------------------------------------------------------------------
-// Backend bridge with abort support lives in lib/toolkit.ts (shared with
-// pi-search): Esc during a vision call kills the backend (it may be blocked
-// in an HTTP request) and spawns a fresh one.
+// Tool execution runs through the shared callZig helper (pi.exec + argv
+// JSON): Esc SIGTERMs the one-shot binary, which may be blocked in the HTTP
+// request, so no call can outlive its turn.
 
 export default function visionExtension(pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
-
   // Resync tool visibility on session start and whenever the model changes.
   pi.on("session_start", (_event, ctx) => {
     syncToolAvailability(pi, ctx.model);
@@ -142,9 +136,11 @@ export default function visionExtension(pi: ExtensionAPI) {
           ? JSON.stringify(Object.entries(auth.headers).map(([k, v]) => [k, String(v)]))
           : "";
       try {
-        const res = await withAbort(
-          backend,
-          backend.call("describe", {
+        const res = await callZig(
+          pi,
+          "pi-vision",
+          {
+            op: "describe",
             path: params.image_path,
             cwd: ctx.cwd,
             prompt: params.prompt,
@@ -155,9 +151,8 @@ export default function visionExtension(pi: ExtensionAPI) {
             max_dimension: config.maxDimension,
             jpeg_quality: config.jpegQuality,
             timeout_ms: TIMEOUT_MS,
-          }),
-          signal,
-          "describe_image",
+          },
+          { signal, timeout: TIMEOUT_MS },
         );
         const usage = toToolUsage(visionModel, res.usage);
         return { content: [{ type: "text" as const, text: res.result }], details: {}, ...(usage ? { usage } : {}) };
