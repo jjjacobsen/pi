@@ -366,3 +366,29 @@ extensions/ as a hk step.
   changed (dirty stays false), which is by design, and it reuses the same
   `pi-usage-cache.bin` the persistent backend wrote, so no migration is
   needed between models.
+
+## 2026-08-18 — browser conversion (daemon model)
+
+- CuaDriver's process name is `cua-driver` (the CFBundleExecutable), not
+  `CuaDriver`, so `pgrep -x CuaDriver` never matches and `open -a` can
+  silently launch a duplicate. The status/start scripts match
+  `pgrep -f "cua-driver serve"` instead, which also avoids matching the
+  unrelated ChatGPT cua_node processes.
+- `lightpanda mcp` accepts a `tools/call` POST with no initialize
+  handshake: it creates the MCP session on first use from the
+  `Mcp-Session-Id` header. This means the one-shot client needs only one
+  POST per call. Verified in a spike against the 2026.08 nightly; the
+  risk is a future build requiring the handshake, which would need the
+  initialize + notifications/initialized POSTs added back (a comment in
+  src/browser.zig says so).
+- Deleting `respond`/`respondOutcome` from common.zig broke the build
+  because src/search.zig still imported `respondOutcome` as a dead
+  alias (it only ever called `respondOutcomeExit`). Removed the dead
+  import with the deletion.
+- The browser result cap moved from 256KB (old head/tail logic) to the
+  shared 64KiB WorkerSlot limit (documented MAX_RESULT_TEXT), with a 60KiB
+  head/tail cap inside it. Accepted tradeoff for reusing the
+  httpWithDeadline machinery shared with search/vision.
+- hk's end-of-file-fixer wants a trailing newline on every new file
+  (browser.ts, both daemon scripts, browser.zig); run `mise x -- hk util
+  end-of-file-fixer --fix <files>` after writing them.

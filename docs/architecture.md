@@ -10,18 +10,17 @@ the binary cannot take down pi. The shared parts live in two files:
   the one-shot responders (`respondExit` / `respondOutcomeExit`, which
   print the `{"ok":true,"result":...}` envelope and exit 0/1), buffered
   writer (`writeAllIo`), JSON-escaped writer helper (`appendJsonEscaped`),
-  monotonic and realtime clocks (`nowMs` / `nowRealtimeMs`), and the
-  command runner (`runCmd`, `gitRoot`, `GitResult`). Since pi-search and
-  pi-vision were built, it also holds the HTTP-with-deadline machinery
-  they share (`httpWithDeadline`, `WorkerSlot`, `workerFinish`,
-  `isRetryableStatus` / `isRetryableErr`, `parseHeaders`): each backend
-  keeps its own fetch worker and response parsing, and the worker-slot
-  lifecycle (socket shutdown on deadline, abandoned-worker self-cleanup
-  when a worker is stuck before registering its socket) lives once. Each
-  backend aliases only what it needs and keeps its own request parsing,
-  op dispatch, and protocol structs. The old id-based
-  `respond` / `respondOutcome` and the line reader (`readLine`) remain for
-  the persistent backends (browser last) and die with them.
+  monotonic and realtime clocks (`nowMs` / `nowRealtimeMs`), the line
+  reader with deadline (`readLine`, still used by pi-cua to drain the
+  cua-driver child's stdout), and the command runner (`runCmd`, `gitRoot`,
+  `GitResult`). Since pi-search and pi-vision were built, it also holds the
+  HTTP-with-deadline machinery they share (`httpWithDeadline`, `WorkerSlot`,
+  `workerFinish`, `isRetryableStatus` / `isRetryableErr`, `parseHeaders`):
+  each backend keeps its own fetch worker and response parsing, and the
+  worker-slot lifecycle (socket shutdown on deadline, abandoned-worker
+  self-cleanup when a worker is stuck before registering its socket) lives
+  once. Each backend aliases only what it needs and keeps its own request
+  parsing, op dispatch, and protocol structs.
 - `extensions/lib/zig.ts`: `callZig(pi, binaryName, params, {signal,
   timeout})` runs one backend op. It resolves the binary path (fails with
   a rebuild hint when missing), spawns the binary via `pi.exec` with the
@@ -29,18 +28,15 @@ the binary cannot take down pi. The shared parts live in two files:
   throws on a killed process (abort or timeout), a crash (non-zero exit
   without an envelope), or a protocol error (`ok:false`).
 
-The persistent bridge (`extensions/lib/backend.ts`, `createBackend` +
-`handleSessionShutdown`) is the pre-one-shot model, kept only for browser
-(the last unconverted backend). It owns lazy spawning, the
-pending-call map, line dispatch, `restart()` / `reset()` / `kill()` on
-session boundaries, and the unref dance; browser still registers
-`pi.on("session_shutdown", ...)`. The conversion playbook lives
-in `skills/convert-extension/SKILL.md`.
+The one exception is the browser: the lightpanda browser engine cannot be
+one-shot (the page, DOM, and JS state are process state), so it runs as a
+long-lived daemon next to pi, not inside it. The glue and the Zig binary
+stay one-shot and POST to the daemon over HTTP; see the browser section
+below and `docs/daemons.md` for the launchd setup.
 
 Per-backend protocol details are documented in each extension's section
 below; the one-shot wire format is identical everywhere: one JSON request
-as a single argv element, one JSON envelope on stdout (browser, still on
-the persistent bridge, keeps the old line protocol).
+as a single argv element, one JSON envelope on stdout.
 
 # TypeScript glue tooling (tsconfig, tsc, hk)
 
@@ -81,31 +77,39 @@ compiler. `mise x -- hk check --all` must stay green.
 
 ## Goal
 
-Give the pi coding agent a real, persistent headless browser, built in house,
-with the browser logic written in Zig. No third-party pi extensions involved.
+Give the pi coding agent a real headless browser, built in house, with the
+browser logic written in Zig. No third-party pi extensions involved. The
+browser engine (lightpanda) runs as a daemon next to pi, not inside it, so
+the page survives between tool calls and across pi restarts.
 
 ## Architecture
 
 ```
 pi (coding agent)
-  └─ extensions/browser.ts     TS glue: tool schemas + stdio bridge
-       └─ src/browser.zig      Zig backend: session owner, MCP client
-            └─ lightpanda mcp  Lightpanda browser process (spawned, stdio)
+  └─ extensions/browser.ts     TS glue: tool schemas + one-shot callZig
+       └─ src/browser.zig      one-shot: MCP client over HTTP, exits
+            └─ lightpanda mcp  daemon (launchd LaunchAgent, port 8931)
 ```
 
 Why this split:
 
 - pi extensions must be TypeScript modules that pi loads and calls. There is
-  no way around the TS entry point, but it can be thin: spawn a process, pipe
-  JSON, register tools.
-- Everything else lives in Zig (`src/browser.zig`). It owns the browser
-  process lifecycle, the MCP session, error handling, and result extraction.
-  Future logic (post-processing) grows in Zig.
-- Wire protocol to the browser is **MCP over stdio** (JSON-RPC 2.0,
-  newline-delimited). Lightpanda's MCP server exposes the full interaction
-  surface: navigation, extraction (markdown/html/tree/links), interaction
-  (click/fill/press/scroll/hover/select/check), JS evaluate, waits,
-  structured data, cookies, console logs, and web search.
+  no way around the TS entry point, but it can be thin: register tool
+  schemas and forward each call as one request to the one-shot Zig binary.
+- Everything else lives in Zig (`src/browser.zig`). It posts one MCP
+  tools/call (JSON-RPC 2.0 over HTTP) to the daemon, extracts the text
+  result, prints the envelope, and exits.
+- The browser itself is a long-lived `lightpanda mcp` process started as a
+  launchd LaunchAgent by `mise run daemon-start` (setup, logs, and
+  lifecycle in docs/daemons.md). Pages live in the daemon: every call
+  attaches to the same MCP session (`Mcp-Session-Id: pi-main`), so the page
+  stays loaded between calls. The daemon is the one piece of persistent
+  state in the whole setup, and it sits outside pi entirely.
+- Wire protocol to the daemon is MCP over HTTP (JSON-RPC 2.0, one
+  tools/call POST per process). Lightpanda's MCP server exposes the full
+  interaction surface: navigation, extraction (markdown/html/tree/links),
+  interaction (click/fill/press/scroll/hover/select/check), JS evaluate,
+  waits, structured data, cookies, console logs, and web search.
 - CDP (`lightpanda serve`) was the alternative. CDP (Chrome DevTools
   Protocol) is the remote-control language Chromium-based browsers speak.
   Its channel is WebSocket (RFC 6455), which Zig's stdlib (0.16) does not
@@ -116,71 +120,58 @@ Why this split:
   has no graphical rendering engine, so `Page.captureScreenshot` returns a
   placeholder image. Vision is out of scope for this extension.
 
-## Protocols
+## Protocol
 
-### pi glue -> Zig backend (one JSON object per line on stdin)
+One-shot, like every backend: one JSON request as argv[1], one JSON
+envelope on stdout, exit 0/1.
 
 ```json
-{"id":1,"op":"goto","params":"{\"url\":\"https://example.com\"}"}
+{"op":"goto","params":"{\"url\":\"https://example.com\"}"}   -> Zig (argv[1])
+{"ok":true,"result":"..."}                                     <- Zig
+{"ok":false,"error":"..."}                                     <- failures
 ```
 
 `params` is a JSON **string** containing a raw JSON object, so Zig never has
 to serialize JSON. Tool names and argument names are Lightpanda MCP names
 (see the tools/list output). The glue owns the name mapping and schemas.
-
-### Zig backend -> pi glue (one JSON object per line on stdout)
-
-```json
-{"id":1,"ok":true,"result":"..."}
-{"id":1,"ok":false,"error":"..."}
-```
-
 `result` is the text extracted from the MCP `tools/call` response (content
 array of text items, or the raw string fallback).
 
-### Zig backend -> lightpanda mcp
+### Zig backend -> lightpanda daemon
 
-Standard MCP over stdio: `initialize` (protocolVersion 2024-11-05),
-`notifications/initialized`, then `tools/call` per request. Responses are
-matched by id; unrelated notifications are skipped.
+One POST of `tools/call` to `http://127.0.0.1:8931/mcp` with headers
+`content-type: application/json`, `accept: application/json`, and
+`mcp-session-id: pi-main`. The MCP initialize handshake is skipped:
+lightpanda accepts tools/call directly and creates the session on first
+use (verified against the 2026.08 nightly). If a future build starts
+requiring the handshake, add the initialize + notifications/initialized
+POSTs back.
 
 ## Zig implementation notes (Zig 0.16)
 
-- Only `std.posix` is used for IO (read/write/signals) plus
-  `std.process.spawn` for the child. `std.posix` in 0.16 no longer has
-  fork/exec/pipe/dup2; `std.process.spawn` with `.stdin = .pipe`,
-  `.stdout = .pipe` is the supported path and returns `Io.File` objects.
-- `std.Io.File.writer` buffers; call `flush()` after writes or the bytes
-  never leave the process.
-- Line reading is manual (posix.read into a growing buffer) because the new
-  Io.Reader API lacks `readUntilDelimiterOrEof`. These helpers live in
-  `src/common.zig` (see the shared-code section above).
-- lightpanda mcp **ignores SIGTERM** and only exits on stdin EOF. Cleanup
-  therefore closes the child's stdin pipe first, then `child.kill` (which
-  signals and reaps). Null `child.stdin` after closing to avoid a double
-  close in its cleanup.
-- The child process's stderr is **piped**, not inherited: a background
-  thread drains it and forwards only `$level=error` / `$level=fatal` log
-  lines to pi's stderr. Everything below error is dropped — pages drive
-  warn/info noise (websocket reconnects, `console.*` calls) that lightpanda
-  logs by default and that would otherwise flood the TUI. To see full
-  lightpanda logs, run `lightpanda mcp --log-level debug` manually.
-- lightpanda applies its HTTP transfer timeout to WebSocket connections and
-  never resets it after the upgrade, so with the default 5s cap, idle
-  persistent sockets (webpack HMR, Supabase Realtime, ...) die every 5
-  seconds, pages auto-reconnect in an endless loop, and each disconnect
-  logs a warn. We spawn lightpanda with `--http-timeout 0` so websockets
-  stay connected, and bound every MCP tool call ourselves with
-  `CALL_TIMEOUT_MS` (120s, enforced via `posix.poll` in `readLine`) so a
-  stalled transfer cannot hang the backend forever. Lightpanda's own
-  tool-level timeouts (navigation 10s, waits 5s, evaluate 30s) are far
-  shorter and unaffected.
-- The main loop reads requests from our own stdin (fd 0); the Browser's
-  line reader is used for the child's stdout only.
-- Extracted tool results are capped at 256KB with head/tail truncation
-  ("… [N bytes truncated] …"), so one html/tree/evaluate call cannot flood
-  the model's context or bloat the session file below the 64MB protocol
-  limit.
+- The HTTP call runs on the shared `httpWithDeadline` worker from
+  common.zig (same machinery as pi-search/pi-vision): the worker registers
+  its socket fd in the slot, and on `CALL_TIMEOUT_MS` (120s) expiry the
+  main thread shuts the socket down so the worker unblocks and the envelope
+  reports the timeout. Lightpanda's own tool-level timeouts (navigation
+  10s, waits 5s, evaluate 30s) are far shorter; the deadline only fires
+  when the daemon stalls.
+- On a timeout the daemon stays alive: the in-flight MCP call finishes
+  server-side, and the next call simply queues behind it (lightpanda
+  serializes calls per session).
+- A dead daemon (connection refused) surfaces the operational fix rather
+  than a raw error name: "lightpanda daemon is not running (start it with
+  `mise run daemon-start`) or unreachable on 127.0.0.1:8931".
+- The response is read with `readerDecompressing` (the std.http client
+  advertises gzip/deflate, so the raw reader would hand back compressed
+  bytes) and capped by the shared WorkerSlot at 64KiB, with head/tail
+  truncation inside that window (RESULT_CAP, 60KiB), so one html/tree dump
+  cannot flood the model's context or bloat the session file.
+- `DAEMON_HOST` / `DAEMON_PORT` / `SESSION_ID` are constants in browser.zig;
+  the port also lives in scripts/com.pijon.lightpanda.plist. docs/daemons.md
+  covers changing it on another machine.
+- The daemon's stderr is not piped (a launchd log file covers it), so the
+  `$level=error` forwarding the old persistent backend did is gone.
 
 ## Known limitations and upgrade paths
 
@@ -190,25 +181,25 @@ matched by id; unrelated notifications are skipped.
   deliberately text-based. A workflow that needs real screenshots or vision
   requires a different browser engine (e.g., Chromium), not an addition to
   this one.
-- **Session is per-process**: the loaded page lives in the `lightpanda mcp`
-  process spawned by this backend. `lightpanda mcp` supports sessions
-  (session_new/list/close) and script saving (`save`, PandaScript); the
-  glue does not expose them yet.
-- **Esc aborts an in-flight call**: browser tools use the shared `withAbort`
-  path like vision/search, so Esc during a call that can wait 120s kills and
-  respawns the backend. The loaded page is lost (the lightpanda process goes
-  down with the backend), matching the abort semantics of the other
-  HTTP-delegating tools.
-- **/reload**: the glue rebuilds stale binaries and extensions kill their
-  backend on `session_shutdown` when the host is torn down (quit or
-  reload), so a reload after editing Zig or TS code runs the new build with
-  no orphaned processes. In-flight backend calls during a reload fail fast
-  ("backend killed"), which is intended: reload is terminal for the old
-  instance. Session replacement (`/new`, `/resume`, `/fork`)
-  resets the backend instead: pi reuses the loaded extension instances, so
-  a terminal kill there would leave the new session permanently dead, and
-  reset kills the child and respawns fresh, dropping the loaded page so no
-  browsing state bleeds into the new session.
+- **One tab per daemon run**: the daemon hosts one session (`pi-main`), so
+  "one tab" is the whole browser. `lightpanda mcp` supports multiple
+  sessions (session_new/list/close) and script saving (`save`, PandaScript);
+  the glue does not expose them yet. Exposing tabs later means a session id
+  per tool call and a new-session op, not a structural change.
+- **Esc aborts the client, not the daemon**: an abandoned MCP call keeps
+  running server-side (bounded by lightpanda's tool timeouts, ~30s worst
+  case) and the next call queues behind it. This is the accepted semantic;
+  the page is never lost to an abort. A hard reset of the browser means
+  restarting the daemon (`mise run daemon-start` after a bootout).
+- **Session boundaries**: the one-shot client needs nothing on `/reload`,
+  `/new`, `/resume`, or `/fork`. The daemon keeps the page across pi quit
+  and restart by design; the page resets only when the daemon restarts
+  (reboot, crash restart, or manual bootout), which drops the old session
+  and the next call lands in an empty one ("no page is loaded"). No
+  browsing state bleeds between pi sessions because the daemon holds only
+  the browser's own state.
+- **Two pi instances on one machine share the daemon and therefore the same
+  tab.** Known limitation, accepted for now.
 - **Lightpanda is early-stage**: its own JS engine is not Chromium-complete;
   heavy sites may misrender. Lightpanda nightly is installed via
   `brew install lightpanda-io/browser/lightpanda`.
@@ -216,9 +207,7 @@ matched by id; unrelated notifications are skipped.
   repo instead of relying on the brew nightly. This would pin the exact
   browser version our extension is tested against and allow local patches.
   Add the submodule under e.g. `third_party/lightpanda` and build it with a
-  mise task; the Zig backend would prefer the locally built binary over
-  `lightpanda` from PATH.
-- **MAX_LINE cap**: single messages over 64MB fail with LineTooLong.
+  mise task; the daemon plist would point at the locally built binary.
 
 # Computer-use extension (pi-cua)
 

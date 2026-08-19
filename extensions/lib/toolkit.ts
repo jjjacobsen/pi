@@ -1,32 +1,7 @@
-// Small shared helpers for the extension glue: abort/tool-error shaping for
+// Small shared helpers for the extension glue: tool-error shaping for
 // the HTTP-delegating tools (search, vision) and Codex subscription auth.
 
 import { calculateCost } from "@earendil-works/pi-ai/compat";
-
-// Bridge a backend call with abort support: Esc during the call kills the
-// backend (it may be blocked in an HTTP request) and spawns a fresh one, so
-// no request can outlive its turn. `label` names the tool in the abort error.
-export function withAbort(backend, call, signal, label = "tool call") {
-  if (!signal) return call;
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      reject(new Error(`${label} aborted`));
-      backend.restart();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    call.then(
-      (v) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(v);
-      },
-      (e) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(e);
-      },
-    );
-  });
-}
 
 // Shape a failure as a tool error: pi marks returned tool results as
 // successful and only thrown errors as failures, so this throws. The model

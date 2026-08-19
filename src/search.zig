@@ -51,7 +51,6 @@ const Request = struct {
 
 const Outcome = common.Outcome;
 const failOutcome = common.failOutcome;
-const respondOutcome = common.respondOutcome;
 
 // ---------------------------------------------------------------------------
 // Result formatting

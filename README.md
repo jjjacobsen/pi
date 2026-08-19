@@ -30,7 +30,8 @@ session for context
 ### browser - headless browser via Lightpanda
 
 Gives the model a real headless browser with tools to navigate, read,
-click, fill forms, and extract content from any page
+click, fill forms, and extract content from any page. Needs the lightpanda
+daemon running (`mise run daemon-start`), see docs/daemons.md
 
 ### cua - desktop computer use
 

@@ -1,12 +1,10 @@
 // pi-common: IO, JSON, and process helpers shared by the extension backends.
 //
-// The converted one-shot backends speak this protocol: one JSON request as
-// a single argv element, one JSON response envelope on stdout, exit 0/1.
-// The persistent backends (browser last) still speak the older protocol:
-// one JSON request line on stdin, one JSON response line on stdout. These
-// helpers are the shared part of both (line reader with deadline, buffered
-// writer, JSON-escaped responder, process runner). Each backend keeps its
-// own request parsing, op dispatch, and protocol structs.
+// Every backend here is one-shot: one JSON request as a single argv element,
+// one JSON response envelope on stdout, exit 0/1. These helpers are the
+// shared part of that (line reader with deadline, buffered writer,
+// JSON-escaped responder, process runner, HTTP-with-deadline worker). Each
+// backend keeps its own request parsing, op dispatch, and protocol structs.
 
 const std = @import("std");
 const posix = std.posix;
@@ -106,14 +104,6 @@ pub fn appendJsonEscaped(buf: *List, s: []const u8) !void {
     }
 }
 
-pub fn respond(alloc: Allocator, io: std.Io, id: i64, ok: bool, text: []const u8) !void {
-    var buf = List.init(alloc);
-    try buf.print("{{\"id\":{d},\"ok\":{s},\"{s}\":\"", .{ id, if (ok) "true" else "false", if (ok) "result" else "error" });
-    try appendJsonEscaped(&buf, text);
-    try buf.appendSlice("\"}\n");
-    try writeAllIo(io, std.Io.File.stdout(), buf.items);
-}
-
 // Runs a command and captures stdout/stderr, capped by max_out. A spawn or
 // stream failure becomes ok=false with the error name as stderr, so callers
 // never have to handle the error union.
@@ -158,9 +148,7 @@ pub fn failOutcome(arena: Allocator, comptime fmt: []const u8, args: anytype) !O
 
 // One-shot response: prints {"ok":true,"result":"..."} |
 // {"ok":false,"error":"..."} and exits 0/1. There is no id: one request
-// per process, so responses are self-addressing. Used by the converted
-// one-shot backends; the id-based respond/respondOutcome below remain for
-// the persistent backends (browser last).
+// per process, so responses are self-addressing.
 pub fn respondExit(alloc: Allocator, io: std.Io, ok: bool, text: []const u8) noreturn {
     var buf = List.init(alloc);
     buf.print("{{\"ok\":{s},\"{s}\":\"", .{ if (ok) "true" else "false", if (ok) "result" else "error" }) catch {};
@@ -186,28 +174,8 @@ pub fn respondOutcomeExit(arena: Allocator, io: std.Io, outcome: Outcome) noretu
     respondExit(arena, io, outcome.ok, if (outcome.ok) outcome.text else outcome.err);
 }
 
-// Main-loop response dispatch for an Outcome: ok -> result text, else error.
-// A non-null usage is appended to the ok response line as "","usage":<json>.
-pub fn respondOutcome(arena: Allocator, io: std.Io, id: i64, outcome: Outcome) void {
-    if (outcome.usage) |u| {
-        var buf = List.init(arena);
-        buf.print("{{\"id\":{d},\"ok\":true,\"result\":\"", .{id}) catch {};
-        appendJsonEscaped(&buf, outcome.text) catch {};
-        buf.appendSlice("\",\"usage\":") catch {};
-        buf.appendSlice(u) catch {};
-        buf.appendSlice("}\n") catch {};
-        writeAllIo(io, std.Io.File.stdout(), buf.items) catch {};
-        return;
-    }
-    if (outcome.ok) {
-        respond(arena, io, id, true, outcome.text) catch {};
-    } else {
-        respond(arena, io, id, false, outcome.err) catch {};
-    }
-}
-
 // ---------------------------------------------------------------------------
-// HTTP call with deadline (shared by pi-vision and pi-search)
+// HTTP call with deadline (shared by pi-vision, pi-search, pi-browser)
 //
 // Both backends POST to a remote endpoint on a worker thread so a hung
 // provider cannot stall the main loop. The worker runs with its own arena

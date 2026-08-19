@@ -1,25 +1,34 @@
 // pi-browser: thin TypeScript glue for the Zig headless-browser backend.
 //
-// pi extensions must be TypeScript modules, so this file only registers tool
-// schemas and bridges tool calls to the Zig backend (src/browser.zig) over a
-// newline-delimited JSON pipe. All browser logic lives in Zig, which talks
-// MCP to `lightpanda mcp`.
+// pi extensions must be TypeScript modules, so this file only registers
+// tool schemas and bridges tool calls to the Zig backend (src/browser.zig)
+// through the shared one-shot callZig helper (one JSON argv element, one
+// JSON envelope on stdout, exit). All browser logic lives in Zig, which
+// posts one MCP tools/call (JSON-RPC 2.0 over HTTP) to the lightpanda MCP
+// daemon that launchd keeps running (see docs/daemons.md). The daemon owns
+// the page: every call attaches to the same session, so the page stays
+// loaded between calls.
 //
-// Protocol (one JSON object per line):
-//   -> {"id":1,"tool":"goto","params":"{\"url\":\"...\"}"}   params is a JSON string
-//   <- {"id":1,"ok":true,"result":"..."} | {"id":1,"ok":false,"error":"..."}
+// Protocol:
+//   -> {"op":"goto","params":"{\"url\":\"...\"}"}   params is a JSON string
+//   <- {"ok":true,"result":"..."} | {"ok":false,"error":"..."}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type TProperties } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai/compat";
-import { createBackend, handleSessionShutdown } from "./lib/backend";
-import { withAbort } from "./lib/toolkit";
+import { callZig } from "./lib/zig";
+import { toolError } from "./lib/toolkit";
 
 const T = Type;
 const enumOpt = (values: string[], description: string) =>
   T.Optional(StringEnum(values, { description }));
 const intOpt = (description: string) => T.Optional(T.Integer({ description }));
 const strOpt = (description: string) => T.Optional(T.String({ description }));
+
+// Matches the Zig per-call deadline (CALL_TIMEOUT_MS in src/browser.zig).
+// The pi.exec timeout runs 10s longer so a slow call surfaces as the Zig
+// deadline's clean "TimedOut" envelope instead of a pi.exec kill.
+const CALL_TIMEOUT_MS = 120000;
 
 // name: tool name exposed to the model. mcp: lightpanda MCP tool behind it.
 // params are passed through as-is, so keys must match the MCP argument names.
@@ -78,10 +87,7 @@ const TOOLS: { name: string; mcp?: string; description: string; params: TPropert
     params: { query: T.String({ description: "The search query." }), timeout: intOpt("Timeout in ms. Default 10000.") } },
 ];
 
-const backend = createBackend("pi-browser", { onOk: (msg) => msg.result });
-
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
   for (const t of TOOLS) {
     pi.registerTool({
       name: t.name,
@@ -89,12 +95,21 @@ export default function (pi: ExtensionAPI) {
       description: t.description,
       parameters: T.Object(t.params),
       async execute(_toolCallId, params, signal) {
-        if (signal?.aborted) throw new Error("aborted");
-        // Esc mid-call kills and respawns the backend (it may be blocked in
-        // an MCP call that can wait 120s); the loaded page is lost, matching
-        // vision/search abort semantics.
-        const result = await withAbort(backend, backend.call(t.mcp, { params: JSON.stringify(params) }), signal, t.name);
-        return { content: [{ type: "text" as const, text: result }], details: {} };
+        // Esc aborts via pi.exec SIGTERM on the one-shot binary. The daemon
+        // keeps the page and the in-flight MCP call finishes on its own, so
+        // the next call just queues behind it (lightpanda serializes calls
+        // per session).
+        try {
+          const res = await callZig(
+            pi,
+            "pi-browser",
+            { op: t.mcp, params: JSON.stringify(params) },
+            { signal, timeout: CALL_TIMEOUT_MS + 10000 },
+          );
+          return { content: [{ type: "text" as const, text: res.result }], details: {} };
+        } catch (e) {
+          return toolError(e instanceof Error ? e.message : String(e));
+        }
       },
     });
   }

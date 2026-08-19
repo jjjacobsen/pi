@@ -1,14 +1,14 @@
 ---
 name: convert-extension
 description: >
-  Convert a custom pi extension in this repo from the persistent Zig backend
-  model to the one-shot model: one JSON request as a single argv element via
-  pi.exec, one JSON envelope on stdout, process exits. Covers the Zig main
-  rewrite, the glue rewrite, state file conventions under the agent dir, doc
-  updates, and verification. Use when converting an extension to one-shot,
-  when adding a new extension in the one-shot style, or when a converted
-  extension still uses the old createBackend bridge. Browser is the
-  exception: it stays persistent by design and is excluded for now.
+  Convert a custom pi extension from the old persistent Zig backend model to
+  the one-shot model: one JSON request as a single argv element via pi.exec,
+  one JSON envelope on stdout, process exits. Covers the Zig main rewrite,
+  the glue rewrite, state file conventions under the agent dir, doc updates,
+  and verification. Use when adding a new extension in the one-shot style or
+  when touching a legacy backend. All extensions are converted (browser last,
+  as a client to the lightpanda daemon); this skill documents the target
+  shape.
 metadata:
   author: jonah
   version: "1.0.0"
@@ -155,8 +155,9 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
 
 ### 5. Verify
 
-- `mise run build` compiles every backend (the unconverted ones must not
-  break: the old `respond`/`respondOutcome`/`readLine` stay in common.zig)
+- `mise run build` compiles every backend (cua keeps the shared
+  `readLine` for draining its child's stdout; the old id-based
+  `respond`/`respondOutcome` are gone with the browser conversion)
 - Smoke test the binary directly:
   - success path: `./zig-out/bin/pi-foo '{"op":"foo",...}'` prints the
     envelope, exits 0
@@ -169,7 +170,7 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
 
 - `docs/architecture.md`: rewrite the extension's section (protocol block,
   glue behavior, notes). The shared-code section at the top describes the
-  one-shot model and the persistent remnant, only touch it when a
+  one-shot model and the browser daemon exception, only touch it when a
   convention changes
 - `README.md`: the extension blurb, only when behavior text changed
 - `AGENTS.md`: only when a convention changes (the first conversion
@@ -187,7 +188,7 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
 | cua | screenshots dir hardcoded | trivial. accept the `agent_dir` request field (it already takes a `shots_dir` override). in-band driver errors still pass through as results |
 | lazygit | none | trivial. run op blocks until lazygit exits. TUI stop/start stays in the glue |
 | peon | config in peon.json, counters in memory | counters to peon-state.json (debounce timestamps, spam ring, last played, afplay pid). one-sound-at-a-time = read pid, kill, spawn, write pid. accept the `agent_dir` request field. sound extraction runs per event, it is idempotent |
-| browser | page in lightpanda process | NOT converted. persistent by design (forms, dev server validation). last user of backend.ts. see the browser section below |
+| browser | page lives in the lightpanda daemon | DONE (daemon model). page state is process state, so lightpanda runs as a launchd LaunchAgent started by `mise run daemon-start` (docs/daemons.md); the glue and zig stay one-shot and POST one MCP tools/call to `http://127.0.0.1:8931/mcp` with session `pi-main`. see the browser section below |
 
 ## Gotchas
 
@@ -207,23 +208,41 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
   children should install a SIGTERM handler (cua.zig pattern)
 - Custom tool results are not auto-truncated (the bash tool's 50 KiB cap
   is bash-only). Keep the Zig-side output caps
-- The old id-based `respond`/`respondOutcome` and `readLine` stay in
-  common.zig for the unconverted backends. Do not delete them
-  mid-transition. They die with the last non-browser conversion
+- The old id-based `respond`/`respondOutcome` were deleted from common.zig
+  with the browser conversion (browser was their last user). `readLine`
+  stays: cua uses it to drain the cua-driver child's stdout
 - Exit code is a fallback channel, the envelope is authoritative. The
   glue parses stdout JSON first and reports a killed process (timeout or
   abort) before the exit code
 - Do not add new stateful features to converted extensions without a
   state file. In-memory backend state is gone by design
 
-## Browser (excluded, for later)
+## Browser (daemon model)
 
-Two paths when it eventually converts:
-- keep the current persistent stdio bridge, trimmed to browser alone
-- or: the glue owns one persistent `lightpanda mcp --port N` process (the
-  only persistent process left in the setup), one-shot zig clients POST
-  JSON-RPC to `/mcp` with the `Mcp-Session-Id` header, and cookies
-  persist via `--cookie` / `--cookie-jar`. Page state, node ids, and
-  form state live in lightpanda, and Esc kills only the client, not the
-  page. Needs a spike to verify session survival across client
-  disconnects before committing to it
+The browser cannot be one-shot: the page, DOM, and node ids are process
+state in lightpanda, and `backendNodeId`s returned by one call must be
+usable by the next. The shape it ended up with:
+
+- lightpanda runs as a launchd LaunchAgent (`lightpanda mcp --port 8931`),
+  the only persistent process in the setup, owned by the OS not by pi.
+  `mise run daemon-start` installs the agent and starts it, `mise run
+  daemon-status` checks it. On a different machine: install lightpanda,
+  run daemon-start once (docs/daemons.md).
+- The glue and the Zig binary are one-shot like everything else. The Zig
+  client POSTs one MCP tools/call (JSON-RPC 2.0 over HTTP) to
+  `http://127.0.0.1:8931/mcp` and exits.
+- Session identity: every call sends the header `Mcp-Session-Id: pi-main`.
+  The server routes by header, keeps the page alive after the client
+  disconnects, serializes calls per session, and creates the session on
+  first use without an initialize handshake. All verified in a spike
+  against the 2026.08 nightly.
+- Esc kills only the one-shot client; the in-flight call finishes
+  server-side (~30s worst case) and the next call queues behind it. The
+  page is never lost to an abort.
+- Per-call deadline uses the shared `httpWithDeadline` worker from
+  common.zig (worker thread, socket shutdown on expiry), and results are
+  capped by the shared 64KiB WorkerSlot.
+
+This replaced the old persistent stdio bridge (`extensions/lib/backend.ts`,
+`createBackend`, `withAbort`, and the id-based `respond`/`respondOutcome`),
+all of which are deleted.

@@ -2,6 +2,14 @@
 run = "zig build"
 description = "Build all extension binaries"
 
+[tasks.daemon-status]
+run = "bash scripts/daemon-status.sh"
+description = "Check that the daemons (lightpanda, CuaDriver) are running"
+
+[tasks.daemon-start]
+run = "bash scripts/daemon-start.sh"
+description = "Start any daemon that is not running (lightpanda via launchd, CuaDriver via open)"
+
 [tools]
 hk = "1.54.0"
 gitleaks = "latest"
