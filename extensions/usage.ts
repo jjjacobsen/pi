@@ -427,8 +427,7 @@ class UsageComponent {
 
 	// Graph explorer state.
 	private graphMetric: GraphMetric = "cost";
-	private graphGroupBy: GraphGroupBy = "provider";
-	private graphCumulative = true;
+	private graphGroupBy: GraphGroupBy = "model";
 	private exportNote: { text: string; ok: boolean } | null = null;
 	private tableHidden = new Set<string>();
 	private tableFilter = "";
@@ -749,8 +748,6 @@ class UsageComponent {
 			this.graphGroupBy = GROUP_ORDER[(idx + 1) % GROUP_ORDER.length]!;
 			this.graphHidden.clear();
 			this.graphLegendIndex = 0;
-		} else if (matchesKey(data, "c")) {
-			this.graphCumulative = !this.graphCumulative;
 		} else if (matchesKey(data, "a")) {
 			this.graphHidden.clear();
 		} else if (matchesKey(data, "up")) {
@@ -777,7 +774,7 @@ class UsageComponent {
 		let name: string;
 		let content: string;
 		if (this.viewMode === "graph") {
-			const slice = `${this.graphCumulative ? "cumulative" : "per-bucket"}-${this.graphMetric}-by-${this.graphGroupBy}`;
+			const slice = `${this.graphMetric}-by-${this.graphGroupBy}`;
 			name = exportFileName("graph", this.activeTab, slice, "csv", now);
 			content = buildGraphCsv(this.buildGraphModelForView());
 		} else {
@@ -810,7 +807,6 @@ class UsageComponent {
 			period: this.activeTab,
 			metric: this.graphMetric,
 			groupBy: this.graphGroupBy,
-			cumulative: this.graphCumulative,
 			hidden: this.graphHidden,
 			bounds: this.data.bounds,
 		});
@@ -889,7 +885,7 @@ class UsageComponent {
 		const model = this.buildGraphModelForView();
 		const lines: string[] = [];
 
-		const modeLabel = `${this.graphCumulative ? "Cumulative" : "Per bucket"} ${METRIC_LABELS[this.graphMetric]} · ${GROUP_LABELS[this.graphGroupBy]}`;
+		const modeLabel = `${METRIC_LABELS[this.graphMetric]} · ${GROUP_LABELS[this.graphGroupBy]}`;
 		lines.push(th.fg("muted", modeLabel));
 		lines.push("");
 
@@ -1144,10 +1140,10 @@ class UsageComponent {
 		const variants =
 			this.viewMode === "graph"
 				? [
-						"[Tab/←→] period  [m] metric  [g] group  [c] cumulative  [↑↓/Enter] filter  [a] all  [e] export  [v] view  [q] close",
-						"[Tab] period  [m] metric  [g] group  [c] cumul  [↑↓/Enter] filter  [e] export  [v] view  [q] close",
-						"[m] metric  [g] group  [c] cumul  [↑↓] filter  [q] close",
-						"[m] [g] [c] [↑↓] [q]",
+						"[Tab/←→] period  [m] metric  [g] group  [↑↓/Enter] filter  [a] all  [e] export  [v] view  [q] close",
+						"[Tab] period  [m] metric  [g] group  [↑↓/Enter] filter  [e] export  [v] view  [q] close",
+						"[m] metric  [g] group  [↑↓] filter  [q] close",
+						"[m] [g] [↑↓] [q]",
 						"[q] close",
 				  ]
 				: this.viewMode === "limits"

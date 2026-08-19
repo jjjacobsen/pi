@@ -105,8 +105,8 @@ export function buildTableCsv(providers: ReadonlyMap<string, ProviderStats>, tot
 }
 
 /**
- * One row per time bucket, one column per visible series, values exactly as
- * plotted (per-bucket or cumulative, current metric).
+ * One row per time bucket, one column per visible series, cumulative values
+ * (running total up to that bucket, current metric).
  */
 export function buildGraphCsv(model: GraphModel): string {
 	const visible = model.series.filter((s) => !s.hidden);

@@ -43,7 +43,6 @@ export interface GraphOptions {
 	period: TabName;
 	metric: GraphMetric;
 	groupBy: GraphGroupBy;
-	cumulative: boolean;
 	/** Series keys hidden via the legend. */
 	hidden?: ReadonlySet<string>;
 	bounds: PeriodBounds;
@@ -52,7 +51,7 @@ export interface GraphOptions {
 export interface GraphSeries {
 	key: string;
 	label: string;
-	/** One value per bucket. Cumulative when options.cumulative. */
+	/** One value per bucket, cumulative (running total up to that bucket). */
 	points: number[];
 	/** Period total for this series (not affected by cumulative). */
 	total: number;
@@ -184,10 +183,10 @@ export function buildGraphModel(
 	const hidden = options.hidden ?? new Set<string>();
 	const series: GraphSeries[] = [];
 
-	// Active range per series (computed on raw per-bucket values, before any
-	// cumulative transform): lines are later drawn only between the first and
-	// last bucket with usage, so late-starting or retired series do not drag a
-	// flat zero/flat tail across the whole period.
+	// Active range per series (computed on raw per-bucket values, before the
+	// cumulative running total): lines are later drawn only between the first
+	// and last bucket with usage, so late-starting or retired series do not
+	// drag a flat zero/flat tail across the whole period.
 	const activeRange = (points: number[]): { firstIdx: number; lastIdx: number } => {
 		let firstIdx = -1;
 		let lastIdx = -1;
@@ -239,11 +238,10 @@ export function buildGraphModel(
 		});
 	}
 
-	if (options.cumulative) {
-		for (const s of series) {
-			let running = 0;
-			s.points = s.points.map((v) => (running += v));
-		}
+	// Cumulative: each series is a running total over its buckets.
+	for (const s of series) {
+		let running = 0;
+		s.points = s.points.map((v) => (running += v));
 	}
 
 	let yMax = 0;
