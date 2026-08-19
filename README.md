@@ -113,6 +113,14 @@ backend, see docs/architecture.md
 `/q` expands into an instruction telling the model not to change anything,
 then passes through whatever you type after it
 
+### goal - execute the approved plan
+
+`/goal` expands into the goal-mode handoff: write the approved plan to
+goal.md, update its status as you go, use subagents, don't stop until every
+item is done, and re-read goal.md after any compaction. Send it alone as
+the whole message after a plan you have already iterated and approved in
+conversation
+
 ## Skills
 
 ### repo-audit - whole-repo improvement audit
