@@ -70,12 +70,6 @@ untracked / staged counters, polled from `git status`), token/cost stats,
 and a context color set on absolute tokens (warning ~100k, error ~200k)
 instead of window percentage. `/footer` switches back to the built-in
 
-### btw - quick side questions via /btw
-
-`/btw [question]` opens a side chat inside the TUI that answers your
-question ELI15-style with the current model, without touching the main
-conversation. Replaces `@narumitw/pi-btw`
-
 ### vision - image analysis via a vision model
 
 `describe_image` lets a text-only model see images by handing them to a

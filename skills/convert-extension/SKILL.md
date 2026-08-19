@@ -82,7 +82,7 @@ In-memory backend state cannot survive a one-shot process. For each piece:
 - stateless: nothing to do
 - config: already on disk in the agent dir, keep
 - counters/timestamps/pids: move to a state file in the agent dir
-  (peon's debounce/spam ring, btw's thread)
+  (peon's debounce/spam ring)
 - session-scoped state pi needs: keep in the glue (session entries,
   round-tripped per request like goal)
 
@@ -150,7 +150,7 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
   `@earendil-works/pi-coding-agent`, `extensions/vision.ts` already does)
 - Keep forwarding `res.usage` (search, vision) and `toToolUsage` where the
   extension already uses it (vision)
-- Commands (commit, goal, btw, lazygit, peon) call `callZig` the same way
+- Commands (commit, goal, lazygit, peon) call `callZig` the same way
   from their handlers, with `ctx.signal` when available
 
 ### 5. Verify
@@ -187,7 +187,6 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
 | cua | screenshots dir hardcoded | trivial. accept the `agent_dir` request field (it already takes a `shots_dir` override). in-band driver errors still pass through as results |
 | lazygit | none | trivial. run op blocks until lazygit exits. TUI stop/start stays in the glue |
 | goal | glue round-trips state, session entries | glue-only. events fire one-shot spawns. restore on session_start unchanged |
-| btw | thread in backend arena | move the turns array to the glue (it already sees every message) or to a state file, pass it per op. also fixes the old RPC-mode child-pipe hang |
 | peon | config in peon.json, counters in memory | counters to peon-state.json (debounce timestamps, spam ring, last played, afplay pid). one-sound-at-a-time = read pid, kill, spawn, write pid. accept the `agent_dir` request field. sound extraction runs per event, it is idempotent |
 | browser | page in lightpanda process | NOT converted. persistent by design (forms, dev server validation). last user of backend.ts. see the browser section below |
 
@@ -195,7 +194,7 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
 
 - argv budget: macOS 1 MiB total for argv + env, no per-argument cap.
   Linux caps one argument at 128 KiB. Largest payloads today are ~24 KiB
-  (btw context, commit digest). If a payload ever grows past ~100 KiB,
+  (commit digest). If a payload ever grows past ~100 KiB,
   write it to a temp file and pass the path
 - Secrets in argv are visible to same-user processes via ps. No worse
   than auth.json on disk. Prefer env-derived keys (EXA_API_KEY) when

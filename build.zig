@@ -9,7 +9,6 @@ const bins = .{
     .{ .name = "pi-goal", .path = "src/goal.zig" },
     .{ .name = "pi-peon", .path = "src/peon.zig" },
     .{ .name = "pi-usage", .path = "src/usage.zig" },
-    .{ .name = "pi-btw", .path = "src/btw.zig" },
     .{ .name = "pi-vision", .path = "src/vision.zig" },
     .{ .name = "pi-search", .path = "src/search.zig" },
     .{ .name = "pi-cua", .path = "src/cua.zig" },
