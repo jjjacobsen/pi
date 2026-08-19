@@ -847,10 +847,8 @@ class UsageComponent {
 		}
 
 		if (this.viewMode === "limits") {
-			return clampLines(
-				[...this.renderTitle(width), ...this.renderTabs(width, getTableLayout(width)), ...this.renderLimits(width), ...this.renderHelp(width)],
-				width
-			);
+			// No period tabs: the quotas are provider-scoped, not period-scoped.
+			return clampLines([...this.renderTitle(width), ...this.renderLimits(width), ...this.renderHelp(width)], width);
 		}
 
 		const layout = getTableLayout(width);
