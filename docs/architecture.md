@@ -38,6 +38,36 @@ Per-backend protocol details are documented in each extension's section
 below; the one-shot wire format is identical everywhere: one JSON request
 as a single argv element, one JSON envelope on stdout.
 
+## One-shot design rules
+
+An extension is a one-shot child process: the glue spawns the Zig binary
+per call, the binary does its work, prints one envelope, and exits. Never
+bring back a persistent backend. The rules below are normative:
+
+- Wire protocol is fixed: one JSON request as a single argv element via
+  `pi.exec`, one `{"ok":true,"result":...}` / `{"ok":false,"error":...}`
+  envelope on stdout, exit 0/1. No `id` field: one request per process, so
+  responses are self-addressing.
+- State lives on disk under the agent dir, one file per extension
+  (`<name>.json` for config, `<name>-state.json` / `-cache.bin` for
+  counters), written atomically (temp file + rename). In-memory backend
+  state is gone by design: a new stateful feature must get a state file.
+- The glue is the single source of truth for the agent dir path: it
+  resolves `getAgentDir()` and passes it as `agent_dir` in the request.
+  The backend requires it and fails loudly when missing: no env fallback,
+  no hardcoded `~/.pi/agent`. State-free backends never ask for it.
+- Session state pi itself needs stays in pi: the glue round-trips session
+  entries back in per request instead of the backend reading them.
+- Constraints to work around: argv is size-limited (keep payloads under
+  ~100 KiB); secrets in argv are visible to same-user processes, prefer
+  env-derived keys; `pi.exec` has no stdin and no env override; the exit
+  code is a fallback channel, the envelope is authoritative; custom tool
+  results are not auto-truncated, so keep Zig-side output caps.
+
+The browser is the one exception: its page and DOM state is process state
+in lightpanda, so it runs as a launchd daemon and the one-shot client
+POSTs one MCP tools/call to it over HTTP (see its section below).
+
 # TypeScript glue tooling (tsconfig, tsc, hk)
 
 The extension glue imports `@earendil-works/pi-*` (pi-coding-agent, pi-tui,

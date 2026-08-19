@@ -131,8 +131,8 @@ pub fn gitRoot(arena: Allocator, io: std.Io, cwd: []const u8) !?[]const u8 {
 // One-shot response helpers (shared by the one-shot backends)
 
 // Result of a one-shot backend op. The search/vision-style backends
-// return one of these from every op and dispatch on ok/text/err in the main
-// loop (respondOutcome). `usage` is an optional pre-serialized JSON object
+// return one of these from every op and dispatch on ok/text/err via
+// respondOutcomeExit. `usage` is an optional pre-serialized JSON object
 // appended to the success response line (vision/search report the delegated
 // model's token accounting there).
 pub const Outcome = struct {

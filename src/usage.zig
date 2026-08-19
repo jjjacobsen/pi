@@ -1014,13 +1014,6 @@ fn httpGet(arena: Allocator, io: std.Io, url: []const u8, auth: ?[]const u8, ext
     return body.items;
 }
 
-const LimitWindow = struct {
-    id: []const u8,
-    label: []const u8,
-    duration_ms: ?f64,
-    resets_at: ?f64,
-};
-
 const Limit = struct {
     id: []const u8,
     label: []const u8,
