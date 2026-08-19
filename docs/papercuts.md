@@ -331,3 +331,25 @@ extensions/ as a hk step.
   exists (this sandbox has none, so `run` returned "cannot open controlling
   terminal /dev/tty" immediately, which conveniently exercised the full run
   path including the signal-handler install without needing a real tty).
+
+## 2026-08-18 — one-shot conversion (pi-cua)
+
+- `readLine` and `MAX_LINE` are NOT stdin-loop-only: cua keeps them after
+  conversion because the `cua-driver call` child's stdout is drained with
+  the shared poll-based `readLine` against its own fd and deadline. Removing
+  them while converting main (they serve the old persistent stdin loop)
+  broke the build. The conversion checklist's "drop readLine" step applies
+  only to the stdin loop, not the child drain.
+- Deadline handoff: the glue's pi.exec timeout must exceed the Zig-side
+  CALL_TIMEOUT_MS. The Zig deadline reaps the child and returns a clean
+  "TimedOut" ok=false envelope; if pi.exec times out first it SIGTERMs the
+  one-shot and the model sees a generic "killed" instead. Used
+  `timeout: CALL_TIMEOUT_MS + 10000` (130s) in the glue with the 120s Zig
+  bound unchanged. The 10s is pure margin; the envelope always wins.
+- `cua-driver call get_window_state` requires BOTH pid and window_id
+  ("Missing required integer field: window_id" otherwise), and a window on
+  another Space legitimately returns an empty tree with
+  `degraded: ax_window_unresolved` + `background: refused
+  (off_space_or_ax_unresolved)` + `escalation: recommended foreground`.
+  Both are correct driver behavior, easy to mistake for a regression when
+  smoke-testing off-Space windows.

@@ -7,8 +7,11 @@
 // the child lifecycle, deadlines, screenshot files, and result shaping
 // lives here; the TS glue only registers tool schemas.
 //
-// Request line:  {"id":1,"op":"call","tool":"get_window_state","params":"{\"pid\":123}"}
-// Response line: {"id":1,"ok":true,"result":"..."}  or  {"id":1,"ok":false,"error":"..."}
+// One request per process: the request arrives as one JSON argv element
+// (via pi.exec), the binary prints one JSON envelope to stdout and exits.
+// Request:  {"op":"call","agent_dir":"..","tool":"get_window_state","params":"{\"pid\":123}"}   params is a JSON string
+// Response: {"ok":true,"result":"..."}  or  {"ok":false,"error":"..."}
+// Exit:     0 on ok, 1 on protocol error, other on crash (trace on stderr)
 //
 // Result rules (learned from the real CLI):
 // - stdout carries the tool result as one JSON line. Non-empty stdout is
@@ -37,9 +40,8 @@ const Allocator = std.mem.Allocator;
 const common = @import("common.zig");
 const List = common.List;
 const nowMs = common.nowMs;
-const readLine = common.readLine;
-const writeAllIo = common.writeAllIo;
-const respond = common.respond;
+const readLine = common.readLine; // drains the cua-driver child's stdout line
+const respondExit = common.respondExit;
 
 const MAX_LINE = 64 * 1024 * 1024; // hard cap on a child stdout line
 const MAX_RESULT = 256 * 1024; // cap on the result text returned to the glue
@@ -47,11 +49,9 @@ const CALL_TIMEOUT_MS: i64 = 120_000; // default per-call bound (AX walks on Ele
 const SCREENSHOT_KEEP = 25; // newest screenshot files kept in the shots dir
 const MAX_STDERR = 16 * 1024; // cap on captured child stderr
 
-var g_terminate = std.atomic.Value(bool).init(false);
-
 const Request = struct {
-    id: i64,
     op: []const u8, // "call"
+    agent_dir: ?[]const u8 = null, // glue-resolved agent dir; screenshots live under {agent_dir}/cua-screenshots
     tool: []const u8 = "", // cua-driver MCP tool name, e.g. "get_window_state"
     params: []const u8 = "{}", // JSON string containing the raw arguments object
 };
@@ -78,9 +78,8 @@ fn shotExt(tool: []const u8) []const u8 {
     return if (mem.eql(u8, tool, "zoom")) "jpg" else "png";
 }
 
-fn shotsDirPath(arena: Allocator, environ: *std.process.Environ.Map) ![]const u8 {
-    const home = environ.get("HOME") orelse return error.NoHome;
-    return std.fmt.allocPrint(arena, "{s}/.pi/agent/cua-screenshots", .{home});
+fn shotsDirPath(arena: Allocator, agent_dir: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}/cua-screenshots", .{agent_dir});
 }
 
 fn lessThanNameDesc(_: void, a: []const u8, b: []const u8) bool {
@@ -107,8 +106,8 @@ fn pruneShots(io: std.Io, arena: Allocator, dir_path: []const u8) void {
 
 // Returns a fresh screenshot path in the shots dir (created on demand,
 // pruned to the newest SCREENSHOT_KEEP files).
-fn newShotPath(io: std.Io, arena: Allocator, environ: *std.process.Environ.Map, tool: []const u8) ![]const u8 {
-    const dir = try shotsDirPath(arena, environ);
+fn newShotPath(io: std.Io, arena: Allocator, agent_dir: []const u8, tool: []const u8) ![]const u8 {
+    const dir = try shotsDirPath(arena, agent_dir);
     std.Io.Dir.cwd().createDirPath(io, dir) catch |err| return err;
     pruneShots(io, arena, dir);
     return std.fmt.allocPrint(arena, "{s}/shot-{d}.{s}", .{ dir, nowMs(), shotExt(tool) });
@@ -333,7 +332,7 @@ const ElemInfo = struct {
 // error union on child trouble: spawn failures, timeouts, and empty-stdout
 // failures become ok=false results with the message, so the glue always
 // gets a clean response line.
-fn runCall(gpa: Allocator, io: std.Io, arena: Allocator, environ: *std.process.Environ.Map, req: *const Request) !CallResult {
+fn runCall(gpa: Allocator, io: std.Io, arena: Allocator, agent_dir: []const u8, req: *const Request) !CallResult {
     const bin = "cua-driver";
     const timeout_ms = CALL_TIMEOUT_MS;
 
@@ -342,7 +341,7 @@ fn runCall(gpa: Allocator, io: std.Io, arena: Allocator, environ: *std.process.E
     try argv_list.append(arena, "call");
     var shot_path: ?[]const u8 = null;
     if (isImageTool(req.tool)) {
-        shot_path = newShotPath(io, arena, environ, req.tool) catch |err| {
+        shot_path = newShotPath(io, arena, agent_dir, req.tool) catch |err| {
             return .{ .ok = false, .text = try std.fmt.allocPrint(arena, "screenshot path: {s}", .{@errorName(err)}) };
         };
         try argv_list.append(arena, "--screenshot-out-file");
@@ -419,43 +418,26 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    const S = struct {
-        fn handler(_: posix.SIG) callconv(.c) void {
-            g_terminate.store(true, .seq_cst);
-        }
-    };
-    const sa = posix.Sigaction{
-        .handler = .{ .handler = S.handler },
-        .mask = posix.sigemptyset(),
-        .flags = 0,
-    };
-    posix.sigaction(posix.SIG.TERM, &sa, null);
-    posix.sigaction(posix.SIG.INT, &sa, null);
+    const argv = init.minimal.args.vector;
+    if (argv.len < 2) {
+        std.debug.print("usage: pi-cua '<request json>'\n", .{});
+        std.process.exit(2);
+    }
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    var stdin_buf = List.init(gpa);
-    defer stdin_buf.deinit();
+    const arena = arena_state.allocator();
 
-    while (!g_terminate.load(.seq_cst)) {
-        _ = arena_state.reset(.retain_capacity);
-        const arena = arena_state.allocator();
+    const req = json.parseFromSlice(Request, arena, std.mem.sliceTo(argv[1], 0), .{ .ignore_unknown_fields = true }) catch |err|
+        respondExit(arena, io, false, @errorName(err));
 
-        const line = readLine(posix.STDIN_FILENO, &stdin_buf, MAX_LINE, arena, null) catch |err| {
-            std.debug.print("pi-cua: {s}\n", .{@errorName(err)});
-            break;
-        } orelse break;
-        if (line.len == 0) continue;
+    const res: CallResult = if (mem.eql(u8, req.value.op, "call")) blk: {
+        // Screenshots live under the glue-resolved agent dir; fail loudly
+        // when it is missing (no ~/.pi/agent fallback, per state rules).
+        const agent_dir = req.value.agent_dir orelse break :blk .{ .ok = false, .text = "missing agent_dir" };
+        if (agent_dir.len == 0) break :blk .{ .ok = false, .text = "missing agent_dir" };
+        break :blk runCall(gpa, io, arena, agent_dir, &req.value) catch |err| .{ .ok = false, .text = @errorName(err) };
+    } else .{ .ok = false, .text = "unknown op" };
 
-        const req = json.parseFromSlice(Request, arena, line, .{ .ignore_unknown_fields = true }) catch |err| {
-            respond(arena, io, 0, false, @errorName(err)) catch {};
-            continue;
-        };
-
-        const res = runCall(gpa, io, arena, init.environ_map, &req.value) catch |err| CallResult{
-            .ok = false,
-            .text = @errorName(err),
-        };
-        respond(arena, io, req.value.id, res.ok, res.text) catch {};
-    }
+    respondExit(arena, io, res.ok, res.text);
 }

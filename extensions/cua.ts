@@ -1,26 +1,28 @@
 // pi-cua: thin TypeScript glue for the Zig computer-use backend.
 //
-// pi extensions must be TypeScript modules, so this file only registers the
-// computer_* tool schemas and bridges calls to src/cua.zig over the shared
-// newline-delimited JSON pipe. All driver logic lives in Zig, which spawns
-// `cua-driver call <tool> <json-args>` per call against the CuaDriver
-// daemon (https://github.com/trycua/cua).
+// pi extensions must be TypeScript modules, so this file registers the
+// computer_* tool schemas and calls src/cua.zig as a one-shot process: the
+// request travels as one JSON argv element via pi.exec (shared callZig
+// helper), the binary prints one JSON envelope to stdout and exits. All
+// driver logic lives in Zig, which spawns `cua-driver call <tool> <json-args>`
+// per call against the CuaDriver daemon (https://github.com/trycua/cua).
 //
-// Screenshots are written to disk by the backend (~/.pi/agent/cua-screenshots/)
+// Screenshots are written to disk by the backend ({agent_dir}/cua-screenshots/)
 // and the result carries the path; the model views pixels by calling the
 // existing describe_image tool on that path. The AX tree alone is often
 // enough (element_token actions need no pixels), so the model controls when
 // vision tokens are spent.
 //
 // Protocol:
-//   -> {"id":1,"op":"call","tool":"get_window_state","params":"{\"pid\":123}"}   params is a JSON string
-//   <- {"id":1,"ok":true,"result":"..."} | {"id":1,"ok":false,"error":"..."}
+//   -> {"op":"call","agent_dir":"...","tool":"get_window_state","params":"{\"pid\":123}"}   params is a JSON string
+//   <- {"ok":true,"result":"..."} | {"ok":false,"error":"..."}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Type, type TProperties } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai/compat";
-import { createBackend, handleSessionShutdown } from "./lib/backend";
-import { withAbort } from "./lib/toolkit";
+import { callZig } from "./lib/zig";
+import { toolError } from "./lib/toolkit";
 
 const T = Type;
 const enumOpt = (values: string[], description: string) =>
@@ -28,6 +30,11 @@ const enumOpt = (values: string[], description: string) =>
 const intOpt = (description: string) => T.Optional(T.Integer({ description }));
 const numOpt = (description: string) => T.Optional(T.Number({ description }));
 const strOpt = (description: string) => T.Optional(T.String({ description }));
+
+// Matches the Zig per-call deadline (CALL_TIMEOUT_MS in src/cua.zig). The
+// pi.exec timeout runs 10s longer so a slow call surfaces as the Zig
+// deadline's clean "TimedOut" envelope instead of a pi.exec kill.
+const CALL_TIMEOUT_MS = 120000;
 
 // Shared schema fragments: every element-addressed action accepts the same
 // targeting fields, so the model learns one addressing pattern. Prefer
@@ -87,11 +94,7 @@ const TOOLS: { name: string; mcp?: string; description: string; params: TPropert
     params: { pid: T.Integer({ description: "PID of the process to terminate." }) } },
 ];
 
-const backend = createBackend("pi-cua", { onOk: (msg) => msg.result });
-
 export default function cuaExtension(pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
-
   for (const t of TOOLS) {
     pi.registerTool({
       name: t.name,
@@ -99,13 +102,20 @@ export default function cuaExtension(pi: ExtensionAPI) {
       description: t.description,
       parameters: T.Object(t.params),
       async execute(_toolCallId, params, signal) {
-        if (signal?.aborted) throw new Error("aborted");
-        // Esc mid-call kills and respawns the backend (it may be blocked in
-        // a driver call that can wait 120s); the in-flight driver call is
-        // orphaned and finishes on its own, matching vision/search abort
-        // semantics.
-        const result = await withAbort(backend, backend.call("call", { tool: t.mcp, params: JSON.stringify(params) }), signal, t.name);
-        return { content: [{ type: "text" as const, text: result }], details: {} };
+        // Esc aborts via pi.exec SIGTERM on the one-shot binary; the
+        // in-flight `cua-driver call` is short-lived and finishes on its
+        // own (matching vision/search abort semantics).
+        try {
+          const res = await callZig(
+            pi,
+            "pi-cua",
+            { op: "call", agent_dir: getAgentDir(), tool: t.mcp, params: JSON.stringify(params) },
+            { signal, timeout: CALL_TIMEOUT_MS + 10000 },
+          );
+          return { content: [{ type: "text" as const, text: res.result }], details: {} };
+        } catch (e) {
+          return toolError(e instanceof Error ? e.message : String(e));
+        }
       },
     });
   }

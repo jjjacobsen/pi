@@ -235,8 +235,8 @@ and the model controls when vision tokens are spent.
 
 ```
 pi (coding agent)
-  └─ extensions/cua.ts     TS glue: 19 computer_* tool schemas + stdio bridge
-       └─ src/cua.zig      Zig backend: spawns `cua-driver call` per request
+  └─ extensions/cua.ts     TS glue: 19 computer_* tool schemas, one-shot callZig
+       └─ src/cua.zig      Zig backend: spawns `cua-driver call` per request, exits
             └─ cua-driver  CLI proxy to the CuaDriver daemon (CuaDriver.app on macOS)
 ```
 
@@ -244,25 +244,28 @@ Why this split:
 
 - pi extensions must be TypeScript modules, so the glue registers the tool
   schemas (one per cua-driver MCP tool; params pass through as a JSON
-  string, so the keys must match the MCP argument names) and bridges calls
-  over the shared newline-delimited JSON pipe. Esc aborts by killing and
-  respawning the backend (shared `withAbort`), so no driver call outlives
-  its turn; the in-flight `cua-driver call` finishes on its own (it is a
-  short-lived CLI that proxies to the daemon).
+  string, so the keys must match the MCP argument names) and forwards each
+  call to src/cua.zig as a one-shot process via the shared `callZig`
+  helper (one JSON argv element, one JSON envelope on stdout, exit). Esc
+  aborts by pi.exec SIGTERMing the one-shot binary, so no driver call
+  outlives its turn; the in-flight `cua-driver call` is a short-lived CLI
+  that finishes on its own.
 - Everything else is Zig: the argv build, the child lifecycle, the 120s
   deadline, stdout/stderr handling, the screenshot directory, and the
   get_window_state extraction.
 
-## Protocol (newline-delimited JSON on stdin/stdout)
+## Protocol (one-shot: argv JSON in, envelope out)
 
 ```json
-{"id":1,"op":"call","tool":"get_window_state","params":"{\"pid\":123}"}  -> Zig
-{"id":1,"ok":true,"result":"..."}                                            <- Zig
-{"id":1,"ok":false,"error":"..."}                                           <- failures
+{"op":"call","agent_dir":"...","tool":"get_window_state","params":"{\"pid\":123}"}  -> Zig (argv[1])
+{"ok":true,"result":"..."}                                                               <- Zig
+{"ok":false,"error":"..."}                                                              <- failures
 ```
 
 `params` is a JSON string containing the raw arguments object (same shape
-as pi-browser). The glue sends only op/tool/params.
+as pi-browser). The glue sends op/agent_dir/tool/params. The binary
+requires `agent_dir` (pi resolves it via `getAgentDir()`) and fails loudly
+when missing: screenshots live under `{agent_dir}/cua-screenshots/`.
 
 ## Zig behavior
 
@@ -287,9 +290,12 @@ as pi-browser). The glue sends only op/tool/params.
     shared poll-based readLine; on expiry the child is SIGTERMed and
     reaped (`child.kill` closes its pipes, which also unblocks the stderr
     thread). A missing binary surfaces "failed to spawn ...", not a hang.
+    The glue's pi.exec timeout runs 10s longer than this deadline, so a
+    slow call surfaces as the deadline's clean "TimedOut" envelope
+    instead of a pi.exec kill.
 - **Screenshots**: image tools (get_window_state, get_desktop_state, zoom)
   always get `--screenshot-out-file` pointing into
-  `~/.pi/agent/cua-screenshots/` (shot-<millis>.png/.jpg). The response
+  `{agent_dir}/cua-screenshots/` (shot-<millis>.png/.jpg). The response
   does NOT echo the path back (the docs claim `screenshot_file_path`, the
   real CLI omits it), so the backend tracks it: get_window_state gets it
   appended by the extraction, the other two get a `screenshot: <path>`
@@ -328,10 +334,11 @@ background attempt did not land.
 
 ## Notes
 
-- The glue unrefs the backend child and its pipes (shared `createBackend`),
-  registers `session_shutdown` to tear it down (kill on quit/reload, reset
-  on session replacement, shared `handleSessionShutdown`), and the backend
-  self-terminates on stdin EOF like the other backends.
+- The glue and binary never outlive the call: no persistent process, no
+  lifecycle management, no session_shutdown wiring. A crash in the binary
+  cannot take down pi. Screenshots live under `{agent_dir}/cua-screenshots/`
+  (`getAgentDir()` resolves the same directory whether the session is a
+  default install or a rebranded/`PI_CODING_AGENT_DIR` build).
 - Requires the Cua Driver daemon running and macOS Accessibility + Screen
   Recording granted to CuaDriver.app (`cua-driver permissions status`).
   Standard permission mode is assumed; approval prompts surface as driver
