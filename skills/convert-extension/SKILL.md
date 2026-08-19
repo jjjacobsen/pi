@@ -63,7 +63,7 @@ before converting anything else.
   `pi-usage-cache.bin`, `cua-screenshots/`
 - Write state atomically: temp file + rename (the usage cache pattern)
 - State that pi itself needs stays in pi: `pi.appendEntry()` session
-  entries (goal already round-trips its state this way)
+  entries (the glue round-trips them back in per request)
 - The old env-with-fallback resolution (`agentDir` in `src/usage.zig`,
   the hardcoded `~/.pi/agent` in `peon.zig` and `cua.zig`) dies with
   each conversion. The `agent_dir` request field is the replacement shape
@@ -84,7 +84,7 @@ In-memory backend state cannot survive a one-shot process. For each piece:
 - counters/timestamps/pids: move to a state file in the agent dir
   (peon's debounce/spam ring)
 - session-scoped state pi needs: keep in the glue (session entries,
-  round-tripped per request like goal)
+  round-tripped per request)
 
 ### 3. Convert the Zig main
 
@@ -150,7 +150,7 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
   `@earendil-works/pi-coding-agent`, `extensions/vision.ts` already does)
 - Keep forwarding `res.usage` (search, vision) and `toToolUsage` where the
   extension already uses it (vision)
-- Commands (commit, goal, lazygit, peon) call `callZig` the same way
+- Commands (commit, lazygit, peon) call `callZig` the same way
   from their handlers, with `ctx.signal` when available
 
 ### 5. Verify
@@ -186,7 +186,6 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
 | vision | config in vision.json | trivial. api key travels in argv (same-user visibility, acceptable, see gotchas). keep usage accounting, sips, retry |
 | cua | screenshots dir hardcoded | trivial. accept the `agent_dir` request field (it already takes a `shots_dir` override). in-band driver errors still pass through as results |
 | lazygit | none | trivial. run op blocks until lazygit exits. TUI stop/start stays in the glue |
-| goal | glue round-trips state, session entries | glue-only. events fire one-shot spawns. restore on session_start unchanged |
 | peon | config in peon.json, counters in memory | counters to peon-state.json (debounce timestamps, spam ring, last played, afplay pid). one-sound-at-a-time = read pid, kill, spawn, write pid. accept the `agent_dir` request field. sound extraction runs per event, it is idempotent |
 | browser | page in lightpanda process | NOT converted. persistent by design (forms, dev server validation). last user of backend.ts. see the browser section below |
 

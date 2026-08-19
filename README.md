@@ -43,11 +43,6 @@ Driver daemon running with Accessibility and Screen Recording granted
 `/lg` hands the whole terminal to lazygit (while pi keeps running in the
 background), so you can browse commits and stage diffs the old-fashioned way
 
-### goal - autonomous goal loop via /goal
-
-`/goal <objective>` runs the agent on its own until the job is done or it
-hits your time and token limits, never asking questions mid-run
-
 ### peon - Warcraft sounds via /peon
 
 Plays Warcraft 3 orc peon and human peasant voice lines when things

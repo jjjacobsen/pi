@@ -1,19 +1,7 @@
 // Small shared helpers for the extension glue: abort/tool-error shaping for
-// the HTTP-delegating tools (search, vision) and command argument
-// completions for commands that take a subcommand or flag (goal).
+// the HTTP-delegating tools (search, vision) and Codex subscription auth.
 
 import { calculateCost } from "@earendil-works/pi-ai/compat";
-
-// Argument completions for a command with a fixed set of words: complete the
-// current token, stop once a space follows (multi-word args are free-form).
-// Returns AutocompleteItem[] or null when there is nothing to suggest.
-export function prefixCompletions(words, prefix) {
-  const trimmed = (prefix ?? "").trimStart();
-  if (!trimmed) return words.map((w) => ({ value: w, label: w }));
-  if (trimmed.includes(" ")) return null;
-  const filtered = words.filter((w) => w.startsWith(trimmed));
-  return filtered.length > 0 ? filtered.map((w) => ({ value: w, label: w })) : null;
-}
 
 // Bridge a backend call with abort support: Esc during the call kills the
 // backend (it may be blocked in an HTTP request) and spawns a fresh one, so

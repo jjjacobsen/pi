@@ -51,8 +51,7 @@
 //   spawns a fresh child instead of writing into a dead pipe and hanging.
 //
 // hooks.onOk(msg) picks the resolved value (browser resolves the raw result
-// string); hooks.onError(msg) returns the error message (goal adds a
-// fallback when the backend omits "error").
+// string); hooks.onError(msg) picks the error message.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";

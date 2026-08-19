@@ -6,7 +6,6 @@ const bins = .{
     .{ .name = "pi-browser", .path = "src/browser.zig" },
     .{ .name = "pi-commit", .path = "src/commit.zig" },
     .{ .name = "pi-lg", .path = "src/lazygit.zig" },
-    .{ .name = "pi-goal", .path = "src/goal.zig" },
     .{ .name = "pi-peon", .path = "src/peon.zig" },
     .{ .name = "pi-usage", .path = "src/usage.zig" },
     .{ .name = "pi-vision", .path = "src/vision.zig" },

@@ -32,8 +32,8 @@ pub fn nowMs() i64 {
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
 
-// Epoch wall clock in milliseconds. Goal deadlines must be comparable to the
-// glue's wall time (Date.now()), so goal.zig aliases this instead of nowMs.
+// Epoch wall clock in milliseconds, comparable to the glue's wall time
+// (Date.now()), unlike the monotonic nowMs.
 pub fn nowRealtimeMs() i64 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;

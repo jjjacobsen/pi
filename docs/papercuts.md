@@ -48,7 +48,7 @@
   are freed. Treat it as a `GitResult.ok == false` with the error name as
   the message.
 
-## 2026-08-15 (goal extension)
+## 2026-08-15 (extension glue gotchas)
 
 - pi's `getArgumentCompletions` must return `AutocompleteItem[]`
   (`{value, label, description?}`), not plain strings. Strings crash the
@@ -60,7 +60,7 @@
   instead.
 - Extensions that spawn a backend child with piped stdio keep pi's event
   loop alive: `pi -p` never exits after print mode (browser.ts, commit.ts,
-  lazygit.ts, goal.ts all had this). Unref the child and its stdin/stdout
+  lazygit.ts all had this). Unref the child and its stdin/stdout
   so pi can exit; the backend self-terminates on stdin EOF.
 
 ## 2026-08-15 (shared backend.ts)
@@ -92,7 +92,7 @@ extensions/ as a hk step.
   the response line never reaches the glue, and the pending promise never
   settles, even on child exit. Backends hang around as idle processes until
   pi exits. Affects every createBackend extension (commit, lg, browser,
-  goal, peon). TUI mode is fine
+  peon). TUI mode is fine
 - Workaround: guard commands that need the backend with `ctx.mode !== "tui"`
   and refuse before touching the backend
 
