@@ -1147,3 +1147,74 @@ extensions, so there is no protocol and no backend binary.
   and on explicit footer disable.
 - Extension statuses set via `ctx.ui.setStatus()` still render on a third
   footer line, same as the built-in footer.
+
+# Subagent extension (extensions/subagent.ts)
+
+## Goal
+
+Hand off meaty, self-contained tasks to an isolated sub-session so the
+caller's context window stays low. The main session only ever contains
+the task string and the returned summary; the subagent's full transcript
+lives in its own session. The tool is `subagent` with one parameter, the
+task text. Same deliverable shape as the browser: a long-lived thing
+that cannot fit the one-shot model gets a structural exception, here the
+exception is *another pi agent loop* instead of a daemon.
+
+## Architecture
+
+Pure TypeScript, no Zig backend. The "backend" is pi's own agent loop:
+every `subagent` call runs a second, fully isolated `AgentSession` via
+the SDK (`createAgentSession`) in the same process, prompts it with the
+task, waits for it to finish, and returns only its final message as the
+tool result.
+
+- One `AgentSession` per tool call, fully independent. Pi executes
+  sibling tool calls from one assistant turn concurrently, so several
+  `subagent` calls in one turn run several subagents in parallel. No
+  shared mutable state between sub-sessions.
+- Sub-session tools: the built-ins (`read`, `bash`, `edit`, `write`)
+  plus the allowlisted extensions `search.ts` (`web_search`) and
+  `vision.ts` (`describe_image`). A `DefaultResourceLoader` with an
+  `extensionsOverride` filters every other extension out by source file
+  name, so shared-daemon extensions (`lightpanda`, `cua`) never start
+  here, `subagent` cannot recurse into itself, and the sub-session's
+  system prompt stays small. The explicit `tools` allowlist is the
+  second guard: only the six names are ever callable. Skills and
+  AGENTS.md context files load normally, so the subagent follows the
+  same project conventions.
+- Same model and thinking level as the caller (`ctx.model` /
+  `ctx.thinkingLevel`). No per-call override by design.
+- Transcripts persist under `<agent_dir>/subagents/<ts>_<id>.jsonl`
+  (a `SessionManager.create` with a custom session dir), link the main
+  session via `parentSession`, and can be resumed with
+  `SessionManager.open`. `/usage` never sees them: the usage collect
+  scan only reads `<agent_dir>/sessions`.
+- Cost accounting: the combined usage of the sub-session's assistant
+  messages is summed and returned on the tool result's `usage` field,
+  which pi persists, so `/usage` aggregates the subagent spend under the
+  caller's session exactly like `web_search` costs.
+- The model catalog + auth runtime (`ModelRuntime.create`) and the
+  filtered loader are created once per process (lazy) and shared across
+  calls. `pi`'s cwd is fixed per process, so the loader's cwd cannot
+  drift.
+
+## Glue behavior
+
+- One tool `subagent`, one `task` parameter. The description tells the
+  main agent when to delegate and to fire independent tasks as parallel
+  calls.
+- Live progress: `text_delta` events stream into `onUpdate` (rolling
+  tail, capped for display) so the TUI shows the subagent working.
+- Cancellation: the tool's abort signal calls `session.abort()`, the
+  model call stops, and the partial transcript stays on disk.
+- The final assistant message is the report: extracted, truncated with
+  `truncateHead` to the tool result limit, and returned with the
+  transcript path so the caller can point follow-up work at it.
+
+## Notes
+
+- Startup per call is heavier than a Zig one-shot (loader reload +
+  two extension factories + agent loop), around a second, which is
+  irrelevant next to the LLM run it gates.
+- Concurrency is unbounded for now: N parallel subagents is N streams
+  on the caller's API key. Rate limits are the practical ceiling.
