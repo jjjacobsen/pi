@@ -3,11 +3,10 @@
 Mirror of the `packages` list in `~/.pi/agent/settings.json`. Refresh this
 file whenever packages change.
 
-## Pinned packages
+## 3rd party packages
 
-| Package | Version |
-| ------- | ------- |
-| pi-transcribe (ssh) |  |
+- pi-transcribe (ssh)
+- @ff-labs/pi-fff (npm)
 
 ## Local installs
 
