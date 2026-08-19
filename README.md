@@ -138,11 +138,14 @@ then passes through whatever you type after it
 
 ### goal - execute the approved plan
 
-`/goal` expands into the goal-mode handoff: write the approved plan to
-goal.md, update its status as you go, use subagents, don't stop until every
-item is done, and re-read goal.md after any compaction. Send it alone as
-the whole message after a plan you have already iterated and approved in
-conversation
+`/goal <answers>` expands your final answers, a blank line, then the
+goal-mode handoff: write the approved plan to goal.md, update its status as
+you go, use subagents, don't stop until every item is done, and re-read
+goal.md after any compaction. Type your answers to the last plan questions
+on the same line after `/goal`, so `/goal yes to x, don't do y` becomes
+your answers followed by the goal instructions. Bare `/goal` expands to
+"Now go do the implementation." followed by the instructions, for when
+the plan was already fully approved in conversation
 
 ## Skills
 
