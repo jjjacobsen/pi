@@ -8,6 +8,24 @@ Extensions run with a lot of power, so code from an untrusted person is an
 easy place to slip something dangerous in. A few extensions from people or
 orgs I know and trust are welcome when rewriting them myself adds no value
 
+## Setup on a new machine
+
+1. `git clone git@github.com:jjjacobsen/pi.git` and `cd` in
+2. `mise trust` then `mise install` to pull the pinned tools (zig, hk, ...)
+3. `mise run build` to compile the extension binaries into `zig-out/bin`
+4. `brew install lightpanda-io/browser/lightpanda`
+5. `/bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"`, then grant
+   CuaDriver.app Accessibility and Screen Recording in System Settings
+6. `mise run daemon-start` - renders the LaunchAgent plists into
+   `~/Library/LaunchAgents` (com.pijon.lightpanda, com.trycua.cua-driver) and
+   starts both daemons. Confirm with `mise run daemon-status`: both should
+   report running
+7. Install the packages into pi, then restart pi
+   - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
+   - `pi install git:git@github.com:earendil-works/pi-transcribe`
+   - `pi install npm:@ff-labs/pi-fff`
+8. Export `EXA_API_KEY` before starting pi (the search extension needs it)
+
 ## Layout
 
 - `extensions/` - TypeScript glue that connects pi to the Zig backends

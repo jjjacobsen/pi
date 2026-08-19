@@ -117,15 +117,10 @@ with the vendor's label and KeepAlive. launchd starts it at login
   uninstall: bootout, then delete
   `~/Library/LaunchAgents/com.trycua.cua-driver.plist`.
 
-## Setup on a different computer
-
-1. Install lightpanda: `brew install lightpanda-io/browser/lightpanda`
-2. Install CuaDriver.app from https://github.com/trycua/cua, grant
-   Accessibility and Screen Recording in System Settings
-3. In the repo root run `mise install` to install the pinned tools (zig, hk, ...) from `mise.toml`
-4. `mise run daemon-start` — installs the LaunchAgent, starts lightpanda
-   and CuaDriver
-5. `mise run daemon-status` to confirm both are running
+Full machine setup lives in the top of the repo README (Setup on a new
+machine). The only daemon-relevant part is that `daemon-start` renders these
+plists on first run, so a second computer needs lightpanda and CuaDriver
+installed and nothing else.
 
 The port 8931 is a constant in two places: `src/lightpanda.zig` (DAEMON_PORT)
 and `scripts/com.pijon.lightpanda.plist`. If it ever needs to change, edit
