@@ -59,7 +59,7 @@ third-party pi-peon-ping extension
 ### usage - usage dashboard via /usage
 
 `/usage` shows how many tokens and dollars you've burned, with graphs,
-tables, cost insights, and provider quota bars. Replaces
+tables, and provider quota bars. Replaces
 `@tmustier/pi-usage-extension`; the limits view is adapted from
 omp (can1357/oh-my-pi)
 

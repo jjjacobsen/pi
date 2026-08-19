@@ -713,7 +713,7 @@ counter resets to its default for the event.
 ## Goal
 
 `/usage` is a usage dashboard for the pi agent: per-period usage stats
-(graphs, table, insights) plus live provider quota limits (OpenAI Codex
+(graphs, table) plus live provider quota limits (OpenAI Codex
 subscription and OpenCode Go). Replaces `@tmustier/pi-usage-extension`
 (removed from `~/.pi/agent/settings.json` packages; same command name). The
 original extension's UI is ported as-is, its data pipeline is rewritten in
@@ -727,18 +727,18 @@ pi (coding agent)
   └─ extensions/usage.ts            TS glue: /usage command, TUI rendering
        └─ extensions/lib/usage/     types.ts, graph.ts, export.ts (ported)
             └─ src/usage.zig        Zig backend: scan/parse/cache/aggregate,
-                                    insights, provider-limit fetches
+                                    provider-limit fetches
 ```
 
 Why this split:
 
 - pi's inline TUI (`ctx.ui.custom`) is TypeScript-only, so all rendering
-  stays in TS. The three original views (graph/table/insights) and their
+  stays in TS. The two original views (graph/table) and their
   keybindings are ported from the tmuster extension nearly verbatim; the
   limits view renders the quota data the backend fetches.
 - Everything slow lives in Zig: session-JSONL scanning and parsing, the
   on-disk cache, aggregation into the five periods plus hourly buckets,
-  insights, and the HTTPS fetches for provider limits.
+  and the HTTPS fetches for provider limits.
 
 ## Protocol (one JSON request as a single argv element, one JSON envelope on stdout)
 
@@ -754,8 +754,8 @@ Why this split:
   rides the request (the glue's `getAgentDir`, pi's own resolution, never
   an env fallback). The backend scans `<agent_dir>/sessions` for `.jsonl`
   files, re-parses only files whose (size, mtime) changed since the binary
-  cache (`<agent_dir>/pi-usage-cache.bin`), aggregates, computes insights,
-  and returns one JSON payload. A file that fails to stat/read/parse keeps
+  cache (`<agent_dir>/pi-usage-cache.bin`), aggregates, and returns one JSON
+  payload. A file that fails to stat/read/parse keeps
   its cached rows and adds a warning to the payload, so a partial scan is
   never persisted as success or reported as clean.
 - `limits` fetches quota over HTTPS on the main thread; a hung network is
@@ -780,8 +780,7 @@ Why this split:
   interned string table, then per file a fixed-size message record set
   (74 bytes per message). Writes go through a temp file + rename.
 - Dedupe of copied branch history uses a hash of (auxiliary, sourceId,
-  timestamp, token fingerprint); insights text and thresholds are ported
-  verbatim from the original extension (data.ts computeInsights).
+  timestamp, token fingerprint).
 
 ## Notes
 

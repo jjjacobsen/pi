@@ -5,7 +5,7 @@
 // and numeric session counts (the Zig backend sends counts, not sets).
 
 import { join } from "node:path";
-import type { Insight, ProviderStats, TotalStats } from "./types";
+import type { ProviderStats, TotalStats } from "./types";
 import type { GraphModel } from "./graph";
 
 /**
@@ -115,22 +115,6 @@ export function buildGraphCsv(model: GraphModel): string {
 		lines.push(csvLine([new Date(model.bucketStarts[i]!).toISOString(), ...visible.map((s) => s.points[i] ?? 0)]));
 	}
 	return lines.join("\n") + "\n";
-}
-
-/** Structured JSON of the period's insights plus headline totals. */
-export function buildInsightsJson(period: string, totals: TotalStats, insights: Insight[]): string {
-	return (
-		JSON.stringify(
-			{
-				period,
-				generatedAt: new Date().toISOString(),
-				totals: { costUsd: totals.cost, messages: totals.messages, sessions: totals.sessions },
-				insights: insights.map((i) => ({ kind: i.kind, stat: i.stat, headline: i.headline, advice: i.advice })),
-			},
-			null,
-			"\t"
-		) + "\n"
-	);
 }
 
 /** usage-<view>-<period>[-<slice>]-<stamp>.<ext> in the current directory. */

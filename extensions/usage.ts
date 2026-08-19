@@ -4,15 +4,15 @@
  * Shows an inline view with usage stats grouped by provider, plus provider
  * quota limits (OpenAI Codex subscription + OpenCode Go).
  * - Tab cycles: Today → This Week → Last Week → Last 30 Days → All Time
- * - [v] cycles views: Limits → Graphs → Table → Insights
+ * - [v] cycles views: Limits → Graphs → Table
  * - Arrow keys navigate providers; Enter expands/collapses models
  * - The session scan is lazy: opening the panel only fetches provider quotas
  *   (Limits is the default view); the collect scan starts on the first [v]
  *   press away from Limits
  *
  * Adapted from @tmustier/pi-usage-extension (MIT,
- * https://github.com/tmustier/pi-extensions): the three original views
- * (graphs/table/insights) and their keybindings are ported as-is, with the
+ * https://github.com/tmustier/pi-extensions): the original views
+ * (graphs/table) and their keybindings are ported as-is, with the
  * data pipeline replaced by the Zig backend (src/usage.zig). The Limits view
  * is adapted from omp (can1357/oh-my-pi) /usage: per-provider quota windows
  * with usage bars, reset timers, plan/account info, and Codex saved resets.
@@ -30,7 +30,7 @@ import { Container, Spacer, matchesKey, visibleWidth, truncateToWidth, wrapTextW
 
 import { callZig } from "./lib/zig";
 import { resolveCodexAuth } from "./lib/toolkit";
-import type { BackendData, BaseStats, Insight, LimitsData, PeriodBounds, ProviderLimits, TabName, TotalStats, UsageData } from "./lib/usage/types";
+import type { BackendData, BaseStats, LimitsData, PeriodBounds, ProviderLimits, TabName, TotalStats, UsageData } from "./lib/usage/types";
 import { convertBackendData, TAB_ORDER } from "./lib/usage/types";
 import {
 	buildGraphModel,
@@ -44,7 +44,6 @@ import {
 import type { GraphGroupBy, GraphMetric, GraphModel } from "./lib/usage/graph";
 import {
 	buildGraphCsv,
-	buildInsightsJson,
 	buildTableCsv,
 	exportFileName,
 	parseExportDirSetting,
@@ -73,14 +72,13 @@ async function resolveLimitsArgs(ctx) {
 	};
 }
 
-type ViewMode = "graph" | "table" | "insights" | "limits";
+type ViewMode = "graph" | "table" | "limits";
 
-const VIEW_CYCLE: ViewMode[] = ["limits", "graph", "table", "insights"];
+const VIEW_CYCLE: ViewMode[] = ["limits", "graph", "table"];
 
 const VIEW_LABELS: Record<ViewMode, string> = {
 	graph: "Graphs",
 	table: "Table",
-	insights: "Insights",
 	limits: "Limits",
 };
 
@@ -778,14 +776,10 @@ class UsageComponent {
 		const now = new Date();
 		let name: string;
 		let content: string;
-		const stats = this.data![this.activeTab];
 		if (this.viewMode === "graph") {
 			const slice = `${this.graphCumulative ? "cumulative" : "per-bucket"}-${this.graphMetric}-by-${this.graphGroupBy}`;
 			name = exportFileName("graph", this.activeTab, slice, "csv", now);
 			content = buildGraphCsv(this.buildGraphModelForView());
-		} else if (this.viewMode === "insights") {
-			name = exportFileName("insights", this.activeTab, null, "json", now);
-			content = buildInsightsJson(this.activeTab, stats.totals, stats.insights.insights);
 		} else {
 			const visible = this.visibleTable();
 			const sliced = this.tableFilter.trim() !== "" || this.tableHidden.size > 0;
@@ -830,18 +824,6 @@ class UsageComponent {
 		if (this.viewMode === "graph") {
 			return clampLines(
 				[...this.renderTitle(width), ...this.renderTabs(width, getTableLayout(width)), ...(loading ?? this.renderGraph(width)), ...this.renderHelp(width)],
-				width
-			);
-		}
-
-		if (this.viewMode === "insights") {
-			return clampLines(
-				[
-					...this.renderTitle(width),
-					...this.renderTabs(width, getTableLayout(width)),
-					...(loading ?? this.renderInsights(width)),
-					...this.renderHelp(width),
-				],
 				width
 			);
 		}
@@ -958,88 +940,6 @@ class UsageComponent {
 		return lines;
 	}
 
-	private renderInsights(width: number): string[] {
-		const th = this.theme;
-		const stats = this.data![this.activeTab];
-		const { insights } = stats.insights;
-		const hasUsage =
-			stats.totals.messages > 0 ||
-			stats.totals.cost > 0 ||
-			stats.totals.tokens.total > 0 ||
-			stats.totals.tokens.cacheRead > 0;
-		const hasCost = stats.totals.cost > 0;
-		const lines: string[] = [];
-
-		// Cap the content column so advice stays readable on very wide terminals.
-		const contentWidth = Math.max(Math.min(width, 100), 40);
-
-		lines.push(th.bold("What's contributing to your cost?"));
-		const subtitle = "Approximate, based on local sessions on this machine (these are independent and don't sum to 100%).";
-		for (const wrapped of wrapTextWithAnsi(subtitle, contentWidth)) {
-			lines.push(th.fg("dim", wrapped));
-		}
-		lines.push("");
-
-		if (!hasUsage) {
-			lines.push(th.fg("dim", "  No usage recorded for this period."));
-			lines.push("");
-			return lines;
-		}
-		if (!hasCost) {
-			lines.push(th.fg("dim", "  No cost data recorded for this period."));
-			lines.push("");
-			return lines;
-		}
-		if (insights.length === 0) {
-			lines.push(th.fg("dim", "  Nothing notable for this period."));
-			lines.push("");
-			return lines;
-		}
-
-		// Columns: marker(2) + stat(6) + gap(1); advice aligns under the headline.
-		const indent = "         ";
-		const adviceWidth = Math.max(contentWidth - indent.length, 30);
-
-		const sectionHeader = (label: string, color: "warning" | "accent"): string => {
-			const rule = "─".repeat(Math.max(contentWidth - label.length - 1, 4));
-			return `${th.fg(color, th.bold(label))} ${th.fg("border", rule)}`;
-		};
-
-		const renderOne = (insight: Insight): void => {
-			const isAlarm = insight.kind === "alarm";
-			const marker = isAlarm ? th.fg("warning", "⚠ ") : "  ";
-			const statText = padLeft(insight.stat, 6);
-			const stat = isAlarm ? th.fg("warning", th.bold(statText)) : th.fg("accent", th.bold(statText));
-			// De-emphasise the trailing period-share parenthetical on alarm headlines.
-			const match = insight.headline.match(/^(.*?)\s*(\(\d[\d.,]*% of this period\))$/);
-			const headline = match ? `${match[1]} ${th.fg("dim", match[2]!)}` : insight.headline;
-			lines.push(`${marker}${stat} ${headline}`);
-			if (insight.advice) {
-				for (const wrapped of wrapTextWithAnsi(insight.advice, adviceWidth)) {
-					lines.push(`${indent}${th.fg("dim", wrapped)}`);
-				}
-			}
-			lines.push("");
-		};
-
-		const alarms = insights.filter((i) => i.kind === "alarm");
-		const structure = insights.filter((i) => i.kind === "structure");
-		// Facts first, flagged waste second.
-		if (structure.length > 0) {
-			lines.push(sectionHeader("Where it went", "accent"));
-			for (const insight of structure) renderOne(insight);
-		}
-		lines.push(sectionHeader("Worth attention", "warning"));
-		if (alarms.length > 0) {
-			for (const insight of alarms) renderOne(insight);
-		} else {
-			lines.push(`  ${th.fg("success", padLeft("✓", 6))} ${th.fg("dim", "no waste patterns flagged for this period")}`);
-			lines.push("");
-		}
-
-		return lines;
-	}
-
 	private renderLimits(width: number): string[] {
 		const th = this.theme;
 		const lines: string[] = [];
@@ -1114,7 +1014,7 @@ class UsageComponent {
 			activeTabOnly,
 		]);
 
-		// Compact-note only applies to the table view — it's meaningless for insights.
+		// Compact-note only applies to the table view.
 		const infoLines =
 			this.viewMode === "table" && layout.compact
 				? wrapTextWithAnsi(th.fg("dim", "Compact view. Widen the terminal for more columns."), Math.max(width, 1))
@@ -1248,13 +1148,6 @@ class UsageComponent {
 						"[Tab] period  [m] metric  [g] group  [c] cumul  [↑↓/Enter] filter  [e] export  [v] view  [q] close",
 						"[m] metric  [g] group  [c] cumul  [↑↓] filter  [q] close",
 						"[m] [g] [c] [↑↓] [q]",
-						"[q] close",
-				  ]
-				: this.viewMode === "insights"
-				? [
-						"[Tab/←→] period  [e] export  [v] view  [q] close",
-						"[Tab] period  [e] export  [v] view  [q] close",
-						"[v] view  [q] close",
 						"[q] close",
 				  ]
 				: this.viewMode === "limits"

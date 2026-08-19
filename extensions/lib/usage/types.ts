@@ -2,7 +2,7 @@
 //
 // Adapted from @tmustier/pi-usage-extension (MIT,
 // https://github.com/tmustier/pi-extensions): the data shapes it defined are
-// kept so the graph/table/insights UI ports stay faithful. The backend
+// kept so the graph/table UI ports stay faithful. The backend
 // (src/usage.zig) produces these shapes as JSON; the glue converts the
 // wire format into the Map-based structures below.
 
@@ -33,17 +33,9 @@ export interface TotalStats extends BaseStats {
 	sessions: number;
 }
 
-export interface Insight {
-	kind: "structure" | "alarm";
-	stat: string;
-	headline: string;
-	advice: string;
-}
-
 export interface PeriodData {
 	providers: Map<string, ProviderStats>;
 	totals: TotalStats;
-	insights: { insights: Insight[] };
 }
 
 export interface HourlyCell {
@@ -104,7 +96,6 @@ export interface BackendProvider extends BackendStats {
 export interface BackendPeriod {
 	providers: Record<string, BackendProvider>;
 	totals: TotalStats;
-	insights: { insights: Insight[] };
 }
 
 export interface BackendData {
@@ -162,7 +153,6 @@ export function convertBackendData(raw: BackendData): UsageData {
 			])
 		),
 		totals: p.totals,
-		insights: p.insights,
 	});
 	return {
 		today: period(raw.today),

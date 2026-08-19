@@ -1,9 +1,9 @@
 // pi-usage: Zig backend for the /usage command.
 //
-// Data collection, aggregation, insights, and provider-limit fetching for the
-// usage dashboard. Adapted from @tmustier/pi-usage-extension (MIT,
+// Data collection, aggregation, and provider-limit fetching for the usage
+// dashboard. Adapted from @tmustier/pi-usage-extension (MIT,
 // https://github.com/tmustier/pi-extensions): same session-JSONL accounting
-// rules and insight text, rewritten in Zig with a binary on-disk cache. The
+// rules, rewritten in Zig with a binary on-disk cache. The
 // provider-limit fetchers are adapted from omp (can1357/oh-my-pi):
 // OpenCode Go `zen/go/v1/usage` and OpenAI Codex `wham/usage`.
 //
@@ -19,7 +19,7 @@
 // The collect op is local-only: it scans <agent_dir>/sessions for .jsonl
 // files, re-parses only files whose (size, mtime) changed since the binary
 // cache (<agent_dir>/pi-usage-cache.bin), aggregates the five period views
-// plus hourly buckets, and computes insights. The agent dir rides the request
+// plus hourly buckets. The agent dir rides the request
 // from the glue (pi's own resolution), never the environment. The limits op
 // fetches provider quota over HTTPS on the main thread; a hung network is
 // bounded by the glue's pi.exec timeout. The Codex credentials (access token,
@@ -49,26 +49,6 @@ const CACHE_VERSION: u32 = 1;
 
 const HOUR_MS: f64 = 3_600_000;
 const DAY_MS: f64 = 24 * HOUR_MS;
-
-// Insight thresholds, copied from the original extension (data.ts).
-const CTX_TAX_THRESHOLD: f64 = 150_000;
-const CTX_LOW_THRESHOLD: f64 = 100_000;
-const PROJECT_TOP_COUNT: usize = 3;
-const PROJECT_MAX_DOMINANCE_PERCENT: f64 = 90;
-const REASONING_MIN_PERCENT: f64 = 5;
-const TREND_HIGH_RATIO: f64 = 1.5;
-const TREND_LOW_RATIO: f64 = 0.6;
-const TTL_GAP_MS: f64 = 5 * 60_000;
-const MISS_MIN_PREV_CONTEXT: f64 = 20_000;
-const MISS_MAX_CACHE_READ: f64 = 5_000;
-const CACHE_MISS_ALARM_PERCENT: f64 = 2;
-const CACHE_MISS_ALARM_MIN_COST: f64 = 1;
-const TOP_SESSION_COUNT: usize = 5;
-const CONCENTRATION_ALARM_PERCENT: f64 = 35;
-const UPFRONT_ALARM_PERCENT: f64 = 8;
-const LEVERAGE_FLOOR: f64 = 5;
-const LEVERAGE_MIN_COST: f64 = 5;
-const LEVERAGE_MIN_FRESH_TOKENS: f64 = 1_000_000;
 
 const AUXILIARY_PROVIDER = "Tools";
 const AUXILIARY_MODEL = "summaries";
@@ -647,26 +627,6 @@ const Totals = struct {
     tokens: TokenStats = .{},
 };
 
-const CostCount = struct { cost: f64 = 0, messages: u64 = 0 };
-
-const PeriodRaw = struct {
-    total_cost: f64 = 0,
-    assistant_cost: f64 = 0,
-    auxiliary_cost: f64 = 0,
-    ctx_high: CostCount = .{},
-    ctx_low: CostCount = .{},
-    project_costs: std.StringHashMap(f64),
-    session_costs: std.StringHashMap(f64),
-    upfront_cost: f64 = 0,
-    ttl_miss_cost: f64 = 0,
-    switch_miss_cost: f64 = 0,
-    prefix_miss_cost: f64 = 0,
-    reasoning_tokens: f64 = 0,
-    output_tokens: f64 = 0,
-    cache_read_tokens: f64 = 0,
-    fresh_tokens: f64 = 0,
-};
-
 const HourlyCell = struct {
     messages: u64 = 0,
     cost: f64 = 0,
@@ -680,25 +640,13 @@ const HourlyCell = struct {
 const Period = struct {
     providers: std.StringHashMap(ProviderStats),
     totals: Totals = .{},
-    raw: PeriodRaw,
-    insights: []Insight = &.{},
 };
 
 const Hourly = std.AutoHashMap(i64, *std.StringHashMap(HourlyCell));
 
-const Trend = struct { last7_cost: f64, prior_weekly_pace: f64 };
-
-const Insight = struct {
-    kind: []const u8, // "structure" | "alarm"
-    stat: []const u8,
-    headline: []const u8,
-    advice: []const u8,
-};
-
 const Aggregated = struct {
     periods: [5]Period,
     hourly: Hourly,
-    trend: ?Trend = null,
 };
 
 const PeriodIndex = enum(u8) { today = 0, this_week = 1, last_week = 2, last30 = 3, all_time = 4 };
@@ -714,13 +662,6 @@ fn emptyModel(arena: Allocator) ModelStats {
     return .{ .sessions = std.StringHashMap(void).init(arena) };
 }
 
-fn emptyRaw(arena: Allocator) PeriodRaw {
-    return .{
-        .project_costs = std.StringHashMap(f64).init(arena),
-        .session_costs = std.StringHashMap(f64).init(arena),
-    };
-}
-
 fn accumulateStats(messages: *u64, cost_out: *f64, tokens: *TokenStats, add_cost: f64, tok: TokenStats, count_message: bool) void {
     if (count_message) messages.* += 1;
     cost_out.* += add_cost;
@@ -730,52 +671,6 @@ fn accumulateStats(messages: *u64, cost_out: *f64, tokens: *TokenStats, add_cost
     tokens.cache_read += tok.cache_read;
     tokens.cache_write += tok.cache_write;
 }
-
-fn projectLabelFromCwd(arena: Allocator, cwd: []const u8, home: []const u8) ![]const u8 {
-    if (cwd.len == 0) return "(unknown)";
-    var home_prefix: ?[]const u8 = null;
-    if (mem.eql(u8, cwd, home) or mem.startsWith(u8, cwd, home) and cwd.len > home.len and cwd[home.len] == '/') {
-        home_prefix = home;
-    } else if (mem.startsWith(u8, cwd, "/Users/")) {
-        const rest = cwd[7..];
-        if (std.mem.indexOfScalar(u8, rest, '/')) |idx| {
-            home_prefix = cwd[0 .. 7 + idx];
-        }
-    } else if (mem.startsWith(u8, cwd, "/home/")) {
-        const rest = cwd[6..];
-        if (std.mem.indexOfScalar(u8, rest, '/')) |idx| {
-            home_prefix = cwd[0 .. 6 + idx];
-        }
-    }
-    if (home_prefix) |hp| {
-        if (cwd.len <= hp.len) return "~";
-    }
-    const rel = if (home_prefix) |hp| cwd[hp.len + 1 ..] else cwd;
-    var trimmed = rel;
-    if (std.mem.indexOf(u8, trimmed, "/.worktrees/")) |wt| trimmed = trimmed[0..wt];
-    var parts = std.mem.splitScalar(u8, trimmed, '/');
-    var kept: [2][]const u8 = undefined;
-    var n: usize = 0;
-    while (parts.next()) |part| {
-        if (part.len == 0) continue;
-        if (n >= 2) break;
-        kept[n] = part;
-        n += 1;
-    }
-    if (n == 0) return if (home_prefix != null) "~" else "/";
-    const label = if (n == 1) kept[0] else try std.fmt.allocPrint(arena, "{s}/{s}", .{ kept[0], kept[1] });
-    return if (home_prefix != null)
-        try std.fmt.allocPrint(arena, "~/{s}", .{label})
-    else
-        try std.fmt.allocPrint(arena, "/{s}", .{label});
-}
-
-const Meta = struct {
-    gap_ms: f64 = -1,
-    prev_ctx: f64 = 0,
-    model_switched: bool = false,
-    is_session_start: bool = false,
-};
 
 const EXCLUDED_PROVIDERS = [_][]const u8{ "faux-provider", "fake-provider" };
 
@@ -790,22 +685,11 @@ fn addMessage(
     arena: Allocator,
     agg: *Aggregated,
     session_id: []const u8,
-    project: []const u8,
     msg: Message,
-    meta: Meta,
     bounds: Bounds,
-    cost_by_day: *std.AutoHashMap(i64, f64),
     session_contributed: *[5]bool,
 ) !void {
     if (isExcludedProvider(msg.provider)) return;
-
-    // Day-indexed cost totals power the burn-trend insight.
-    if (msg.timestamp > 0) {
-        const day_idx: i64 = @intFromFloat(@floor((msg.timestamp - bounds.todayMs) / DAY_MS));
-        const gop = try cost_by_day.getOrPut(day_idx);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += msg.cost;
-    }
 
     // Hourly bucket for the graph explorer.
     if (msg.timestamp > 0) {
@@ -872,47 +756,6 @@ fn addMessage(
 
         accumulateStats(&period.totals.messages, &period.totals.cost, &period.totals.tokens, msg.cost, tokens, is_assistant);
         session_contributed[pi] = true;
-
-        const raw = &period.raw;
-        raw.total_cost += msg.cost;
-        const pgop = try raw.project_costs.getOrPut(project);
-        if (!pgop.found_existing) pgop.value_ptr.* = 0;
-        pgop.value_ptr.* += msg.cost;
-        const sgop = try raw.session_costs.getOrPut(session_id);
-        if (!sgop.found_existing) sgop.value_ptr.* = 0;
-        sgop.value_ptr.* += msg.cost;
-
-        if (!is_assistant) {
-            raw.auxiliary_cost += msg.cost;
-            continue;
-        }
-        raw.assistant_cost += msg.cost;
-
-        const ctx = msg.input + msg.cache_read + msg.cache_write;
-        if (ctx >= CTX_TAX_THRESHOLD) {
-            raw.ctx_high.cost += msg.cost;
-            raw.ctx_high.messages += 1;
-        } else if (ctx < CTX_LOW_THRESHOLD) {
-            raw.ctx_low.cost += msg.cost;
-            raw.ctx_low.messages += 1;
-        }
-        if (meta.is_session_start) raw.upfront_cost += msg.cost;
-        if (!msg.after_compaction and
-            meta.prev_ctx >= MISS_MIN_PREV_CONTEXT and
-            msg.cache_read < @min(MISS_MAX_CACHE_READ, 0.3 * meta.prev_ctx))
-        {
-            if (meta.gap_ms > TTL_GAP_MS) {
-                raw.ttl_miss_cost += msg.cost;
-            } else if (meta.gap_ms >= 0 and meta.model_switched) {
-                raw.switch_miss_cost += msg.cost;
-            } else if (meta.gap_ms >= 0) {
-                raw.prefix_miss_cost += msg.cost;
-            }
-        }
-        raw.reasoning_tokens += msg.reasoning;
-        raw.output_tokens += msg.output;
-        raw.cache_read_tokens += msg.cache_read;
-        raw.fresh_tokens += msg.input + msg.cache_write;
     }
 }
 
@@ -920,7 +763,6 @@ fn aggregate(
     arena: Allocator,
     bounds: Bounds,
     files: []const CachedFile,
-    home: []const u8,
 ) !Aggregated {
     var agg = Aggregated{
         .periods = undefined,
@@ -929,289 +771,33 @@ fn aggregate(
     for (0..5) |pi| {
         agg.periods[pi] = .{
             .providers = std.StringHashMap(ProviderStats).init(arena),
-            .raw = emptyRaw(arena),
         };
     }
 
     var seen_hashes = std.hash_map.HashMap(MsgKey, void, MsgKeyCtx, std.hash_map.default_max_load_percentage).init(arena);
-    var seen_sessions = std.StringHashMap(void).init(arena);
-    var cost_by_day = std.AutoHashMap(i64, f64).init(arena);
 
     for (files) |file| {
         if (file.session_id.len == 0) continue;
-        const project = try projectLabelFromCwd(arena, file.cwd, home);
 
         var deduped = ManagedList(Message).init(arena);
-        var metas = ManagedList(Meta).init(arena);
-        var previous_assistant: ?Message = null;
         for (file.messages) |m| {
-            const prev: ?Message = if (!m.auxiliary) previous_assistant else null;
-            if (!m.auxiliary) previous_assistant = m;
-
             const fingerprint = m.input + m.output + m.cache_read + m.cache_write;
             const key = MsgKey{ .auxiliary = m.auxiliary, .source_id = m.source_id, .timestamp = m.timestamp, .fingerprint = fingerprint };
             if (seen_hashes.contains(key)) continue;
             try seen_hashes.put(key, {});
-
-            var meta = Meta{};
-            if (prev) |p| {
-                if (p.timestamp > 0 and m.timestamp > 0) meta.gap_ms = m.timestamp - p.timestamp;
-                meta.prev_ctx = p.input + p.cache_read + p.cache_write;
-                meta.model_switched = !mem.eql(u8, p.provider, m.provider) or !mem.eql(u8, p.model, m.model);
-            }
             try deduped.append(m);
-            try metas.append(meta);
-        }
-
-        // The first deduped assistant message of a session marks its opening cost.
-        var first_assistant: ?usize = null;
-        for (deduped.items, 0..) |m, i| {
-            if (!m.auxiliary) {
-                first_assistant = i;
-                break;
-            }
-        }
-        if (first_assistant) |idx| {
-            if (!seen_sessions.contains(file.session_id)) {
-                try seen_sessions.put(file.session_id, {});
-                metas.items[idx].is_session_start = true;
-            }
         }
 
         var session_contributed = [5]bool{ false, false, false, false, false };
-        for (deduped.items, 0..) |m, i| {
-            try addMessage(arena, &agg, file.session_id, project, m, metas.items[i], bounds, &cost_by_day, &session_contributed);
+        for (deduped.items) |m| {
+            try addMessage(arena, &agg, file.session_id, m, bounds, &session_contributed);
         }
         for (0..5) |pi| {
             if (session_contributed[pi]) agg.periods[pi].totals.sessions += 1;
         }
     }
 
-    // Burn trend: last 7 calendar days vs the average weekly pace of the prior 28.
-    var last7: f64 = 0;
-    var prior28: f64 = 0;
-    var it = cost_by_day.iterator();
-    while (it.next()) |entry| {
-        if (entry.key_ptr.* >= -6) {
-            last7 += entry.value_ptr.*;
-        } else if (entry.key_ptr.* >= -34) {
-            prior28 += entry.value_ptr.*;
-        }
-    }
-    if (prior28 > 0) {
-        agg.trend = .{ .last7_cost = last7, .prior_weekly_pace = prior28 / 4 };
-    }
     return agg;
-}
-
-// =============================================================================
-// Insights (text ported verbatim from the original extension)
-// =============================================================================
-
-fn fmtMoney(buf: *List, v: f64) !void {
-    if (v >= 1000) {
-        try buf.print("${d:.1}k", .{v / 1000});
-    } else if (v >= 100) {
-        try buf.print("${d}", .{@round(v)});
-    } else {
-        try buf.print("${d:.2}", .{v});
-    }
-}
-
-fn fmtPercent(buf: *List, p: f64) !void {
-    if (p >= 10) {
-        try buf.print("{d}%", .{@round(p)});
-    } else {
-        try buf.print("{d:.1}%", .{p});
-    }
-}
-
-fn fmtThresholdTokens(buf: *List, n: f64) !void {
-    if (n >= 1_000_000) {
-        try buf.print("{d}M", .{n / 1_000_000});
-    } else if (n >= 1_000) {
-        try buf.print("{d}k", .{n / 1_000});
-    } else {
-        try buf.print("{d}", .{n});
-    }
-}
-
-fn computeInsights(arena: Allocator, raw: *const PeriodRaw, trend: ?Trend) ![]Insight {
-    var list = ManagedList(Insight).init(arena);
-    var tmp = List.init(arena);
-    if (raw.total_cost <= 0) return list.toOwnedSlice();
-
-    const total = raw.total_cost;
-    const assistant_total = raw.assistant_cost;
-    const assistant_pct_label = if (raw.auxiliary_cost > 0) "assistant-message cost" else "this period";
-
-    const add = struct {
-        fn f(arena2: Allocator, list2: *ManagedList(Insight), kind: []const u8, stat: []const u8, headline: []const u8, advice: []const u8) !void {
-            try list2.append(.{
-                .kind = try arena2.dupe(u8, kind),
-                .stat = try arena2.dupe(u8, stat),
-                .headline = try arena2.dupe(u8, headline),
-                .advice = try arena2.dupe(u8, advice),
-            });
-        }
-    }.f;
-    const money = struct {
-        fn f(arena2: Allocator, buf: *List, v: f64) ![]const u8 {
-            buf.clearRetainingCapacity();
-            try fmtMoney(buf, v);
-            return try arena2.dupe(u8, buf.items);
-        }
-    }.f;
-    const percent = struct {
-        fn f(arena2: Allocator, buf: *List, p: f64) ![]const u8 {
-            buf.clearRetainingCapacity();
-            try fmtPercent(buf, p);
-            return try arena2.dupe(u8, buf.items);
-        }
-    }.f;
-    const threshold = struct {
-        fn f(arena2: Allocator, buf: *List, n: f64) ![]const u8 {
-            buf.clearRetainingCapacity();
-            try fmtThresholdTokens(buf, n);
-            return try arena2.dupe(u8, buf.items);
-        }
-    }.f;
-
-    // --- Alarms ---
-
-    const ttl_pct = if (assistant_total > 0) (raw.ttl_miss_cost / assistant_total) * 100 else 0;
-    if (ttl_pct >= CACHE_MISS_ALARM_PERCENT and raw.ttl_miss_cost >= CACHE_MISS_ALARM_MIN_COST) {
-        try add(arena, &list, "alarm", try money(arena, &tmp, raw.ttl_miss_cost), try std.fmt.allocPrint(arena, "spent resuming conversations after a break ({s} of {s})", .{ try percent(arena, &tmp, ttl_pct), assistant_pct_label }), "Sent context is only reusable for a few minutes. After a longer pause, the next message pays to send the whole conversation again. Replying while a session is fresh avoids this.");
-    }
-
-    const switch_pct = if (assistant_total > 0) (raw.switch_miss_cost / assistant_total) * 100 else 0;
-    if (switch_pct >= CACHE_MISS_ALARM_PERCENT and raw.switch_miss_cost >= CACHE_MISS_ALARM_MIN_COST) {
-        try add(arena, &list, "alarm", try money(arena, &tmp, raw.switch_miss_cost), try std.fmt.allocPrint(arena, "spent switching models mid-conversation ({s} of {s})", .{ try percent(arena, &tmp, switch_pct), assistant_pct_label }), "Changing model re-sends the whole conversation at full price — the previous model's saved context doesn't transfer. Switching between tasks instead of mid-conversation avoids this.");
-    }
-
-    const prefix_pct = if (assistant_total > 0) (raw.prefix_miss_cost / assistant_total) * 100 else 0;
-    if (prefix_pct >= CACHE_MISS_ALARM_PERCENT and raw.prefix_miss_cost >= CACHE_MISS_ALARM_MIN_COST) {
-        try add(arena, &list, "alarm", try money(arena, &tmp, raw.prefix_miss_cost), try std.fmt.allocPrint(arena, "spent re-sending conversations mid-session ({s} of {s})", .{ try percent(arena, &tmp, prefix_pct), assistant_pct_label }), "These messages paid full price for context that had already been sent — with no break, compaction, or model switch to explain it. Usually a tool or workflow is restarting or rewriting conversations. Worth a look if it stays high.");
-    }
-
-    if (raw.session_costs.count() > TOP_SESSION_COUNT) {
-        var values = ManagedList(f64).init(arena);
-        var it = raw.session_costs.valueIterator();
-        while (it.next()) |v| try values.append(v.*);
-        std.mem.sort(f64, values.items, {}, struct {
-            fn lt(_: void, a: f64, b: f64) bool {
-                return a > b;
-            }
-        }.lt);
-        var top_weight: f64 = 0;
-        for (values.items[0..TOP_SESSION_COUNT]) |c| top_weight += c;
-        const top_pct = (top_weight / total) * 100;
-        if (top_pct >= CONCENTRATION_ALARM_PERCENT) {
-            try add(arena, &list, "alarm", try money(arena, &tmp, top_weight), try std.fmt.allocPrint(arena, "came from just {d} of your {d} sessions ({s} of this period)", .{ TOP_SESSION_COUNT, raw.session_costs.count(), try percent(arena, &tmp, top_pct) }), "A handful of sessions drove most of the spend. The graph view can show what they were doing.");
-        }
-    }
-
-    const upfront_pct = if (assistant_total > 0) (raw.upfront_cost / assistant_total) * 100 else 0;
-    if (upfront_pct >= UPFRONT_ALARM_PERCENT) {
-        try add(arena, &list, "alarm", try money(arena, &tmp, raw.upfront_cost), try std.fmt.allocPrint(arena, "spent on the opening message of new sessions ({s} of {s})", .{ try percent(arena, &tmp, upfront_pct), assistant_pct_label }), "A session's first message sends everything from scratch. Fewer, longer sessions cut this overhead.");
-    }
-
-    if (assistant_total >= LEVERAGE_MIN_COST and raw.fresh_tokens >= LEVERAGE_MIN_FRESH_TOKENS) {
-        const leverage = raw.cache_read_tokens / raw.fresh_tokens;
-        if (leverage < LEVERAGE_FLOOR) {
-            var stat_buf: [16]u8 = undefined;
-            const stat = std.fmt.bufPrint(&stat_buf, "{d:.1}×", .{leverage}) catch "0×";
-            try add(arena, &list, "alarm", stat, "tokens reused from history for every token paid at full price", "Typical interactive use reuses 10× or more. A low number means conversations keep being sent from scratch — look for workflows that restart sessions.");
-        }
-    }
-
-    // --- Structure ---
-
-    if (raw.auxiliary_cost > 0) {
-        const pct = (raw.auxiliary_cost / total) * 100;
-        if (pct >= 1) {
-            try add(arena, &list, "structure", try percent(arena, &tmp, pct), "of your cost came from usage reported by tools and conversation summaries", "Pi records this separately because it cannot be attributed reliably to a specific provider and model.");
-        }
-    }
-
-    if (raw.ctx_high.messages > 0 and assistant_total > 0) {
-        const pct = (raw.ctx_high.cost / assistant_total) * 100;
-        if (pct >= 1) {
-            const avg_high = raw.ctx_high.cost / @as(f64, @floatFromInt(raw.ctx_high.messages));
-            const avg_low = if (raw.ctx_low.messages > 0) raw.ctx_low.cost / @as(f64, @floatFromInt(raw.ctx_low.messages)) else 0;
-            var cmp_buf = List.init(arena);
-            if (avg_low > 0) {
-                try cmp_buf.appendSlice(" — ");
-                try fmtMoney(&cmp_buf, avg_high);
-                try cmp_buf.appendSlice("/msg vs ");
-                try fmtMoney(&cmp_buf, avg_low);
-                try cmp_buf.appendSlice(" under ");
-                try fmtThresholdTokens(&cmp_buf, CTX_LOW_THRESHOLD);
-            }
-            const base = if (raw.auxiliary_cost > 0) "assistant-message cost" else "cost";
-            try add(arena, &list, "structure", try percent(arena, &tmp, pct), try std.fmt.allocPrint(arena, "of your {s} came from messages with ≥{s} tokens loaded{s}", .{ base, try threshold(arena, &tmp, CTX_TAX_THRESHOLD), cmp_buf.items }), "Long conversations cost more per message. /compact mid-task and /clear between tasks keep them lean.");
-        }
-    }
-
-    if (raw.project_costs.count() >= 2) {
-        const Entry = struct { label: []const u8, cost: f64 };
-        var entries = ManagedList(Entry).init(arena);
-        var it = raw.project_costs.iterator();
-        while (it.next()) |e| try entries.append(.{ .label = e.key_ptr.*, .cost = e.value_ptr.* });
-        std.mem.sort(Entry, entries.items, {}, struct {
-            fn lt(_: void, a: Entry, b: Entry) bool {
-                return a.cost > b.cost;
-            }
-        }.lt);
-        const top_count = @min(PROJECT_TOP_COUNT, entries.items.len);
-        const top = entries.items[0..top_count];
-        const top_pct = (top[0].cost / total) * 100;
-        if (top_pct < PROJECT_MAX_DOMINANCE_PERCENT) {
-            var rest_buf = List.init(arena);
-            for (top[1..]) |e| {
-                if (rest_buf.items.len > 0) try rest_buf.appendSlice(", ");
-                try rest_buf.appendSlice(e.label);
-                try rest_buf.appendSlice(" ");
-                try fmtPercent(&rest_buf, (e.cost / total) * 100);
-            }
-            var headline_buf = List.init(arena);
-            try headline_buf.appendSlice("of your cost was ");
-            try headline_buf.appendSlice(top[0].label);
-            if (rest_buf.items.len > 0) {
-                try headline_buf.appendSlice(" — then ");
-                try headline_buf.appendSlice(rest_buf.items);
-            }
-            try add(arena, &list, "structure", try percent(arena, &tmp, top_pct), try arena.dupe(u8, headline_buf.items), "");
-        }
-    }
-
-    if (raw.output_tokens > 0) {
-        const reasoning_pct = (raw.reasoning_tokens / raw.output_tokens) * 100;
-        if (reasoning_pct >= REASONING_MIN_PERCENT) {
-            try add(arena, &list, "structure", try percent(arena, &tmp, reasoning_pct), "of your output tokens were hidden reasoning", "Models charge for their behind-the-scenes thinking as output tokens. pi records this only from 0.80.3 (June 2026), so older periods understate it.");
-        }
-    }
-
-    if (trend) |t| {
-        if (t.prior_weekly_pace > 0) {
-            const ratio = t.last7_cost / t.prior_weekly_pace;
-            const advice = if (ratio >= TREND_HIGH_RATIO)
-                "Spending is up against your own baseline — the graph view shows what changed."
-            else if (ratio <= TREND_LOW_RATIO)
-                "Spending is well below your recent baseline."
-            else
-                "";
-            var stat_buf: [16]u8 = undefined;
-            const stat = std.fmt.bufPrint(&stat_buf, "{d:.1}×", .{ratio}) catch "0×";
-            var last7_buf = List.init(arena);
-            try fmtMoney(&last7_buf, t.last7_cost);
-            var pace_buf = List.init(arena);
-            try fmtMoney(&pace_buf, t.prior_weekly_pace);
-            try add(arena, &list, "structure", stat, try std.fmt.allocPrint(arena, "your last 7 days ({s}) vs your prior 4-week pace ({s}/wk)", .{ last7_buf.items, pace_buf.items }), advice);
-        }
-    }
-
-    return list.toOwnedSlice();
 }
 
 // =============================================================================
@@ -1319,20 +905,7 @@ fn writePeriod(o: *Out, p: *const Period) !void {
     try wnum(o, p.totals.cost);
     try o.buf.appendSlice(",\"tokens\":");
     try writeTokens(o, p.totals.tokens);
-    try o.buf.appendSlice("},\"insights\":{\"insights\":[");
-    for (p.insights, 0..) |ins, i| {
-        if (i > 0) try o.buf.append(',');
-        try o.buf.appendSlice("{\"kind\":");
-        try wstr(o, ins.kind);
-        try o.buf.appendSlice(",\"stat\":");
-        try wstr(o, ins.stat);
-        try o.buf.appendSlice(",\"headline\":");
-        try wstr(o, ins.headline);
-        try o.buf.appendSlice(",\"advice\":");
-        try wstr(o, ins.advice);
-        try o.buf.append('}');
-    }
-    try o.buf.appendSlice("]}}");
+    try o.buf.appendSlice("}}");
 }
 
 fn buildUsageJson(arena: Allocator, agg: *Aggregated, bounds: Bounds, warnings: []const []const u8) ![]const u8 {
@@ -1969,10 +1542,9 @@ const Request = struct {
     codex_email: ?[]const u8 = null,
 };
 
-fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, agent_dir: []const u8, bounds: Bounds) ![]const u8 {
+fn runCollect(arena: Allocator, io: std.Io, agent_dir: []const u8, bounds: Bounds) ![]const u8 {
     const sessions_dir = try std.fmt.allocPrint(arena, "{s}/sessions", .{agent_dir});
     const cache_path = try std.fmt.allocPrint(arena, "{s}/pi-usage-cache.bin", .{agent_dir});
-    const home = environ.get("HOME") orelse "";
 
     // 1. Discover and stat session files.
     var file_paths = ManagedList([]const u8).init(arena);
@@ -2054,10 +1626,7 @@ fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, a
     }
 
     // 4. Aggregate in sorted path order with cross-file dedupe.
-    var agg = try aggregate(arena, bounds, current.items, home);
-    for (0..5) |pi| {
-        agg.periods[pi].insights = try computeInsights(arena, &agg.periods[pi].raw, agg.trend);
-    }
+    var agg = try aggregate(arena, bounds, current.items);
     return buildUsageJson(arena, &agg, bounds, warnings.items);
 }
 
@@ -2087,7 +1656,7 @@ pub fn main(init: std.process.Init) !void {
         const agent_dir = mem.trim(u8, req.value.agent_dir orelse "", " \t\r\n");
         if (agent_dir.len == 0) respondExit(arena, io, false, "missing agent_dir");
         const bounds = req.value.bounds orelse respondExit(arena, io, false, "missing bounds");
-        const result = runCollect(arena, io, init.environ_map, agent_dir, bounds) catch |err| respondExit(arena, io, false, @errorName(err));
+        const result = runCollect(arena, io, agent_dir, bounds) catch |err| respondExit(arena, io, false, @errorName(err));
         respondExit(arena, io, true, result);
     } else if (mem.eql(u8, req.value.op, "limits")) {
         // The fetch runs on the main thread; a hung network is bounded by the
