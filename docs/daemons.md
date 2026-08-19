@@ -6,7 +6,7 @@ Instead they talk to long-lived daemons that this repo starts for you:
 | Daemon | Drives | Extension | Started by |
 |---|---|---|---|
 | `lightpanda mcp` | the browser_* tools (pi-lightpanda) | launchd LaunchAgent | `mise run daemon-start` |
-| CuaDriver.app | the computer_* tools (pi-cua) | `open -n -g -a CuaDriver --args serve` | `mise run daemon-start` |
+| `cua-driver serve` | the computer_* tools (pi-cua) | launchd LaunchAgent | `mise run daemon-start` |
 
 Both daemons are per-machine: they hold state (the browser page, the
 desktop session) that a one-shot extension process cannot own. The
@@ -16,13 +16,23 @@ daemon and exit.
 ## Tasks
 
 ```bash
-mise run daemon-status   # report which daemons are up; exit 1 when any is down
-mise run daemon-start    # start only the daemons that are not running
+mise run daemon-status    # report which daemons are up; exit 1 when any is down
+mise run daemon-start     # start only the daemons that are not running
+mise run daemon-restart   # restart both daemons to pick up updated binaries
 ```
 
 `daemon-start` is smart per daemon: if one is running it is skipped, if one
 is down only that one is (re)started. It is idempotent, safe to run any
 time, and failing to start a daemon aborts the task with exit 1.
+
+`daemon-restart` is for after updates: a running daemon keeps executing
+the old binary from memory, so `brew upgrade lightpanda` or
+`cua-driver update --apply` does not take effect until the daemon
+restarts. The task boots both LaunchAgents out (stopping the daemons),
+kills any CuaDriver instance started manually outside launchd, then runs
+`daemon-start`. Restarting lightpanda wipes every browser session, so the
+next `browser_*` call fails with "no page is loaded" until you navigate
+again.
 
 ## lightpanda (headless browser)
 
@@ -53,6 +63,8 @@ tab). All tabs live inside the single lightpanda process.
   `~/Library/Logs/lightpanda.err.log`.
 - When the daemon is down, browser tools fail with a clear error naming
   `mise run daemon-start` as the fix.
+- Update: `brew upgrade lightpanda`, then `mise run daemon-restart` so the
+  daemon picks up the new binary.
 - To stop it: `launchctl bootout gui/$(id -u)/com.pijon.lightpanda`. To
   uninstall: bootout, then delete
   `~/Library/LaunchAgents/com.pijon.lightpanda.plist`.
@@ -64,7 +76,7 @@ tab). All tabs live inside the single lightpanda process.
   same page. A pi process that picked its own tab keeps that tab for the
   rest of the process (the choice resets on a pi reload).
 - A fresh page appears only when the daemon restarts (reboot, crash
-  restart, manual bootout): every session is gone and the next call is
+  restart, or `mise run daemon-restart`): every session is gone and the next call is
   routed into a new empty session, which fails with "no page is loaded"
   until the model navigates again.
 - All tabs live in the one daemon process, so the resource footprint is
@@ -79,15 +91,31 @@ tab). All tabs live inside the single lightpanda process.
 
 ## CuaDriver (desktop automation)
 
-The desktop daemon is the CuaDriver.app application running with `serve`
-as its argument. The extension (pi-cua) spawns `cua-driver call <tool>
+The desktop daemon is CuaDriver.app running its `serve` mode, managed as a
+launchd LaunchAgent exactly like lightpanda. The plist follows the vendor's
+own autostart guide
+(https://cua.ai/docs/how-to-guides/driver/keep-running): it execs
+`/Applications/CuaDriver.app/Contents/MacOS/cua-driver serve` directly, so
+the daemon is attributed to `com.trycua.driver` and the Accessibility and
+Screen Recording grants persist across reboots. A daemon started from a
+terminal prompt is attributed to the terminal instead, and the grants do
+not apply to it. The extension (pi-cua) spawns `cua-driver call <tool>
 <json-args>` per request, a CLI proxy to the daemon. Requires macOS
 permissions: Accessibility and Screen Recording, granted once in System
-Settings. Install from https://github.com/trycua/cua.
+Settings (or `cua-driver permissions grant`). Install from
+https://github.com/trycua/cua.
 
-`daemon-start` detects it by its process name (`cua-driver serve`) and
-starts it with the same command used manually:
-`open -n -g -a CuaDriver --args serve`.
+The plist is rendered from `scripts/com.trycua.cua-driver.plist` into
+`~/Library/LaunchAgents/com.trycua.cua-driver.plist` by `daemon-start`,
+with the vendor's label and KeepAlive. launchd starts it at login
+(RunAtLoad) and restarts it on any exit. Logs:
+`~/Library/Logs/cua-driver.log` and `~/Library/Logs/cua-driver.err.log`.
+
+- Update: `cua-driver update --apply` (the CLI's canonical installer),
+  then `mise run daemon-restart` so the daemon picks up the new binary.
+- To stop it: `launchctl bootout gui/$(id -u)/com.trycua.cua-driver`. To
+  uninstall: bootout, then delete
+  `~/Library/LaunchAgents/com.trycua.cua-driver.plist`.
 
 ## Setup on a different computer
 

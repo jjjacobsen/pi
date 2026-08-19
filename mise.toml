@@ -8,7 +8,11 @@ description = "Check that the daemons (lightpanda, CuaDriver) are running"
 
 [tasks.daemon-start]
 run = "bash scripts/daemon-start.sh"
-description = "Start any daemon that is not running (lightpanda via launchd, CuaDriver via open)"
+description = "Start any daemon that is not running (lightpanda, CuaDriver, both via launchd)"
+
+[tasks.daemon-restart]
+run = "bash scripts/daemon-restart.sh"
+description = "Restart both daemons so they pick up freshly installed binaries"
 
 [tools]
 hk = "1.54.0"
