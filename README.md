@@ -43,6 +43,12 @@ Driver daemon running with Accessibility and Screen Recording granted
 `/lg` hands the whole terminal to lazygit (while pi keeps running in the
 background), so you can browse commits and stage diffs the old-fashioned way
 
+### nvim - full-screen neovim via /nvim
+
+`/nvim` hands the whole terminal to neovim in the session cwd (`/nvim
+<path>` opens elsewhere) and quits back to pi with `:q`, written exactly like
+lazygit
+
 ### peon - Warcraft sounds via /peon
 
 Plays Warcraft 3 orc peon and human peasant voice lines when things

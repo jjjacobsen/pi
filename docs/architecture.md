@@ -530,6 +530,63 @@ terminal, waits) -> `tui.start()` + full redraw + close component -> notify
   a `tool` field on run (lazygit default) would cover jj, tig, etc. Not
   implemented (YAGNI).
 
+# Neovim extension (pi-nvim)
+
+## Goal
+
+Open neovim full-screen over the pi TUI with `/nvim`, the direct mirror of
+`/lg`: nvim takes the whole terminal, `:q` returns to pi. Same one-shot
+shape as lazygit, so all process logic lives in Zig and the TS glue only
+owns the pi TUI lifecycle.
+
+## Architecture
+
+```
+pi (coding agent)
+  └─ extensions/nvim.ts     TS glue: /nvim command, TUI stop/start around run
+       └─ src/nvim.zig      Zig backend: validation, /dev/tty handoff, spawn+wait
+            └─ nvim         spawned with stdin/stdout/stderr = /dev/tty
+```
+
+The design and rationale are identical to the lazygit extension: the TUI
+suspend/resume (tui.stop()/tui.start()) must run inside the pi process,
+so the glue uses ctx.ui.custom() to grab the live TUI reference (the same
+mechanism as Ctrl+G / app.editor.external). Everything process-related is
+Zig.
+
+## Protocol (one-shot)
+
+```json
+pi.exec("pi-nvim", [`{"op":"prepare","cwd":"/path"}`]) -> {"ok":true,"result":"/path"}
+pi.exec("pi-nvim", [`{"op":"run","cwd":"/path"}`])     -> {"ok":true,"result":"exited 0"}   (exited N / signal N / stopped / unknown)
+                                                                -> {"ok":false,"error":"..."}        failures
+```
+
+## Zig behavior
+
+- prepare runs before the TUI stops so a common failure surfaces as a
+  notification with no screen flicker: nvim --version (PATH check). Unlike
+  lazygit there is no git-repo validation, because nvim opens any directory;
+  it returns the resolved target path.
+- run opens /dev/tty and spawns nvim with stdin/stdout/stderr pointing at
+  it, cwd = the target. nvim owns the terminal in raw mode; the backend
+  blocks in child.wait and reports the term.
+- The same SIGTERM/SIGINT background handler as lazygit forwards an abort to
+  the running nvim child so a teardown mid-nvim returns the terminal to a
+  sane state instead of orphaning nvim (lazygit applies it too).
+
+## Flow
+
+/nvim -> resolve target (ctx.cwd, or /nvim <path>) -> prepare (error =>
+notify, no screen change) -> tui.stop() -> run (Zig spawns nvim)
+-> tui.start() + full redraw + close component -> notify nvim exited N.
+
+## Known limitations
+
+- Same as lazygit: Unix-only by design (/dev/tty), a brief TUI blink on a
+  late spawn failure, and an orphaned nvim if pi itself dies while nvim
+  runs. All acceptable for the same reasons.
+
 # Repo audit skill (pi-repo-audit)
 
 ## Goal
