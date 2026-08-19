@@ -102,9 +102,13 @@ Why this split:
 - The browser itself is a long-lived `lightpanda mcp` process started as a
   launchd LaunchAgent by `mise run daemon-start` (setup, logs, and
   lifecycle in docs/daemons.md). Pages live in the daemon: every call
-  attaches to the same MCP session (`Mcp-Session-Id: pi-main`), so the page
-  stays loaded between calls. The daemon is the one piece of persistent
-  state in the whole setup, and it sits outside pi entirely.
+  attaches to an MCP session (`Mcp-Session-Id` header), defaulting to the
+  shared `pi-main` tab, so a page stays loaded between calls. The glue can
+  point a pi process at its own tab via `browser_pick_session` (tabs are
+  listed with `browser_sessions`, released with `browser_close_session`;
+  the session id rides the request JSON, see the protocol block). The daemon
+  is the one piece of persistent state in the whole setup, and it sits
+  outside pi entirely.
 - Wire protocol to the daemon is MCP over HTTP (JSON-RPC 2.0, one
   tools/call POST per process). Lightpanda's MCP server exposes the full
   interaction surface: navigation, extraction (markdown/html/tree/links),
@@ -141,11 +145,14 @@ array of text items, or the raw string fallback).
 
 One POST of `tools/call` to `http://127.0.0.1:8931/mcp` with headers
 `content-type: application/json`, `accept: application/json`, and
-`mcp-session-id: pi-main`. The MCP initialize handshake is skipped:
-lightpanda accepts tools/call directly and creates the session on first
-use (verified against the 2026.08 nightly). If a future build starts
-requiring the handshake, add the initialize + notifications/initialized
-POSTs back.
+`mcp-session-id: <session>` (the request's `session` field, default
+`pi-main`). The MCP initialize handshake is skipped: lightpanda accepts
+tools/call directly and creates the session on first use (verified against
+the 2026.08 nightly). If a future build starts requiring the handshake,
+add the initialize + notifications/initialized POSTs back. Session ids are
+client-chosen names: reusing one joins an existing tab (how pi processes
+share a page), a new name creates a fresh tab, and lightpanda itself
+provides session_new/list/close for lifecycle.
 
 ## Zig implementation notes (Zig 0.16)
 
@@ -181,11 +188,14 @@ POSTs back.
   deliberately text-based. A workflow that needs real screenshots or vision
   requires a different browser engine (e.g., Chromium), not an addition to
   this one.
-- **One tab per daemon run**: the daemon hosts one session (`pi-main`), so
-  "one tab" is the whole browser. `lightpanda mcp` supports multiple
-  sessions (session_new/list/close) and script saving (`save`, PandaScript);
-  the glue does not expose them yet. Exposing tabs later means a session id
-  per tool call and a new-session op, not a structural change.
+- **Tabs are sessions, selectable per pi process**: the default is one
+  shared tab (`pi-main`) that every pi process joins; the glue can point a
+  pi process at its own tab (`browser_pick_session`), list all tabs
+  (`browser_sessions`), or release one (`browser_close_session`, which
+  lightpanda re-creates empty on its next use, so closing then using resets
+  a tab). All sessions live in the one daemon process, so this is the
+  bounded multi-tab surface for now. Lightpanda also supports script saving
+  (`save`, PandaScript); the glue does not expose it yet.
 - **Esc aborts the client, not the daemon**: an abandoned MCP call keeps
   running server-side (bounded by lightpanda's tool timeouts, ~30s worst
   case) and the next call queues behind it. This is the accepted semantic;
@@ -198,8 +208,9 @@ POSTs back.
   and the next call lands in an empty one ("no page is loaded"). No
   browsing state bleeds between pi sessions because the daemon holds only
   the browser's own state.
-- **Two pi instances on one machine share the daemon and therefore the same
-  tab.** Known limitation, accepted for now.
+- **Two pi instances on one machine share the daemon and, unless told
+  otherwise, the same `pi-main` tab.** Each pi process can pick its own tab
+  with `browser_pick_session` when isolation is wanted.
 - **Lightpanda is early-stage**: its own JS engine is not Chromium-complete;
   heavy sites may misrender. Lightpanda nightly is installed via
   `brew install lightpanda-io/browser/lightpanda`.

@@ -188,7 +188,7 @@ return { content: [{ type: "text", text: res.result }], details: {}, ...(res.usa
 | cua | screenshots dir hardcoded | trivial. accept the `agent_dir` request field (it already takes a `shots_dir` override). in-band driver errors still pass through as results |
 | lazygit | none | trivial. run op blocks until lazygit exits. TUI stop/start stays in the glue |
 | peon | config in peon.json, counters in memory | counters to peon-state.json (debounce timestamps, spam ring, last played, afplay pid). one-sound-at-a-time = read pid, kill, spawn, write pid. accept the `agent_dir` request field. sound extraction runs per event, it is idempotent |
-| browser | page lives in the lightpanda daemon | DONE (daemon model). page state is process state, so lightpanda runs as a launchd LaunchAgent started by `mise run daemon-start` (docs/daemons.md); the glue and zig stay one-shot and POST one MCP tools/call to `http://127.0.0.1:8931/mcp` with session `pi-main`. see the browser section below |
+| browser | page lives in the lightpanda daemon | DONE (daemon model). page state is process state, so lightpanda runs as a launchd LaunchAgent started by `mise run daemon-start` (docs/daemons.md); the glue and zig stay one-shot and POST one MCP tools/call to `http://127.0.0.1:8931/mcp` with a session id (default `pi-main`, per-process override via `browser_pick_session`). see the browser section below |
 
 ## Gotchas
 
@@ -231,7 +231,11 @@ usable by the next. The shape it ended up with:
 - The glue and the Zig binary are one-shot like everything else. The Zig
   client POSTs one MCP tools/call (JSON-RPC 2.0 over HTTP) to
   `http://127.0.0.1:8931/mcp` and exits.
-- Session identity: every call sends the header `Mcp-Session-Id: pi-main`.
+- Session identity: every call sends the header `Mcp-Session-Id` (the
+  request's `session` field), default `pi-main`. The glue holds a per-pi
+  process current session, changed via `browser_pick_session`, so one pi
+  process can be pointed at its own tab; `browser_sessions` lists tabs,
+  `browser_close_session` releases one.
   The server routes by header, keeps the page alive after the client
   disconnects, serializes calls per session, and creates the session on
   first use without an initialize handshake. All verified in a spike

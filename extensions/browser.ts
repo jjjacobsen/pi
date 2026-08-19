@@ -6,8 +6,11 @@
 // JSON envelope on stdout, exit). All browser logic lives in Zig, which
 // posts one MCP tools/call (JSON-RPC 2.0 over HTTP) to the lightpanda MCP
 // daemon that launchd keeps running (see docs/daemons.md). The daemon owns
-// the page: every call attaches to the same session, so the page stays
-// loaded between calls.
+// the pages: every call attaches to a session id sent in the request,
+// defaulting to the shared "pi-main" tab. A pi process can be pointed at
+// its own tab via browser_pick_session below (the session choice is
+// per-process glue state, reset on a pi reload), and tabs can be listed
+// and closed via browser_sessions / browser_close_session.
 //
 // Protocol:
 //   -> {"op":"goto","params":"{\"url\":\"...\"}"}   params is a JSON string
@@ -29,6 +32,14 @@ const strOpt = (description: string) => T.Optional(T.String({ description }));
 // The pi.exec timeout runs 10s longer so a slow call surfaces as the Zig
 // deadline's clean "TimedOut" envelope instead of a pi.exec kill.
 const CALL_TIMEOUT_MS = 120000;
+
+// Per-process browser session (tab). Defaults to the shared "pi-main" tab
+// every pi process joins; browser_pick_session changes it for the rest of
+// this pi process. Module-level glue state survives /new /resume /fork and
+// resets on a pi reload (fresh module instance).
+let currentSession = "pi-main";
+
+const badSession = (s: string) => !/^[A-Za-z0-9._-]+$/.test(s);
 
 // name: tool name exposed to the model. mcp: lightpanda MCP tool behind it.
 // params are passed through as-is, so keys must match the MCP argument names.
@@ -85,6 +96,12 @@ const TOOLS: { name: string; mcp?: string; description: string; params: TPropert
     params: {} },
   { name: "browser_search", mcp: "search", description: "Run a web search and return the results as markdown.",
     params: { query: T.String({ description: "The search query." }), timeout: intOpt("Timeout in ms. Default 10000.") } },
+  { name: "browser_pick_session", description: "Point this pi process at a different browser session (tab) for all later browser_* calls. The browser normally uses the shared session 'pi-main' (one tab every pi process joins). Picking a brand-new name opens a fresh tab, picking a name that already exists (see browser_sessions) joins that tab (e.g. to share one page between pi processes), and picking 'pi-main' returns to the shared tab. The choice sticks for the rest of this pi process and resets on a pi reload.",
+    params: { session: T.String({ description: "Session id to use (letters, digits, '-', '_', '.'). Existing ids are listed by browser_sessions." }) } },
+  { name: "browser_sessions", mcp: "session_list", description: "List every browser session (tab) currently open in the lightpanda daemon with the URL it holds. Use to see how many tabs exist and what each is showing, and to find a session id to pick (browser_pick_session) or close (browser_close_session).",
+    params: {} },
+  { name: "browser_close_session", mcp: "session_close", description: "Close a browser session (tab) by its session id, freeing the page it held. See browser_sessions for open ids. A closed session is recreated empty on its next use, so closing 'pi-main' and then using it again resets the shared tab. The permanent empty 'default' catch-all cannot be closed and is never used by the extension, ignore it.",
+    params: { session: T.String({ description: "Session id to close, e.g. 'pi-main' or a name from browser_sessions." }) } },
 ];
 
 export default function (pi: ExtensionAPI) {
@@ -95,15 +112,33 @@ export default function (pi: ExtensionAPI) {
       description: t.description,
       parameters: T.Object(t.params),
       async execute(_toolCallId, params, signal) {
-        // Esc aborts via pi.exec SIGTERM on the one-shot binary. The daemon
-        // keeps the page and the in-flight MCP call finishes on its own, so
-        // the next call just queues behind it (lightpanda serializes calls
-        // per session).
         try {
+          const isSessionTool = t.name === "browser_pick_session" || t.name === "browser_close_session";
+          const sessionArg = String(params.session);
+          if (isSessionTool && badSession(sessionArg)) {
+            return toolError(`invalid session id "${sessionArg}" (use letters, digits, '-', '_', or '.')`);
+          }
+          // browser_pick_session is glue-only: it points this pi process at
+          // a different session (tab) for every later browser call.
+          if (t.name === "browser_pick_session") {
+            currentSession = sessionArg;
+            return { content: [{ type: "text" as const, text: `Browser session set to "${sessionArg}" for this pi process. The next browser_* call uses it. Use browser_sessions to list tabs.` }], details: {} };
+          }
+          // browser_close_session takes the session id as the MCP "id" arg;
+          // every other tool passes params through as-is. Lightpanda rejects
+          // closing the session the request is attached to, so close calls
+          // attach to the permanent empty "default" session instead (never
+          // the close target; the server rejects closing default itself).
+          const args = t.name === "browser_close_session" ? { id: sessionArg } : params;
+          const sess = t.name === "browser_close_session" ? "default" : currentSession;
+          // Esc aborts via pi.exec SIGTERM on the one-shot binary. The daemon
+          // keeps the page and the in-flight MCP call finishes on its own, so
+          // the next call just queues behind it (lightpanda serializes calls
+          // per session).
           const res = await callZig(
             pi,
             "pi-browser",
-            { op: t.mcp, params: JSON.stringify(params) },
+            { op: t.mcp ?? t.name, params: JSON.stringify(args), session: sess },
             { signal, timeout: CALL_TIMEOUT_MS + 10000 },
           );
           return { content: [{ type: "text" as const, text: res.result }], details: {} };

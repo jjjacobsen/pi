@@ -30,8 +30,11 @@ session for context
 ### browser - headless browser via Lightpanda
 
 Gives the model a real headless browser with tools to navigate, read,
-click, fill forms, and extract content from any page. Needs the lightpanda
-daemon running (`mise run daemon-start`), see docs/daemons.md
+click, fill forms, and extract content from any page. All pi processes
+share one persistent tab by default; a pi process can be pointed at its
+own tab (browser_pick_session) and tabs can be listed and closed.
+Needs the lightpanda daemon running (`mise run daemon-start`), see
+docs/daemons.md
 
 ### cua - desktop computer use
 

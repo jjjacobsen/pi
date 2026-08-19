@@ -8,7 +8,10 @@
 // The daemon is a long-lived `lightpanda mcp --port 8931` process started
 // by `mise run daemon-start` (docs/daemons.md). Pages live in the daemon:
 // the model opens a URL in one call and reads it in the next because every
-// call attaches to the same session, sent as the Mcp-Session-Id header.
+// call attaches to a session, sent as the Mcp-Session-Id header. The
+// default session is "pi-main" (shared by every pi process); the glue can
+// override it per pi process so one pi process can be pointed at its own
+// tab (see browser.ts's browser_pick_session).
 // The MCP initialize handshake is skipped: lightpanda accepts tools/call
 // directly and creates the session on first use (verified against the
 // 2026.08 nightly). If a future build starts requiring the handshake, add
@@ -33,7 +36,7 @@ const respondExit = common.respondExit;
 
 const DAEMON_HOST = "127.0.0.1"; // keep in sync with scripts/com.pijon.lightpanda.plist
 const DAEMON_PORT = 8931;
-const SESSION_ID = "pi-main"; // stable client-chosen MCP session (one tab per daemon run)
+const SESSION_ID = "pi-main"; // shared default MCP session; the glue overrides per pi process
 
 // Backstop for a single MCP tool call. Lightpanda runs its own (far
 // shorter) timeouts for navigation, waits, and evaluate, so this only
@@ -50,6 +53,7 @@ const RESULT_CAP = 60 * 1024;
 const Request = struct {
     op: []const u8, // MCP tool name, e.g. "goto"
     params: []const u8 = "{}", // JSON string containing the raw arguments object
+    session: ?[]const u8 = null, // MCP session id (browser tab); the glue picks per pi process, defaults to SESSION_ID
 };
 
 const WorkerCtx = struct {
@@ -57,6 +61,7 @@ const WorkerCtx = struct {
     io: std.Io,
     op: []const u8,
     params: []const u8,
+    session: []const u8,
 };
 
 // Truncates extracted text over cap to its head and tail with an explicit
@@ -78,6 +83,18 @@ fn isDaemonDown(err: anyerror) bool {
         => true,
         else => false,
     };
+}
+
+// The session id travels as an HTTP header value, so it must be a safe,
+// single-line token. Lightpanda session ids are simple names ("pi-main",
+// "s1"); restrict to letters/digits/'-'/'_'/'.' and fail loudly on anything
+// else rather than risk a malformed header.
+fn validSessionId(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.')) return false;
+    }
+    return true;
 }
 
 const McpResult = struct {
@@ -131,7 +148,7 @@ fn parseMcpResponse(arena: Allocator, body: []const u8) !McpResult {
 // POSTs one MCP tools/call to the daemon and returns the extracted text.
 // `slot` receives the socket fd so the httpWithDeadline path can shut it
 // down when the call exceeds CALL_TIMEOUT_MS.
-fn callTool(arena: Allocator, io: std.Io, slot: *common.WorkerSlot, op: []const u8, params: []const u8) !McpResult {
+fn callTool(arena: Allocator, io: std.Io, slot: *common.WorkerSlot, op: []const u8, params: []const u8, session: []const u8) !McpResult {
     var client = http.Client{ .allocator = arena, .io = io };
     defer client.deinit();
     const uri = try std.Uri.parse(try std.fmt.allocPrint(arena, "http://{s}:{d}/mcp", .{ DAEMON_HOST, DAEMON_PORT }));
@@ -141,7 +158,7 @@ fn callTool(arena: Allocator, io: std.Io, slot: *common.WorkerSlot, op: []const 
     var hdrs: std.ArrayList(http.Header) = .empty;
     try hdrs.append(arena, .{ .name = "content-type", .value = "application/json" });
     try hdrs.append(arena, .{ .name = "accept", .value = "application/json" });
-    try hdrs.append(arena, .{ .name = "mcp-session-id", .value = SESSION_ID });
+    try hdrs.append(arena, .{ .name = "mcp-session-id", .value = session });
 
     var req = try client.request(.POST, uri, .{ .extra_headers = hdrs.items, .redirect_behavior = .unhandled, .keep_alive = false });
     defer req.deinit();
@@ -209,8 +226,9 @@ fn browserWorker(ctx: *WorkerCtx, slot: *common.WorkerSlot) void {
     // never reads memory the caller freed.
     const op = arena.dupe(u8, ctx.op) catch return common.workerFinish(slot, false, false, "out of memory");
     const params = arena.dupe(u8, ctx.params) catch return common.workerFinish(slot, false, false, "out of memory");
+    const session = arena.dupe(u8, ctx.session) catch return common.workerFinish(slot, false, false, "out of memory");
 
-    const res = callTool(arena, ctx.io, slot, op, params) catch |err| {
+    const res = callTool(arena, ctx.io, slot, op, params, session) catch |err| {
         if (isDaemonDown(err)) {
             common.workerFinish(slot, false, false, "lightpanda daemon is not running (start it with `mise run daemon-start`) or unreachable on 127.0.0.1:8931");
             return;
@@ -238,7 +256,10 @@ pub fn main(init: std.process.Init) !void {
     const req = json.parseFromSlice(Request, arena, std.mem.sliceTo(argv[1], 0), .{ .ignore_unknown_fields = true }) catch |err|
         respondExit(arena, io, false, @errorName(err));
 
-    const ctx = WorkerCtx{ .gpa = gpa, .io = io, .op = req.value.op, .params = req.value.params };
+    const session = req.value.session orelse SESSION_ID;
+    if (!validSessionId(session)) respondExit(arena, io, false, "invalid session id (use letters, digits, '-', '_', or '.')");
+
+    const ctx = WorkerCtx{ .gpa = gpa, .io = io, .op = req.value.op, .params = req.value.params, .session = session };
     const res = common.httpWithDeadline(gpa, arena, io, ctx, browserWorker, CALL_TIMEOUT_MS) catch |err|
         respondExit(arena, io, false, @errorName(err));
 

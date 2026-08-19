@@ -392,3 +392,20 @@ extensions/ as a hk step.
 - hk's end-of-file-fixer wants a trailing newline on every new file
   (browser.ts, both daemon scripts, browser.zig); run `mise x -- hk util
   end-of-file-fixer --fix <files>` after writing them.
+
+## 2026-08-19 — browser session override (per-process tabs)
+
+- lightpanda's anonymous session `"default"` is a permanent catch-all that
+  cannot be closed ("the default session cannot be closed"); it is never
+  used by the extension because every call sends a session header. Harmless,
+  but it appears in every session_list output.
+- `session_close` on named sessions genuinely frees them (verified) and
+  lightpanda re-creates a session on its next use, so "close then use" is
+  the way to reset a tab, including `pi-main`.
+- lightpanda rejects `session_close` when the request is attached to the
+  session being closed ("cannot close the session you are attached to").
+  The glue's browser_close_session therefore attaches to the permanent
+  empty "default" session (sending `Mcp-Session-Id: default` reuses it,
+  verified, and closing any named session from that context works).
+- The glue's `params` values are typed `unknown`, so reading
+  `params.session` needed a `String()` coercion, not a cast.
