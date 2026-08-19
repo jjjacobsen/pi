@@ -30,16 +30,17 @@ the binary cannot take down pi. The shared parts live in two files:
   without an envelope), or a protocol error (`ok:false`).
 
 The persistent bridge (`extensions/lib/backend.ts`, `createBackend` +
-`handleSessionShutdown`) is the pre-one-shot model, kept only for the
-unconverted backends (browser last). It owns lazy spawning, the
+`handleSessionShutdown`) is the pre-one-shot model, kept only for browser
+(the last unconverted backend). It owns lazy spawning, the
 pending-call map, line dispatch, `restart()` / `reset()` / `kill()` on
-session boundaries, and the unref dance; unconverted backends still
-register `pi.on("session_shutdown", ...)`. The conversion playbook lives
+session boundaries, and the unref dance; browser still registers
+`pi.on("session_shutdown", ...)`. The conversion playbook lives
 in `skills/convert-extension/SKILL.md`.
 
 Per-backend protocol details are documented in each extension's section
-below; the wire format is identical everywhere: one JSON request line on
-stdin, one JSON response line on stdout.
+below; the one-shot wire format is identical everywhere: one JSON request
+as a single argv element, one JSON envelope on stdout (browser, still on
+the persistent bridge, keeps the old line protocol).
 
 # TypeScript glue tooling (tsconfig, tsc, hk)
 
@@ -682,30 +683,30 @@ Why this split:
   on-disk cache, aggregation into the five periods plus hourly buckets,
   insights, and the HTTPS fetches for provider limits.
 
-## Protocol (newline-delimited JSON on stdin/stdout)
+## Protocol (one JSON request as a single argv element, one JSON envelope on stdout)
 
 ```json
-{"id":1,"op":"collect","bounds":{"todayMs":..,"weekStartMs":..,"lastWeekStartMs":..,"last30DaysStartMs":..,"nowMs":..}}
-{"id":1,"ok":true,"result":"{\"bounds\":..,\"hourly\":..,\"today\":..,\"thisWeek\":..,\"lastWeek\":..,\"last30Days\":..,\"allTime\":..,\"warnings\":[...]}"}
-{"id":2,"op":"limits","codex_access":"...","codex_account_id":"...","codex_email":"..."}
-{"id":2,"ok":true,"result":"{\"fetchedAt\":..,\"providers\":[...]}"}
+{"op":"collect","bounds":{"todayMs":..,"weekStartMs":..,"lastWeekStartMs":..,"last30DaysStartMs":..,"nowMs":..},"agent_dir":"..."}
+{"ok":true,"result":"{\"bounds\":..,\"hourly\":..,\"today\":..,\"thisWeek\":..,\"lastWeek\":..,\"last30Days\":..,\"allTime\":..,\"warnings\":[...]}"}
+{"op":"limits","codex_access":"...","codex_account_id":"...","codex_email":"..."}
+{"ok":true,"result":"{\"fetchedAt\":..,\"providers\":[...]}"}
 ```
 
 - `collect` is local-only. Bounds are computed by the glue (local calendar
-  midnights; Zig has no portable local-timezone API). The backend scans
-  `~/.pi/agent/sessions` for `.jsonl` files, re-parses only files whose
-  (size, mtime) changed since the binary cache (`~/.pi/agent/pi-usage-cache.bin`),
-  aggregates, computes insights, and returns one JSON payload. A file that
-  fails to stat/read/parse keeps its cached rows and adds a warning to the
-  payload, so a partial scan is never persisted as success or reported as
-  clean.
-- `limits` fetches quota over HTTPS on a worker thread; the main loop polls
-  the result pipe with a 20s deadline so a hung network can never block the
-  backend. OpenCode Go uses `GET https://opencode.ai/zen/go/v1/usage` with
-  `Bearer $OPENCODE_API_KEY` (env). Codex uses
-  `GET https://chatgpt.com/backend-api/wham/usage` with the bearer and
-  `ChatGPT-Account-Id` from the request: the glue resolves the access token
-  (and JWT account id/email) through pi's model registry
+  midnights; Zig has no portable local-timezone API), and the agent dir
+  rides the request (the glue's `getAgentDir`, pi's own resolution, never
+  an env fallback). The backend scans `<agent_dir>/sessions` for `.jsonl`
+  files, re-parses only files whose (size, mtime) changed since the binary
+  cache (`<agent_dir>/pi-usage-cache.bin`), aggregates, computes insights,
+  and returns one JSON payload. A file that fails to stat/read/parse keeps
+  its cached rows and adds a warning to the payload, so a partial scan is
+  never persisted as success or reported as clean.
+- `limits` fetches quota over HTTPS on the main thread; a hung network is
+  bounded by the glue's `pi.exec` timeout (30s). OpenCode Go uses
+  `GET https://opencode.ai/zen/go/v1/usage` with `Bearer $OPENCODE_API_KEY`
+  (env). Codex uses `GET https://chatgpt.com/backend-api/wham/usage` with
+  the bearer and `ChatGPT-Account-Id` from the request: the glue resolves
+  the access token (and JWT account id/email) through pi's model registry
   (`getApiKeyAndHeaders` on an openai-codex model), so OAuth refresh and
   `auth.json` rewriting stay in pi and this backend never touches the
   credential file.
@@ -724,10 +725,6 @@ Why this split:
 - Dedupe of copied branch history uses a hash of (auxiliary, sourceId,
   timestamp, token fingerprint); insights text and thresholds are ported
   verbatim from the original extension (data.ts computeInsights).
-- The limits worker's context is heap-owned and the worker frees it on every
-  exit path (success, or a write failure after the main loop abandons a
-  timed-out request), so it can never read reused stack memory, write into a
-  later request's pipe, or leak.
 
 ## Notes
 
@@ -740,10 +737,6 @@ Why this split:
   but unused; the extension never reads it.
 - The cache path differs from the tmuster one, so the two extensions cannot
   corrupt each other's data even if both are installed.
-- The worker thread's context and its string fields are gpa-owned and freed
-  by the worker itself on every exit path; the main loop's arena is reset on
-  the next request. A timed-out request abandons the worker (closes the read
-  end, its next write fails, and it cleans itself up) rather than leaking.
 - Zig 0.16 API notes: `std.posix` no longer exposes `pipe`/`close`/`write`/
   `getpid`; use `posix.system.pipe(&fds)` / `posix.system.close(fd)` /
   `posix.system.write(fd, ...)` / `posix.system.getpid()` with

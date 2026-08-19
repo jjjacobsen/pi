@@ -14,17 +14,18 @@
  * is adapted from omp (can1357/oh-my-pi) /usage: per-provider quota windows
  * with usage bars, reset timers, plan/account info, and Codex saved resets.
  *
- * Protocol to the backend (one JSON request line in, one response line out):
- *   -> {"id":1,"op":"collect","bounds":{...}}
- *   -> {"id":2,"op":"limits"}
- *   <- {"id":1,"ok":true,"result":"<json>"} | {"id":1,"ok":false,"error":"..."}
+ * Protocol to the backend (one JSON request as a single argv element via
+ * pi.exec, one JSON envelope on stdout, process exits):
+ *   -> {"op":"collect","bounds":{...},"agent_dir":"..."}
+ *   -> {"op":"limits","codex_access":"...","codex_account_id":"...","codex_email":"..."}
+ *   <- {"ok":true,"result":"<json>"} | {"ok":false,"error":"..."}
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { CancellableLoader, Container, Spacer, matchesKey, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
-import { createBackend, handleSessionShutdown } from "./lib/backend";
+import { callZig } from "./lib/zig";
 import { resolveCodexAuth } from "./lib/toolkit";
 import type { BackendData, BaseStats, Insight, LimitsData, PeriodBounds, ProviderLimits, TabName, TotalStats, UsageData } from "./lib/usage/types";
 import { convertBackendData, TAB_ORDER } from "./lib/usage/types";
@@ -50,7 +51,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-const backend = createBackend("pi-usage");
+const COLLECT_TIMEOUT_MS = 60_000; // generous: first full scan of a big session history
+const LIMITS_TIMEOUT_MS = 30_000; // the backend has no internal deadline; a hung fetch is killed here
 
 // ---------------------------------------------------------------------------
 // Codex auth for the limits fetch: resolved through pi's model registry via
@@ -418,7 +420,7 @@ class UsageComponent {
 	private theme: Theme;
 	private requestRender: () => void;
 	private done: () => void;
-	private resolveLimitsArgs: () => Promise<Record<string, string | undefined>>;
+	private limitsFetcher: () => Promise<string>;
 	private warnings: string[] = [];
 
 	// Graph explorer state.
@@ -442,12 +444,12 @@ class UsageComponent {
 	private limitsInFlight = false;
 	private disposed = false;
 
-	constructor(theme: Theme, data: UsageData, requestRender: () => void, done: () => void, resolveLimitsArgs: () => Promise<Record<string, string | undefined>>, warnings: string[]) {
+	constructor(theme: Theme, data: UsageData, requestRender: () => void, done: () => void, limitsFetcher: () => Promise<string>, warnings: string[]) {
 		this.theme = theme;
 		this.requestRender = requestRender;
 		this.done = done;
 		this.data = data;
-		this.resolveLimitsArgs = resolveLimitsArgs;
+		this.limitsFetcher = limitsFetcher;
 		this.warnings = warnings;
 		this.updateProviderOrder();
 	}
@@ -478,12 +480,11 @@ class UsageComponent {
 		this.limitsInFlight = true;
 		this.setLimitsLoading();
 		this.requestRender();
-		this.resolveLimitsArgs()
-			.then((args) => backend.call("limits", args))
-			.then((res: any) => {
+		this.limitsFetcher()
+			.then((result: string) => {
 				if (this.disposed) return;
 				try {
-					this.setLimits(JSON.parse(res.result));
+					this.setLimits(JSON.parse(result));
 				} catch {
 					this.setLimitsError("invalid limits response");
 				}
@@ -1212,13 +1213,7 @@ class UsageComponent {
 // Extension Entry Point
 // =============================================================================
 
-function getAgentDir(): string {
-	// Replicate Pi's logic: respect PI_CODING_AGENT_DIR env var
-	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-}
-
 export default function (pi: ExtensionAPI) {
-	pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
 	pi.registerCommand("usage", {
 		description: "Show usage statistics dashboard",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
@@ -1244,7 +1239,7 @@ export default function (pi: ExtensionAPI) {
 
 				loader.onAbort = () => finish(null);
 
-				(backend.call("collect", { bounds }) as Promise<{ result: string }>)
+				callZig(pi, "pi-usage", { op: "collect", bounds, agent_dir: getAgentDir() }, { signal: ctx.signal, timeout: COLLECT_TIMEOUT_MS })
 					.then((res: any) => {
 						try {
 							finish(JSON.parse(res.result));
@@ -1276,7 +1271,10 @@ export default function (pi: ExtensionAPI) {
 					data,
 					() => tui.requestRender(),
 					() => done(),
-					() => resolveLimitsArgs(ctx),
+					() =>
+						resolveLimitsArgs(ctx).then((args) =>
+							callZig(pi, "pi-usage", { op: "limits", ...args }, { signal: ctx.signal, timeout: LIMITS_TIMEOUT_MS }).then((res) => res.result)
+						),
 					Array.isArray(raw.warnings) ? raw.warnings : []
 				);
 				// The provider-limits fetch starts on the first Limits view, not

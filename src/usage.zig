@@ -7,28 +7,29 @@
 // provider-limit fetchers are adapted from omp (can1357/oh-my-pi):
 // OpenCode Go `zen/go/v1/usage` and OpenAI Codex `wham/usage`.
 //
-// Protocol (one JSON request line on stdin, one JSON response line on stdout):
-//   -> {"id":1,"op":"collect","bounds":{"todayMs":..,"weekStartMs":..,
-//       "lastWeekStartMs":..,"last30DaysStartMs":..,"nowMs":..}}
-//   -> {"id":2,"op":"limits","codex_access":"...","codex_account_id":"...",
+// One-shot: the request travels as one JSON argv element (the glue spawns the
+// binary per call via pi.exec), the backend prints one JSON envelope to stdout
+// and exits.
+//   -> {"op":"collect","bounds":{"todayMs":..,"weekStartMs":..,
+//       "lastWeekStartMs":..,"last30DaysStartMs":..,"nowMs":..},"agent_dir":"..."}
+//   -> {"op":"limits","codex_access":"...","codex_account_id":"...",
 //       "codex_email":"..."}
-//   <- {"id":1,"ok":true,"result":"<json>"} | {"id":1,"ok":false,"error":"..."}
+//   <- {"ok":true,"result":"<json>"} | {"ok":false,"error":"..."}
 //
-// The collect op is local-only: it scans ~/.pi/agent/sessions for .jsonl
+// The collect op is local-only: it scans <agent_dir>/sessions for .jsonl
 // files, re-parses only files whose (size, mtime) changed since the binary
-// cache (~/.pi/agent/pi-usage-cache.bin), aggregates the five period views
-// plus hourly buckets, and computes insights. The limits op fetches provider
-// quota over HTTPS; it runs on a worker thread so a slow network can never
-// block the main loop, and the main loop abandons it after a deadline. The
-// Codex credentials (access token, account id, email) are resolved by the
-// glue through pi's model registry — refresh and auth.json rewriting stay in
-// pi — and passed per request; this backend never touches the credential
-// file.
+// cache (<agent_dir>/pi-usage-cache.bin), aggregates the five period views
+// plus hourly buckets, and computes insights. The agent dir rides the request
+// from the glue (pi's own resolution), never the environment. The limits op
+// fetches provider quota over HTTPS on the main thread; a hung network is
+// bounded by the glue's pi.exec timeout. The Codex credentials (access token,
+// account id, email) are resolved by the glue through pi's model registry —
+// refresh and auth.json rewriting stay in pi — and passed per request; this
+// backend never touches the credential file.
 //
-// Unix-only by design (posix pipes and threads); pi itself is Unix-first.
+// Unix-only by design; pi itself is Unix-first.
 
 const std = @import("std");
-const posix = std.posix;
 const mem = std.mem;
 const json = std.json;
 const Allocator = std.mem.Allocator;
@@ -39,15 +40,12 @@ fn ManagedList(comptime T: type) type {
     return std.array_list.AlignedManaged(T, null);
 }
 const nowRealtimeMs = common.nowRealtimeMs;
-const readLine = common.readLine;
 const writeAllIo = common.writeAllIo;
-const respond = common.respond;
+const respondExit = common.respondExit;
 const appendJsonEscaped = common.appendJsonEscaped;
 
-const MAX_LINE = 8 * 1024 * 1024; // hard cap on a single request/response line
 const CACHE_MAGIC: u32 = 0x4355_4950; // "PIUC"
 const CACHE_VERSION: u32 = 1;
-const LIMITS_TIMEOUT_MS: i64 = 20_000;
 
 const HOUR_MS: f64 = 3_600_000;
 const DAY_MS: f64 = 24 * HOUR_MS;
@@ -1936,84 +1934,8 @@ fn buildLimitsJson(arena: Allocator, io: std.Io, environ: *std.process.Environ.M
 }
 
 // =============================================================================
-// Worker thread for the limits op (keeps slow network off the main loop)
-// =============================================================================
-
-// The context is heap-owned and the worker frees it (strings included) when
-// it finishes: the main loop's arena is reset on the next request while the
-// worker may still be running, and a timed-out request abandons the worker
-// (the read end closes, its next write fails, and it cleans itself up). The
-// worker can therefore never read reused stack memory or write into a later
-// request's pipe.
-const LimitsThreadCtx = struct {
-    gpa: Allocator,
-    io: std.Io,
-    environ: *std.process.Environ.Map,
-    write_fd: posix.fd_t = -1,
-    codex_access: ?[]const u8 = null, // gpa-owned copies of the request fields
-    codex_account_id: ?[]const u8 = null,
-    codex_email: ?[]const u8 = null,
-
-    fn deinit(self: *LimitsThreadCtx) void {
-        const gpa = self.gpa;
-        if (self.codex_access) |s| gpa.free(s);
-        if (self.codex_account_id) |s| gpa.free(s);
-        if (self.codex_email) |s| gpa.free(s);
-        gpa.destroy(self);
-    }
-};
-
-fn writeAllFd(fd: posix.fd_t, bytes: []const u8) void {
-    var off: usize = 0;
-    while (off < bytes.len) {
-        const n = posix.system.write(fd, bytes[off..].ptr, bytes.len - off);
-        if (n < 0) {
-            if (posix.errno(@as(c_int, @intCast(n))) == .INTR) continue;
-            return;
-        }
-        off += @intCast(n);
-    }
-}
-
-fn limitsThreadFn(ctx: *LimitsThreadCtx) void {
-    var arena_state = std.heap.ArenaAllocator.init(ctx.gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var out = List.init(arena);
-    const result = buildLimitsJson(arena, ctx.io, ctx.environ, ctx.codex_access, ctx.codex_account_id, ctx.codex_email) catch |err|
-        std.fmt.allocPrint(arena, "{{\"error\":\"{s}\"}}", .{@errorName(err)}) catch "";
-    out.appendSlice(result) catch {};
-    out.append('\n') catch {};
-    writeAllFd(ctx.write_fd, out.items);
-    _ = posix.system.close(ctx.write_fd);
-    // The worker owns the context and frees it on every exit path (success,
-    // write failure after the main thread abandoned us, or a build error).
-    ctx.deinit();
-}
-
-fn closeFd(fd: posix.fd_t) void {
-    _ = posix.system.close(fd);
-}
-
-fn makePipe() !struct { fds: [2]posix.fd_t } {
-    var fds: [2]posix.fd_t = undefined;
-    switch (posix.errno(posix.system.pipe(&fds))) {
-        .SUCCESS => return .{ .fds = fds },
-        else => return error.PipeFailed,
-    }
-}
-
-// =============================================================================
 // Collect orchestration
 // =============================================================================
-
-fn getAgentDir(arena: Allocator, environ: *std.process.Environ.Map) ![]const u8 {
-    if (environ.get("PI_CODING_AGENT_DIR")) |dir| {
-        if (dir.len > 0) return dir;
-    }
-    const home = environ.get("HOME") orelse return error.NoHome;
-    return std.fmt.allocPrint(arena, "{s}/.pi/agent", .{home});
-}
 
 fn collectJsonlFiles(io: std.Io, arena: Allocator, dir_path: []const u8, out: *ManagedList([]const u8), warnings: *ManagedList([]const u8)) !void {
     var dir = std.Io.Dir.openDir(.cwd(), io, dir_path, .{ .iterate = true }) catch {
@@ -2039,16 +1961,15 @@ fn collectJsonlFiles(io: std.Io, arena: Allocator, dir_path: []const u8, out: *M
 }
 
 const Request = struct {
-    id: i64,
     op: []const u8,
     bounds: ?Bounds = null,
+    agent_dir: ?[]const u8 = null, // required by collect; resolved by the glue
     codex_access: ?[]const u8 = null, // resolved by the glue via the model registry
     codex_account_id: ?[]const u8 = null,
     codex_email: ?[]const u8 = null,
 };
 
-fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, bounds: Bounds) ![]const u8 {
-    const agent_dir = try getAgentDir(arena, environ);
+fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, agent_dir: []const u8, bounds: Bounds) ![]const u8 {
     const sessions_dir = try std.fmt.allocPrint(arena, "{s}/sessions", .{agent_dir});
     const cache_path = try std.fmt.allocPrint(arena, "{s}/pi-usage-cache.bin", .{agent_dir});
     const home = environ.get("HOME") orelse "";
@@ -2141,102 +2062,39 @@ fn runCollect(arena: Allocator, io: std.Io, environ: *std.process.Environ.Map, b
 }
 
 // =============================================================================
-// Main loop
+// =============================================================================
+// Main (one-shot: request in argv[1], one envelope on stdout, exit)
 // =============================================================================
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
+    const argv = init.minimal.args.vector;
+    if (argv.len < 2) {
+        std.debug.print("usage: pi-usage '<request json>'\n", .{});
+        std.process.exit(2);
+    }
+
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    var stdin_buf = List.init(gpa);
-    defer stdin_buf.deinit();
+    const arena = arena_state.allocator();
 
-    while (true) {
-        _ = arena_state.reset(.retain_capacity);
-        const arena = arena_state.allocator();
+    const req = json.parseFromSlice(Request, arena, std.mem.sliceTo(argv[1], 0), .{ .ignore_unknown_fields = true }) catch |err|
+        respondExit(arena, io, false, @errorName(err));
 
-        const line = readLine(posix.STDIN_FILENO, &stdin_buf, MAX_LINE, arena, null) catch |err| {
-            std.debug.print("pi-usage: {s}\n", .{@errorName(err)});
-            break;
-        } orelse break;
-        if (line.len == 0) continue;
-
-        const req = json.parseFromSlice(Request, arena, line, .{ .ignore_unknown_fields = true }) catch |err| {
-            respond(arena, io, 0, false, @errorName(err)) catch {};
-            continue;
-        };
-
-        if (mem.eql(u8, req.value.op, "collect")) {
-            const bounds = req.value.bounds orelse {
-                respond(arena, io, req.value.id, false, "missing bounds") catch {};
-                continue;
-            };
-            const result = runCollect(arena, io, init.environ_map, bounds) catch |err| {
-                respond(arena, io, req.value.id, false, @errorName(err)) catch {};
-                continue;
-            };
-            respond(arena, io, req.value.id, true, result) catch {};
-        } else if (mem.eql(u8, req.value.op, "limits")) {
-            // The context is heap-owned and the worker frees it on exit, so a
-            // timed-out request (or a next-iteration arena reset) can never
-            // leave the worker reading reused stack memory or writing into a
-            // later request's pipe.
-            const ctx = gpa.create(LimitsThreadCtx) catch {
-                respond(arena, io, req.value.id, false, "out of memory") catch {};
-                continue;
-            };
-            ctx.* = .{ .gpa = gpa, .io = io, .environ = init.environ_map };
-            var alloc_ok = true;
-            if (req.value.codex_access) |s| {
-                ctx.codex_access = gpa.dupe(u8, s) catch null;
-                if (ctx.codex_access == null) alloc_ok = false;
-            }
-            if (req.value.codex_account_id) |s| {
-                ctx.codex_account_id = gpa.dupe(u8, s) catch null;
-                if (ctx.codex_account_id == null) alloc_ok = false;
-            }
-            if (req.value.codex_email) |s| {
-                ctx.codex_email = gpa.dupe(u8, s) catch null;
-                if (ctx.codex_email == null) alloc_ok = false;
-            }
-            if (!alloc_ok) {
-                ctx.deinit();
-                respond(arena, io, req.value.id, false, "out of memory") catch {};
-                continue;
-            }
-            const pipe = makePipe() catch |err| {
-                ctx.deinit();
-                respond(arena, io, req.value.id, false, @errorName(err)) catch {};
-                continue;
-            };
-            ctx.write_fd = pipe.fds[1];
-            const thread = std.Thread.spawn(.{}, limitsThreadFn, .{ctx}) catch {
-                closeFd(pipe.fds[0]);
-                closeFd(pipe.fds[1]);
-                ctx.deinit();
-                respond(arena, io, req.value.id, false, "could not spawn limits thread") catch {};
-                continue;
-            };
-            var pipe_buf = List.init(gpa);
-            defer pipe_buf.deinit();
-            const deadline = nowRealtimeMs() + LIMITS_TIMEOUT_MS;
-            const result = readLine(pipe.fds[0], &pipe_buf, MAX_LINE, arena, deadline) catch {
-                // Abandon the fetch; closing the read end makes the thread's
-                // next write fail, and the worker then frees the context
-                // itself (the success path also frees it, so the main loop
-                // never touches the context after spawn).
-                closeFd(pipe.fds[0]);
-                respond(arena, io, req.value.id, false, "limits fetch timed out") catch {};
-                thread.detach();
-                continue;
-            } orelse "";
-            closeFd(pipe.fds[0]);
-            _ = thread.join();
-            respond(arena, io, req.value.id, true, result) catch {};
-        } else {
-            respond(arena, io, req.value.id, false, "unknown op") catch {};
-        }
+    if (mem.eql(u8, req.value.op, "collect")) {
+        const agent_dir = mem.trim(u8, req.value.agent_dir orelse "", " \t\r\n");
+        if (agent_dir.len == 0) respondExit(arena, io, false, "missing agent_dir");
+        const bounds = req.value.bounds orelse respondExit(arena, io, false, "missing bounds");
+        const result = runCollect(arena, io, init.environ_map, agent_dir, bounds) catch |err| respondExit(arena, io, false, @errorName(err));
+        respondExit(arena, io, true, result);
+    } else if (mem.eql(u8, req.value.op, "limits")) {
+        // The fetch runs on the main thread; a hung network is bounded by the
+        // glue's pi.exec timeout, which SIGTERMs this process.
+        const result = buildLimitsJson(arena, io, init.environ_map, req.value.codex_access, req.value.codex_account_id, req.value.codex_email) catch |err| respondExit(arena, io, false, @errorName(err));
+        respondExit(arena, io, true, result);
+    } else {
+        respondExit(arena, io, false, "unknown op");
     }
 }

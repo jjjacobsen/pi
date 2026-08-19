@@ -353,3 +353,16 @@ extensions/ as a hk step.
   (off_space_or_ax_unresolved)` + `escalation: recommended foreground`.
   Both are correct driver behavior, easy to mistake for a regression when
   smoke-testing off-Space windows.
+
+## 2026-08-18
+
+- Smoke-testing one-shot binaries with a pipe to `head` reports `head`'s
+  exit code, not the binary's: a failing op looked like exit 0. Redirect
+  to a file (or use `${PIPESTATUS[0]}`) when the exit code matters.
+- pi-usage conversion: the old persistent main owned `stdin_buf`, the
+  limits pipe, and the `posix` import all together, so removing the loop
+  and the worker thread left dead imports that the compiler caught
+  immediately. The one-shot collect op writes no cache file when nothing
+  changed (dirty stays false), which is by design, and it reuses the same
+  `pi-usage-cache.bin` the persistent backend wrote, so no migration is
+  needed between models.
