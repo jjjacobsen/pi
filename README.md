@@ -40,8 +40,8 @@ Driver daemon running with Accessibility and Screen Recording granted
 
 ### lazygit - full-screen git TUI via /lg
 
-`/lg` pauses pi and hands the whole terminal to lazygit, so you can browse
-commits and stage diffs the old-fashioned way
+`/lg` hands the whole terminal to lazygit (while pi keeps running in the
+background), so you can browse commits and stage diffs the old-fashioned way
 
 ### goal - autonomous goal loop via /goal
 

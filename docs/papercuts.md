@@ -317,3 +317,17 @@ extensions/ as a hk step.
   signal terminations and execCommand substitutes 0), so the glue must
   check `res.killed` before trusting the exit code, or a killed process
   looks like an empty success. Handled in extensions/lib/zig.ts.
+
+## 2026-08-18 — one-shot conversion (pi-lg)
+
+- `cd` persists across `bash` tool calls in this harness. In one smoke-test
+  batch I ran `cd /tmp` to test the not-a-repo path and the subsequent
+  relative-path `./zig-out/bin/pi-lg` invocations failed with "No such file
+  or directory". Use absolute binary paths (or `pushd`/`popd`) in multi-step
+  test commands.
+- macOS has no GNU `timeout` (`timeout: command not found`). To bound a
+  blocking backend binary that opens `/dev/tty`, bg it, `sleep`, `kill`,
+  then `wait` — or rely on the op failing fast when no controlling terminal
+  exists (this sandbox has none, so `run` returned "cannot open controlling
+  terminal /dev/tty" immediately, which conveniently exercised the full run
+  path including the signal-handler install without needing a real tty).

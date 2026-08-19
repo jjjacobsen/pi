@@ -5,19 +5,27 @@
 // mechanism (tui.stop -> child on the terminal -> tui.start + full redraw).
 //
 // Thin TS: registers the /lg command, owns the pi TUI lifecycle around the
-// backend's run op, and bridges to the Zig backend (src/lazygit.zig) over a
-// newline-delimited JSON pipe. All process logic lives in Zig.
+// backend's run op, and bridges to the Zig backend (src/lazygit.zig) as a
+// one-shot process: each op travels as one JSON argv element via pi.exec
+// (shared callZig helper), the binary prints one JSON envelope to stdout and
+// exits. All process logic lives in Zig.
 //
-// Protocol (one JSON object per line):
-//   -> {"id":1,"op":"prepare","cwd":"/path"}  <- {"id":1,"ok":true,"result":"<repo-root>"}
-//   -> {"id":2,"op":"run","cwd":"/path"}      <- {"id":2,"ok":true,"result":"exited 0"}
+// Note: pi is not paused while lazygit has the terminal. tui.stop() only
+// hides the TUI frame; the agent loop keeps running behind lazygit, exactly
+// like Ctrl+G's external editor.
+//
+// Protocol:
+//   pi.exec("pi-lg", [`{"op":"prepare","cwd":"/path"}`]) -> {"ok":true,"result":"<repo-root>"}
+//   pi.exec("pi-lg", [`{"op":"run","cwd":"/path"}`])     -> {"ok":true,"result":"exited 0"}
+//   failures -> {"ok":false,"error":"..."}
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { Text } from "@earendil-works/pi-tui";
-import { createBackend, handleSessionShutdown } from "./lib/backend";
+import { callZig } from "./lib/zig";
 
-const backend = createBackend("pi-lg");
+const BIN = "pi-lg";
+
 function notify(ctx, text, level = "info") {
   try {
     ctx.ui?.notify?.(`[lg] ${text}`, level);
@@ -27,7 +35,6 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("session_shutdown", (event) => handleSessionShutdown(backend, event));
   pi.registerCommand("lg", {
     description: "Open lazygit full-screen over the pi TUI (esc to quit and return)",
     handler: async (args, ctx) => {
@@ -37,7 +44,7 @@ export default function (pi: ExtensionAPI) {
       const target = path.resolve(ctx.cwd, (args ?? "").trim() || ".");
       try {
         // Validate before the TUI stops so failures never blink the screen.
-        await backend.call("prepare", { cwd: target });
+        await callZig(pi, BIN, { op: "prepare", cwd: target }, { signal: ctx.signal });
 
         // custom() is the only extension API that hands over the live TUI
         // reference, which is what we need for stop/start. The placeholder
@@ -47,7 +54,8 @@ export default function (pi: ExtensionAPI) {
             let outcome;
             try {
               tui.stop();
-              outcome = await backend.call("run", { cwd: target });
+              const res = await callZig(pi, BIN, { op: "run", cwd: target }, { signal: ctx.signal });
+              outcome = { text: res.result };
             } catch (err) {
               outcome = { error: err?.message ?? String(err) };
             } finally {
@@ -58,7 +66,7 @@ export default function (pi: ExtensionAPI) {
             if (outcome?.error) {
               notify(ctx, outcome.error, "error");
             } else {
-              notify(ctx, `lazygit ${outcome.result}`, outcome.result.startsWith("exited 0") ? "info" : "warning");
+              notify(ctx, `lazygit ${outcome.text}`, outcome.text.startsWith("exited 0") ? "info" : "warning");
             }
           })();
           return new Text(theme.fg("dim", "lazygit (esc to quit)"), 1, 0);

@@ -461,16 +461,20 @@ Why this split:
   reporting. The backend's own stdin/stdout are pipes to the glue, so it
   cannot "inherit" the terminal; Zig 0.16 spawn's `.file` StdIo dup2's an
   arbitrary fd into the child, which is how /dev/tty reaches lazygit.
+- pi is not paused while lazygit runs: `tui.stop()` only hides the TUI frame,
+  the agent loop keeps running behind lazygit (same exposure as Ctrl+G).
 
-## Protocol (newline-delimited JSON on stdin/stdout)
+## Protocol (one-shot, one JSON argv element in, envelope on stdout)
 
 ```json
-{"id":1,"op":"prepare","cwd":"/path"}                  -> Zig
-{"id":1,"ok":true,"result":"/path/to/repo-root"}       <- prepare
-{"id":2,"op":"run","cwd":"/path"}                      ->
-{"id":2,"ok":true,"result":"exited 0"}                 <- run: exited N / signal N / stopped / unknown
-{"id":N,"ok":false,"error":"..."}                      <- failures
+pi.exec("pi-lg", [`{"op":"prepare","cwd":"/path"}`]) -> {"ok":true,"result":"/path/to/repo-root"}
+pi.exec("pi-lg", [`{"op":"run","cwd":"/path"}`])     -> {"ok":true,"result":"exited 0"}   (exited N / signal N / stopped / unknown)
+                                                           -> {"ok":false,"error":"..."}        failures
 ```
+
+The glue spawns the binary fresh per op via pi.exec (shared callZig helper);
+the backend prints one envelope and exits. There is no id: one request per
+process. pi-lg is stateless, so no state file and no agent_dir field.
 
 ## Zig behavior
 
@@ -483,9 +487,13 @@ Why this split:
   stdin/stdout/stderr pointing at it, cwd = the target. lazygit puts the
   terminal in raw mode itself, renders full-screen, and restores termios on
   clean exit. The backend blocks in `child.wait` and reports the term.
-- No special signal handling is needed: while lazygit runs it owns the
-  terminal in raw mode (ISIG off), so Ctrl+C / Ctrl+Z are lazygit key events,
-  not signals to pi. Same exposure pi's external editor has.
+- While lazygit runs it owns the terminal in raw mode, so Ctrl+C / Ctrl+Z are
+  lazygit key events, not signals to pi. But pi-lg itself installs a
+  SIGTERM/SIGINT handler that forwards to the running lazygit child: when pi
+  aborts or tears down the session mid-lazygit, killing the child returns the
+  terminal to a sane state instead of leaving lazygit orphaned on the tty.
+  (The child pid is published in a global read by the async-signal-safe
+  handler; lazygit is reaped on the main thread's `child.wait`.)
 
 ## Flow
 
