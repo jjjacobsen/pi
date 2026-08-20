@@ -1167,8 +1167,9 @@ extensions, so there is no protocol and no backend binary.
 Hand off meaty, self-contained tasks to an isolated sub-session so the
 caller's context window stays low. The main session only ever contains
 the task string and the returned summary; the subagent's full transcript
-lives in its own session. The tool is `subagent` with one parameter, the
-task text. Same deliverable shape as the browser: a long-lived thing
+lives in its own session. The tool is `subagent` with a required task and
+optional per-call model and reasoning overrides. Same deliverable shape as
+the browser: a long-lived thing
 that cannot fit the one-shot model gets a structural exception, here the
 exception is *another pi agent loop* instead of a daemon.
 
@@ -1194,8 +1195,13 @@ tool result.
   second guard: only the six names are ever callable. Skills and
   AGENTS.md context files load normally, so the subagent follows the
   same project conventions.
-- Same model and thinking level as the caller (`ctx.model` /
-  `ctx.thinkingLevel`). No per-call override by design.
+- Model and thinking level inherit independently from the caller
+  (`ctx.model` / `ctx.thinkingLevel`) when their optional tool parameters
+  are omitted. A model override is an exact `provider/model` reference or
+  an unambiguous bare model ID. An explicit reasoning override must be one
+  of pi's supported levels and must be supported by the selected model or
+  the call fails. When only the model is overridden, pi clamps the inherited
+  parent level to that model's supported levels.
 - Transcripts persist under `<agent_dir>/subagents/<ts>_<id>.jsonl`
   (a `SessionManager.create` with a custom session dir), link the main
   session via `parentSession`, and can be resumed with
@@ -1212,16 +1218,18 @@ tool result.
 
 ## Glue behavior
 
-- One tool `subagent`, one `task` parameter. The description tells the
-  main agent when to delegate and to fire independent tasks as parallel
-  calls.
+- One tool `subagent` with required `task` plus optional `model` and
+  `reasoning` parameters. Omitting both preserves the original behavior.
+  The description tells the main agent when to delegate, when to inherit,
+  and to fire independent tasks as parallel calls.
 - Live progress: `text_delta` events stream into `onUpdate` (rolling
   tail, capped for display) so the TUI shows the subagent working.
 - Cancellation: the tool's abort signal calls `session.abort()`, the
   model call stops, and the partial transcript stays on disk.
 - The final assistant message is the report: extracted, truncated with
   `truncateHead` to the tool result limit, and returned with the
-  transcript path so the caller can point follow-up work at it.
+  transcript path so the caller can point follow-up work at it. Tool-result
+  details also record the effective `provider/model` and reasoning level.
 
 ## Notes
 

@@ -119,9 +119,10 @@ Codex-backed search
 `subagent` hands a meaty, self-contained task to an isolated sub-session
 in the same process and returns only its final summary, so the caller's
 context window stays low. The subagent gets `read`/`bash`/`edit`/`write`
-plus `web_search` and `describe_image`, uses the same model and reasoning
-as the caller, and can be called several times in one turn to run tasks
-in parallel. Its full transcript is saved under the agent dir
+plus `web_search` and `describe_image`, and can be called several times in
+one turn to run tasks in parallel. Model and reasoning inherit independently
+from the caller unless a call sets either optional override. Its full
+transcript is saved under the agent dir
 (`~/.pi/agent/subagents/`), is resumable, and its usage counts toward
 `/usage` in the caller's session. Pure TypeScript via pi's SDK, no Zig
 backend, see docs/architecture.md

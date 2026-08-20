@@ -416,3 +416,11 @@ extensions/ as a hk step.
   still edited `package.json`. The working tree was clean immediately before
   the command. Inspect the diff after approval previews instead of assuming
   `--dry-run` is read-only.
+
+## 2026-08-20 — SDK exact model resolver is internal
+
+- `findExactModelReferenceMatch` exists in pi's internal model-resolver module
+  but is not exported from the package root, so importing it from
+  `@earendil-works/pi-coding-agent` failed the full TypeScript check. Use the
+  public `ModelRuntime.getModels()` catalog and match `provider/model` first,
+  then an unambiguous exact model ID.
