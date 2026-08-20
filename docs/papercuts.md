@@ -409,3 +409,10 @@ extensions/ as a hk step.
   verified, and closing any named session from that context works).
 - The glue's `params` values are typed `unknown`, so reading
   `params.session` needed a `String()` coercion, not a cast.
+
+## 2026-08-20 — npm install-script approval
+
+- npm 11.19.0's `npm install-scripts approve koffi --dry-run --json`
+  still edited `package.json`. The working tree was clean immediately before
+  the command. Inspect the diff after approval previews instead of assuming
+  `--dry-run` is read-only.
