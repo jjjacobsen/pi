@@ -442,7 +442,8 @@ by SIGTERMing the one-shot binary regardless of the cap.
 
 ## Zig behavior
 
-- `analyze` runs `git add -A` first: the working tree is snapshotted when
+- `analyze` first blocks if `goal.md` or `handoff.md` exists in the repository
+  root. Otherwise it runs `git add -A`: the working tree is snapshotted when
   `/commit` starts, so a later `commit` op commits exactly what the user saw.
   Then it collects `--name-status`, `--stat`, and the `-U3` diff (with `-M`
   for rename detection), the last 25 commit subjects, and AGENTS.md/CLAUDE.md

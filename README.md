@@ -48,7 +48,8 @@ Technical details for every extension live in [docs/architecture.md](docs/archit
 
 `/commit` stages everything and writes a conventional commit message in
 your repo's style, using your git history, AGENTS.md, and the current
-session for context
+session for context. It stops before staging while `goal.md` or `handoff.md`
+exists in the repository root
 
 ### lightpanda - headless browser
 

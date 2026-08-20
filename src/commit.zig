@@ -12,8 +12,9 @@
 // Response: {"ok":true,"result":"..."}   (analyze: "" when nothing is staged)
 //           {"ok":false,"error":"..."}   (validate errors are "- problem" lines)
 //
-// analyze stages everything with `git add -A` and returns a markdown context
-// block for message generation: repo name, primary languages, changed files,
+// analyze blocks while goal.md or handoff.md exists, then stages everything
+// with `git add -A` and returns a markdown context block for message generation:
+// repo name, primary languages, changed files,
 // diff stat, a diff digest, recent commit style, and commit guidance from
 // AGENTS.md. validate checks Conventional Commits format and body substance.
 // commit creates the commit with `git commit -F -` on the staged snapshot.
@@ -112,6 +113,16 @@ fn runGitWithInput(arena: Allocator, io: std.Io, argv: []const []const u8, input
 fn analyzeContext(arena: Allocator, io: std.Io, cwd: []const u8) !AnalyzeOutcome {
     const root = (try gitRoot(arena, io, cwd)) orelse
         return .{ .err = "not a git repository" };
+
+    const dir = try std.Io.Dir.openDirAbsolute(io, root, .{});
+    defer dir.close(io);
+    for ([_][]const u8{ "goal.md", "handoff.md" }) |name| {
+        _ = dir.statFile(io, name, .{}) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return err,
+        };
+        return .{ .err = try std.fmt.allocPrint(arena, "{s} still exists; remove it before committing", .{name}) };
+    }
 
     // Snapshot: stage everything now so the commit later matches what the
     // user saw when they ran /commit.
