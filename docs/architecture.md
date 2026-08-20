@@ -258,15 +258,16 @@ Give the pi coding agent control of the host desktop through [Cua
 Driver](https://github.com/trycua/cua) (`cua-driver` 0.20+): real apps,
 signed-in browser sessions, and the current OS user session, without moving
 the system cursor (each command targets a window instead of the shared
-cursor). Screenshots are written to disk and viewed through the existing
-describe_image vision tool, so the extension works with text-only primaries
-and the model controls when vision tokens are spent.
+cursor). Accessibility trees and semantic element actions are active by
+default. Screenshot, zoom, cursor, and pixel-coordinate capabilities are
+inactive until the user toggles `/visual-tools`, so normal desktop work stays
+programmatic and spends no vision tokens.
 
 ## Architecture
 
 ```
 pi (coding agent)
-  └─ extensions/cua.ts     TS glue: 19 computer_* tool schemas, one-shot callZig
+  └─ extensions/cua.ts     TS glue: 19 schemas + /visual-tools, one-shot callZig
        └─ src/cua.zig      Zig backend: spawns `cua-driver call` per request, exits
             └─ cua-driver  CLI proxy to the CuaDriver daemon (CuaDriver.app on macOS)
 ```
@@ -277,10 +278,12 @@ Why this split:
   schemas (one per cua-driver MCP tool; params pass through as a JSON
   string, so the keys must match the MCP argument names) and forwards each
   call to src/cua.zig as a one-shot process via the shared `callZig`
-  helper (one JSON argv element, one JSON envelope on stdout, exit). Esc
-  aborts by pi.exec SIGTERMing the one-shot binary, so no driver call
-  outlives its turn; the in-flight `cua-driver call` is a short-lived CLI
-  that finishes on its own.
+  helper (one JSON argv element, one JSON envelope on stdout, exit). It also
+  owns the in-memory `/visual-tools` toggle: `pi.setActiveTools()` removes
+  visual-only definitions from model context, and mixed click definitions
+  are re-registered without pixel fields while off. Esc aborts by pi.exec
+  SIGTERMing the one-shot binary, so no driver call outlives its turn; the
+  in-flight `cua-driver call` is a short-lived CLI that finishes on its own.
 - Everything else is Zig: the argv build, the child lifecycle, the 120s
   deadline, stdout/stderr handling, the screenshot directory, and the
   get_window_state extraction.
@@ -330,8 +333,11 @@ when missing: screenshots live under `{agent_dir}/cua-screenshots/`.
   does NOT echo the path back (the docs claim `screenshot_file_path`, the
   real CLI omits it), so the backend tracks it: get_window_state gets it
   appended by the extraction, the other two get a `screenshot: <path>`
-  prefix line. The dir is created on demand and pruned to the newest 25
-  files per call.
+  prefix line. While visual tools are off, the glue removes the
+  get_window_state screenshot line before returning its AX tree. The driver
+  still creates that file because get_window_state is an image tool, but the
+  model cannot discover or inspect it. The dir is created on demand and
+  pruned to the newest 25 files per call.
 - **get_window_state extraction**: the driver returns the AX tree twice
   (model-facing `tree_markdown` with `[element_index N]` tags plus a
   `structuredContent.elements` array of up to 2000 JSON rows, each carrying
@@ -341,30 +347,35 @@ when missing: screenshots live under `{agent_dir}/cua-screenshots/`.
   [selected]`) and the `snapshot_id` is surfaced, so every tree row is
   directly clickable via `element_token` or `element_index + snapshot_id`
   with no pixel math and no screenshot. The result also keeps what action
-  selection needs: pid/window_id, element count, window bounds, screenshot
-  path + dimensions, `degraded_reason`, background-input route statuses,
-  and the escalation recommendation. A payload without `tree_markdown`
-  (in-band errors) passes through raw.
+  selection needs: pid/window_id, element count, window bounds,
+  `degraded_reason`, background-input route statuses, and the escalation
+  recommendation. Screenshot path + dimensions are also kept while visual
+  tools are on. A payload without `tree_markdown` (in-band errors) passes
+  through raw.
 - Result text is capped at 256KB with head/tail truncation (shared
   pattern with pi-lightpanda), so a huge tree cannot flood the model's
   context or the session file.
 
 ## Flow
 
-The model calls `computer_list_apps` / `computer_list_windows` to find a
-target, `computer_get_window_state` for the AX tree + screenshot path
-(re-snapshot every turn: indices and element_tokens go stale), and
-`describe_image` on the screenshot path when pixels matter. Actions prefer
-`element_token` / `element_index + snapshot_id` (AX path: works on
-backgrounded windows, no focus steal); `x,y` pixel coordinates are
-window-local screenshot pixels (top-left origin, 2x scale on retina) for
-canvas/WebGL surfaces only. `computer_zoom` crops a region to a readable
-JPEG for pixel work. The driver reports background-input constraints in
-the snapshot; the model retries with `delivery_mode: "foreground"` when a
-background attempt did not land.
+The default flow is `computer_list_apps` / `computer_list_windows` to find a
+target, `computer_get_window_state` for the AX tree (re-snapshot every turn:
+indices and element_tokens go stale), then actions by `element_token` or
+`element_index + snapshot_id`. The AX path works on backgrounded windows
+without focus steal. Screenshot, zoom, screen-size, cursor-position, cursor
+movement, and pixel fields on mixed click tools are absent from model context.
+When the user runs `/visual-tools`, those definitions and fields become active:
+get_window_state exposes its screenshot path, `describe_image` can inspect it,
+`x,y` coordinates address screenshot pixels, and `computer_zoom` can crop a
+region. Running `/visual-tools` again restores the semantic-only tool set.
+Lightpanda is unchanged because its tools interact through the DOM rather than
+screen pixels.
 
 ## Notes
 
+- The `/visual-tools` state is in memory only. Every extension runtime starts
+  off, including pi startup, `/reload`, `/new`, `/resume`, `/fork`, and
+  `/clone`; no session entry or config file persists it.
 - The glue and binary never outlive the call: no persistent process, no
   lifecycle management, no session_shutdown wiring. A crash in the binary
   cannot take down pi. Screenshots live under `{agent_dir}/cua-screenshots/`

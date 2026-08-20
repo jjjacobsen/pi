@@ -61,9 +61,12 @@ docs/daemons.md
 
 ### cua - desktop computer use
 
-Lets the model drive your desktop: launch apps, click, type, screenshot,
-scroll, and press hotkeys, all without stealing your cursor. Needs the Cua
-Driver daemon running with Accessibility and Screen Recording granted
+Lets the model drive your desktop through accessibility trees and semantic
+element actions without stealing your cursor. Screenshot, zoom, cursor, and
+pixel-coordinate capabilities are absent from model context by default;
+`/visual-tools` toggles them for the current extension runtime. New sessions
+and extension reloads start with them off. Lightpanda is not affected. Needs
+the Cua Driver daemon running with Accessibility and Screen Recording granted
 
 ### lazygit - full-screen git TUI via /lg
 
