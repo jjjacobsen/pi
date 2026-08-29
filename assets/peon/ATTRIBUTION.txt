@@ -1,0 +1,10 @@
+OpenPeon CESP sound packs
+
+Orc Peon by tonyyont
+Human Peasant by thomasKn
+
+License: CC-BY-NC-4.0
+
+Extension behavior adapted from pi-peon-ping by Joshua David Thomas
+https://github.com/joshuadavidthomas/pi-peon-ping
+License: MIT

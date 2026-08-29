@@ -24,7 +24,7 @@
  * usage). A session_compact listener re-renders so the ?/1.0M state appears
  * immediately instead of lingering stale until the next stream.
  *
- * Pure TS glue, no Zig backend: everything comes from the extension API
+ * Everything comes from the extension API
  * (ctx.sessionManager / ctx.getContextUsage / ctx.model) plus
  * footerData (git branch, extension statuses). Nerd Font icons used:
  * fae-pi U+E22C, md-folder_open U+F0770, fa-code-fork U+F126 (all present in

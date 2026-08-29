@@ -1,15 +1,9 @@
-[tasks.build]
-run = "zig build"
-description = "Build all extension binaries"
-
 [tools]
 hk = "1.54.0"
 gitleaks = "latest"
 pkl = "latest"
 taplo = "latest"
 typos = "latest"
-zig = "0.16.0"
-zls = "0.16.0"
 "npm:typescript" = "6.0.3"
 
 [env]

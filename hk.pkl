@@ -29,17 +29,6 @@ local linters = new Mapping<String, Step> {
   // json
   ["jq"] = Builtins.jq
 
-  // zig: no hk builtin, no zls CLI lint, so the official tooling is a custom step
-  ["zig-fmt"] = new Step {
-    glob = "**/*.zig"
-    check = "zig fmt --check {{files}}"
-    fix = "zig fmt {{files}}"
-  }
-  ["zig-build"] = new Step {
-    glob = "**/*.zig"
-    check = "zig build"
-  }
-
   // typescript: whole-project typecheck via the builtin (tsc --noEmit -p
   // tsconfig.json). tsconfig paths point at the global pi install, see
   // docs/architecture.md. No fix command, tsc does not autofix.

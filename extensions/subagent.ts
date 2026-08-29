@@ -1,6 +1,6 @@
 // pi-subagent: delegate tasks to isolated in-process sub-sessions.
 //
-// This extension has no Zig backend. The "backend" is pi's own agent loop:
+// The isolated worker is pi's own agent loop:
 // every subagent tool call creates a second, fully isolated AgentSession via
 // the SDK (createAgentSession) in this process, prompts it with the task,
 // waits for it to finish, and returns only its final message as the tool

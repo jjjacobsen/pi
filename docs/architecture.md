@@ -1,863 +1,432 @@
-# Shared code (pi-common / pi-backends)
+# Architecture
 
-Extensions are one-shot: the glue spawns the Zig binary per call with the
-request as a single JSON argv element (`pi.exec`), the binary prints one
-JSON envelope to stdout, and exits. No persistent processes, no stdio
-bridge, no lifecycle management. Fault tolerance is unchanged: a crash in
-the binary cannot take down pi. The shared parts live in two files:
+All extensions run directly in the pi process as TypeScript modules under
+`extensions/`. They use the pi extension API, Node.js APIs, native `fetch`, and
+small local helpers. Extension state is either kept in the pi session or stored
+under the agent directory when it must survive a restart
 
-- `src/common.zig`: IO, JSON, and process helpers used by every backend —
-  the one-shot responders (`respondExit` / `respondOutcomeExit`, which
-  print the `{"ok":true,"result":...}` envelope and exit 0/1), buffered
-  writer (`writeAllIo`), JSON-escaped writer helper (`appendJsonEscaped`),
-  monotonic and realtime clocks (`nowMs` / `nowRealtimeMs`), and the command
-  runner (`runCmd`, `gitRoot`, `GitResult`). Since pi-search and pi-vision
-  were built, it also holds the HTTP-with-deadline machinery they share
-  (`httpWithDeadline`, `WorkerSlot`,
-  `workerFinish`, `isRetryableStatus` / `isRetryableErr`, `parseHeaders`):
-  each backend keeps its own fetch worker and response parsing, and the
-  worker-slot lifecycle (socket shutdown on deadline, abandoned-worker
-  self-cleanup when a worker is stuck before registering its socket) lives
-  once. Each backend aliases only what it needs and keeps its own request
-  parsing, op dispatch, and protocol structs.
-- `extensions/lib/zig.ts`: `callZig(pi, binaryName, params, {signal,
-  timeout})` runs one backend op. It resolves the binary path (fails with
-  a rebuild hint when missing), spawns the binary via `pi.exec` with the
-  request as one JSON argv element, parses the stdout envelope, and
-  throws on a killed process (abort or timeout), a crash (non-zero exit
-  without an envelope), or a protocol error (`ok:false`).
+## Shared TypeScript code and tooling
 
-Per-backend protocol details are documented in each extension's section
-below; the one-shot wire format is identical everywhere: one JSON request
-as a single argv element, one JSON envelope on stdout.
+`extensions/lib/terminal-process.ts` supports the full-screen terminal commands
 
-## One-shot design rules
+- `capture` runs validation commands with `execFile` and a 16 KiB output buffer
+- `runOnTerminal` opens `/dev/tty`, starts a child with that descriptor as
+  stdin, stdout, and stderr, then closes the parent descriptor
+- An abort sends `SIGTERM` to the child
+- The result is `exited N` or `signal N`
 
-An extension is a one-shot child process: the glue spawns the Zig binary
-per call, the binary does its work, prints one envelope, and exits. Never
-bring back a persistent backend. The rules below are normative:
+`extensions/lib/toolkit.ts` contains two groups of helpers
 
-- Wire protocol is fixed: one JSON request as a single argv element via
-  `pi.exec`, one `{"ok":true,"result":...}` / `{"ok":false,"error":...}`
-  envelope on stdout, exit 0/1. No `id` field: one request per process, so
-  responses are self-addressing.
-- State lives on disk under the agent dir, one file per extension
-  (`<name>.json` for config, `<name>-state.json` / `-cache.bin` for
-  counters), written atomically (temp file + rename). In-memory backend
-  state is gone by design: a new stateful feature must get a state file.
-- The glue is the single source of truth for the agent dir path: it
-  resolves `getAgentDir()` and passes it as `agent_dir` in the request.
-  The backend requires it and fails loudly when missing: no env fallback,
-  no hardcoded `~/.pi/agent`. State-free backends never ask for it.
-- Session state pi itself needs stays in pi: the glue round-trips session
-  entries back in per request instead of the backend reading them.
-- Constraints to work around: argv is size-limited (keep payloads under
-  ~100 KiB); secrets in argv are visible to same-user processes, prefer
-  env-derived keys; `pi.exec` has no stdin and no env override; the exit
-  code is a fallback channel, the envelope is authoritative; custom tool
-  results are not auto-truncated, so keep Zig-side output caps.
+- `toolError` throws tool failures, and `toToolUsage` converts delegated model
+  tokens to pi usage and calculates cost from the model pricing
+- The Codex helpers choose a subscription model, resolve credentials through
+  pi, and read the account ID and email from the OAuth token
 
-# TypeScript glue tooling (tsconfig, tsc, hk)
+The extension imports live in bun's global install at
+`~/.bun/install/global/node_modules`. Pi aliases these packages to its bundled
+copies at runtime. `tsconfig.json` points its `paths` and `typeRoots` at the
+same global install so editor and command-line types match the running pi
+version. These absolute paths are machine-specific
 
-The extension glue imports `@earendil-works/pi-*` (pi-coding-agent, pi-tui,
-pi-ai) and `typebox`, which live only in bun's global install at
-`~/.bun/install/global/node_modules`, not in this repo. Pi resolves them at
-runtime by aliasing them to its own bundled copies inside its extension
-loader, so the repo needs no local install for the extensions to work.
+`strict: false` is explicit because the extension code is deliberately light
+on annotations. `hk.pkl` runs `tsc --noEmit -p tsconfig.json`, and `mise.toml`
+pins the TypeScript version. `mise x -- hk check --all` must stay green
 
-The editor typechecker does need them, so `tsconfig.json` points at the
-live global install instead of a local `node_modules`:
-
-- `paths` maps `@earendil-works/pi-ai/*` into the package's `dist/`
-  (subpath exports like `@earendil-works/pi-ai/compat` live there and
-  `paths` does not consult the target package's `exports` map), and maps
-  every other `@earendil-works/*` specifier plus `typebox` to their
-  packages. These paths are absolute and machine-specific.
-- `typeRoots` points at the global `@types` dir so `node:*` builtins and
-  the `types: ["node"]` entry resolve without installing `@types/node`.
-- `strict: false` is explicit because TypeScript 6.0 flips strict on by
-  default, and this glue is deliberately un-annotated per the repo's
-  conventions. TS 6.0 also no longer infers `never` for un-annotated
-  throwing functions, which is why the shared helpers' return types are
-  annotated (`toolError(...): never`).
-
-Advantages of pointing at the live install: types always match the running
-pi version (a `pi update` updates them automatically, no drift), and the
-repo holds no pinned copies that could corrupt or drift from the real API.
-The tradeoff is that the tsconfig breaks on any machine without a matching
-global install, so it is not shareable as-is.
-
-`hk.pkl` runs the `tsc` builtin (`tsc --noEmit -p tsconfig.json`) whenever a
-`.ts` file or `tsconfig.json` changes, and `mise.toml` pins
-`npm:typescript = "6.0.3"` so the check and the editor use the same
-compiler. `mise x -- hk check --all` must stay green.
-
-# Commit extension (pi-commit)
+# Commit extension (`extensions/commit.ts`)
 
 ## Goal
 
-Replace the third-party pi-committer package with an in-house `/commit`
-command: stage all changes, generate a good conventional commit message from
-the current model, and commit. Fast, no background workers, no auto-triggers,
-no config file.
+`/commit` stages all changes, asks the current model for a Conventional Commit
+message, validates it, and creates the commit. It has no config file or
+automatic trigger. It is inspired by tmonk/pi-committer
 
-## Architecture
+## Flow and behavior
 
-```
-pi (coding agent)
-  └─ extensions/commit.ts      TS glue: /commit command, subagent model call
-       └─ src/commit.zig       Zig backend: git analysis, validation, commit
-```
+1. Resolve the repository root and stop if root-level `goal.md` or
+   `handoff.md` exists
+2. Run `git add -A` so the staged snapshot is the change set used for message
+   generation and commit
+3. Collect cached name status, stat, a rename-aware `-U3` diff, the last 25
+   commit subjects, and commit-related guidance from root `AGENTS.md` or
+   `CLAUDE.md`
+4. Ask an isolated in-memory agent session to write one message with the
+   current model, low thinking, no tools, and compaction disabled
+5. Validate the message. On failure, append the exact problems and ask once
+   more
+6. Recheck that staged changes exist, run `git commit -F -`, then report the
+   short hash and header
 
-Why this split:
+The prompt can include `/commit` arguments as intent and the last 12 user or
+assistant session entries, capped at 4,000 characters. The diff remains the
+source of truth
 
-- pi extensions must be TypeScript modules. The glue registers the `/commit`
-  command, collects the session context tail, and calls the current model
-  through the pi SDK (`createAgentSession`, thinking level `low`, no tools).
-  This is the same pattern pi-committer used, and it is the only place the
-  provider credentials are reachable.
-- Zig owns everything git-related and all message judgment: the diff digest,
-  repo style sampling, conventional-commit validation with retry feedback,
-  and the commit itself. The model writes, the backend judges. The glue
-  spawns the backend fresh per op via `pi.exec` (shared `callZig` helper);
-  each op is one JSON argv element in, one envelope on stdout, exit 0/1.
-  No persistent bridge exists anymore.
+Small diffs up to 6 KiB are sent as-is. Larger diffs become a declaration-like
+digest with at most 8 hunks and 14 selected lines per file. The digest is
+capped at 12 KiB and the complete model context at 24 KiB. Git stdout is
+normally capped at 32 MiB, stderr at 16 KiB, and smaller metadata calls use
+lower caps. Commit guidance is capped at 2 KiB
 
-## Protocol (one-shot: one JSON request in argv, one JSON envelope on stdout)
+Validation requires an allowed Conventional Commit type, an optional valid
+scope, a specific description, a header no longer than 100 bytes, no raw diff
+noise, and a substantive body of at least 50 bytes. Allowed types are `feat`,
+`fix`, `docs`, `refactor`, `test`, `perf`, `ci`, `chore`, `build`, `style`, and
+`revert`
 
-```json
-{"op":"analyze","cwd":"/path"}          -> {"ok":true,"result":"<markdown context>"}
-{"op":"analyze","cwd":"/path"}          -> {"ok":true,"result":""}        nothing staged
-{"op":"validate","message":"feat(x): ...\n\n..."} -> {"ok":true,"result":"ok"} | {"ok":false,"error":"- problem\n- problem"}
-{"op":"commit","message":"..."}         -> {"ok":true,"result":"<short-hash> <header>"}
-```
+Each git command and the commit child have a 60-second timeout. The command
+signal cancels git processes, the commit child, and the message-writing agent
+session. Commit stdout and stderr are drained concurrently, so verbose hooks
+do not block the child. A TUI widget shows analysis, writing, and commit
+progress. Headless sessions skip the widget and notifications safely
 
-The backend is stateless, so the request carries no `agent_dir` (no config,
-no state file). The clean-repo analyze result is an empty result string,
-which the glue turns into an info notify ("nothing to commit") rather than
-an error; the context block is never empty when files are staged, so the
-marker is unambiguous. Each op runs under a 60s cap in the glue; Esc aborts
-by SIGTERMing the one-shot binary regardless of the cap.
+There is no fallback message and no confirmation prompt. A second invalid
+message reports the validation problems and the last attempt. One invocation
+creates one commit, and inferred intent can still be wrong
 
-## Zig behavior
-
-- `analyze` first blocks if `goal.md` or `handoff.md` exists in the repository
-  root. Otherwise it runs `git add -A`: the working tree is snapshotted when
-  `/commit` starts, so a later `commit` op commits exactly what the user saw.
-  Then it collects `--name-status`, `--stat`, and the `-U3` diff (with `-M`
-  for rename detection), the last 25 commit subjects, and AGENTS.md/CLAUDE.md
-  lines mentioning commits. Small diffs (under 6KB) are passed raw; bigger
-  ones become a digest: per-file hunk headers plus declaration-like changed
-  lines, capped at 12KB. The whole context is capped at 24KB.
-- `validate` enforces: Conventional Commits header (`type(scope)!: desc`,
-  type allowlist, header <= 100 chars), no vague descriptions ("update
-  files"), no diff noise in the message, and a substantive body (>= 50 chars,
-  not a placeholder). Problems are returned as `- line` text so the glue can
-  feed them back to the model for one retry.
-- `commit` re-checks that something is staged, runs `git commit -F -` with
-  the message on stdin, and returns `<short-hash> <header>`. Pre-commit hooks
-  run as normal. The child's stdout and stderr are drained concurrently via
-  `std.Io.File.MultiReader`, so a verbose pre-commit hook that fills stderr
-  cannot deadlock the drain (reading one pipe to EOF before the other would).
-
-## Flow
-
-`/commit` -> analyze (stage + digest) -> model call (low thinking) ->
-validate -> on failure one retry with the problems appended -> commit ->
-notify `<hash> <header>`.
-
-There is no deterministic fallback: if the model cannot produce a valid
-message after the retry, the command fails loudly with the problems and the
-last attempt. Dumb messages are the exact failure mode this extension exists
-to fix.
-
-## Known limitations and upgrade paths
-
-- **No confirmation prompt**: the commit is created immediately, like Codex.
-  The message can be wrong (the model infers intent from the diff plus the
-  session tail); the body may occasionally state a wrong "why".
-- **One commit per invocation**: no grouping of code/test/docs into separate
-  commits. Add grouping later only if wanted.
-- **The "why" is best-effort**: sources are the session context tail, the
-  `/commit <args>` intent, and AGENTS.md guidance. A manual commit can state
-  intent via args.
-- **Model and thinking level are fixed**: session model, `low` thinking.
-  Config knobs (model override, thinking level) are future work.
-
-# Lazygit extension (pi-lg)
+# Lazygit extension (`extensions/lazygit.ts`)
 
 ## Goal
 
-Open lazygit full-screen over the pi TUI with `/lg`, exactly like
-kdheepak/lazygit.nvim does over nvim: lazygit takes the whole terminal, quit
-returns to pi. All process logic lives in Zig; the TS glue only owns the pi
-TUI lifecycle, which only code inside the pi process can touch.
+`/lg [path]` gives the full terminal to lazygit, then restores pi when lazygit
+exits. It is available only in TUI mode
 
-## Architecture
+## Flow and terminal handling
 
-```
-pi (coding agent)
-  └─ extensions/lazygit.ts    TS glue: /lg command, TUI stop/start around run
-       └─ src/lazygit.zig     Zig backend: validation, /dev/tty handoff, spawn+wait
-            └─ lazygit        spawned with stdin/stdout/stderr = /dev/tty
-```
+The target is the optional path resolved against `ctx.cwd`, or `ctx.cwd` by
+default. Before changing the screen, the extension runs `lazygit --version`
+and `git -C <target> rev-parse --show-toplevel`. Missing lazygit, cancellation,
+and non-repository targets are reported without a screen change
 
-Why this split:
+A custom TUI component obtains the live TUI handle. It calls `tui.stop()`,
+uses the shared terminal helper to start lazygit in the target directory with
+`/dev/tty` as all three standard streams, waits for exit, then always calls
+`tui.start()` and requests a full redraw. The notification reports `exited N`
+or the terminating signal. Exit 0 is informational and other exits are
+warnings
 
-- The TUI suspend/resume must run inside the pi process: `tui.stop()` restores
-  the cooked terminal, `tui.start()` re-enters raw mode. Only the TS
-  extension (loaded into pi) can do that, and only component factories
-  receive the live TUI reference, so the glue uses `ctx.ui.custom()` to grab
-  it. This is the same mechanism pi's built-in Ctrl+G (`app.editor.external`)
-  uses, and the UX copies lazygit.nvim.
-- Everything else is Zig: lazygit detection, git-repo validation, opening
-  /dev/tty, spawning lazygit with the terminal as its stdio, and exit-status
-  reporting. The backend's own stdin/stdout are pipes to the glue, so it
-  cannot "inherit" the terminal; Zig 0.16 spawn's `.file` StdIo dup2's an
-  arbitrary fd into the child, which is how /dev/tty reaches lazygit.
-- pi is not paused while lazygit runs: `tui.stop()` only hides the TUI frame,
-  the agent loop keeps running behind lazygit (same exposure as Ctrl+G).
+The command signal sends `SIGTERM` to lazygit. There is no fixed run timeout.
+While it runs, lazygit owns the terminal and handles its normal keys. Stopping
+the TUI does not pause pi's agent loop
 
-## Protocol (one-shot, one JSON argv element in, envelope on stdout)
+This design is Unix-only because it requires `/dev/tty`. A spawn failure after
+validation causes one brief stop and redraw. If the pi process is killed in a
+way that cannot run cleanup, lazygit can remain attached to the terminal
 
-```json
-pi.exec("pi-lg", [`{"op":"prepare","cwd":"/path"}`]) -> {"ok":true,"result":"/path/to/repo-root"}
-pi.exec("pi-lg", [`{"op":"run","cwd":"/path"}`])     -> {"ok":true,"result":"exited 0"}   (exited N / signal N / stopped / unknown)
-                                                           -> {"ok":false,"error":"..."}        failures
-```
-
-The glue spawns the binary fresh per op via pi.exec (shared callZig helper);
-the backend prints one envelope and exits. There is no id: one request per
-process. pi-lg is stateless, so no state file and no agent_dir field.
-
-## Zig behavior
-
-- `prepare` runs before the TUI stops so common failures surface as a
-  notification with no screen flicker: `lazygit --version` (PATH check) and
-  `git -C <cwd> rev-parse --show-toplevel` (repo check). It returns the repo
-  root. `run` gets the same cwd (absolute, resolved by the glue against
-  `ctx.cwd`).
-- `run` opens /dev/tty (the controlling terminal) and spawns lazygit with
-  stdin/stdout/stderr pointing at it, cwd = the target. lazygit puts the
-  terminal in raw mode itself, renders full-screen, and restores termios on
-  clean exit. The backend blocks in `child.wait` and reports the term.
-- While lazygit runs it owns the terminal in raw mode, so Ctrl+C / Ctrl+Z are
-  lazygit key events, not signals to pi. But pi-lg itself installs a
-  SIGTERM/SIGINT handler that forwards to the running lazygit child: when pi
-  aborts or tears down the session mid-lazygit, killing the child returns the
-  terminal to a sane state instead of leaving lazygit orphaned on the tty.
-  (The child pid is published in a global read by the async-signal-safe
-  handler; lazygit is reaped on the main thread's `child.wait`.)
-
-## Flow
-
-`/lg` -> resolve target (`ctx.cwd`, or `/lg <path>`) -> prepare (error =>
-notify, no screen change) -> `tui.stop()` -> run (Zig spawns lazygit on the
-terminal, waits) -> `tui.start()` + full redraw + close component -> notify
-`lazygit exited N`.
-
-## Known limitations and upgrade paths
-
-- **Unix-only by design**: /dev/tty does not exist on Windows, so the run op
-  cannot hand the console to lazygit there. pi itself already treats suspend
-  and external editors as Unix features, and this extension follows the same
-  line. Windows support (CONIN$/CONOUT$ handoff) is out of scope.
-- **Brief TUI blink on late spawn failure**: if prepare passes but the spawn
-  itself fails (e.g. lazygit removed between prepare and run), stop/start
-  still wrap the call and the screen redraws once. Acceptable.
-- **Orphaned lazygit if pi dies while it runs**: same as pi's external
-  editor; lazygit keeps the terminal and pi's next start redraws over it.
-- **Generalizable to other TUIs**: the same backend shape runs any TUI tool;
-  a `tool` field on run (lazygit default) would cover jj, tig, etc. Not
-  implemented (YAGNI).
-
-# Neovim extension (pi-nvim)
+# Neovim extension (`extensions/nvim.ts`)
 
 ## Goal
 
-Open neovim full-screen over the pi TUI with `/nvim`, the direct mirror of
-`/lg`: nvim takes the whole terminal, `:q` returns to pi. Same one-shot
-shape as lazygit, so all process logic lives in Zig and the TS glue only
-owns the pi TUI lifecycle.
+`/nvim [path]` gives the full terminal to neovim and restores pi after `:q`.
+It uses the same TUI and `/dev/tty` handoff as `/lg` and is available only in
+TUI mode
 
-## Architecture
+## Flow and terminal handling
 
-```
-pi (coding agent)
-  └─ extensions/nvim.ts     TS glue: /nvim command, TUI stop/start around run
-       └─ src/nvim.zig      Zig backend: validation, /dev/tty handoff, spawn+wait
-            └─ nvim         spawned with stdin/stdout/stderr = /dev/tty
-```
+The target is resolved against `ctx.cwd`, with the current directory as the
+default. `nvim --version` validates the executable before the TUI stops. No
+repository check is needed
 
-The design and rationale are identical to the lazygit extension: the TUI
-suspend/resume (tui.stop()/tui.start()) must run inside the pi process,
-so the glue uses ctx.ui.custom() to grab the live TUI reference (the same
-mechanism as Ctrl+G / app.editor.external). Everything process-related is
-Zig.
+The extension stops the TUI, starts `nvim` in the target directory with
+`/dev/tty` as stdin, stdout, and stderr, waits for it, and always starts and
+fully redraws the TUI. The result reports the exit code or signal. The command
+signal sends `SIGTERM` to neovim, and there is no fixed run timeout
 
-## Protocol (one-shot)
+The Unix-only, late-spawn blink, background agent-loop, and hard-process-death
+limits are the same as lazygit
 
-```json
-pi.exec("pi-nvim", [`{"op":"prepare","cwd":"/path"}`]) -> {"ok":true,"result":"/path"}
-pi.exec("pi-nvim", [`{"op":"run","cwd":"/path"}`])     -> {"ok":true,"result":"exited 0"}   (exited N / signal N / stopped / unknown)
-                                                                -> {"ok":false,"error":"..."}        failures
-```
+# Repo audit skill (`skills/repo-audit/SKILL.md`)
 
-## Zig behavior
+## Goal and design
 
-- prepare runs before the TUI stops so a common failure surfaces as a
-  notification with no screen flicker: nvim --version (PATH check). Unlike
-  lazygit there is no git-repo validation, because nvim opens any directory;
-  it returns the resolved target path.
-- run opens /dev/tty and spawns nvim with stdin/stdout/stderr pointing at
-  it, cwd = the target. nvim owns the terminal in raw mode; the backend
-  blocks in child.wait and reports the term.
-- The same SIGTERM/SIGINT background handler as lazygit forwards an abort to
-  the running nvim child so a teardown mid-nvim returns the terminal to a
-  sane state instead of orphaning nvim (lazygit applies it too).
+The package exposes `repo-audit` through the `skills` entry in `package.json`.
+It performs a whole-repository improvement audit and changes nothing
 
-## Flow
+The skill is adapted from DietrichGebert's ponytail-audit. It keeps the ranked
+one-line format, `cut`, `stdlib`, `native`, `yagni`, and `shrink` tags, and the
+final `net:` estimate. It adds duplication, dependencies, errors, performance,
+security, tests, architecture, and documentation
 
-/nvim -> resolve target (ctx.cwd, or /nvim <path>) -> prepare (error =>
-notify, no screen change) -> tui.stop() -> run (Zig spawns nvim)
--> tui.start() + full redraw + close component -> notify nvim exited N.
+The model must first map the repository and read its conventions, then verify
+each finding in the code and its uses. It skips generated and third-party
+content, never flags deliberate project conventions, caps the report at 15
+findings, and names a concrete replacement for every finding
 
-## Known limitations
-
-- Same as lazygit: Unix-only by design (/dev/tty), a brief TUI blink on a
-  late spawn failure, and an orphaned nvim if pi itself dies while nvim
-  runs. All acceptable for the same reasons.
-
-# Repo audit skill (pi-repo-audit)
+# Peon extension (`extensions/peon.ts`)
 
 ## Goal
 
-In-house replacement for the ponytail-audit skill of the third-party
-ponytail extension (disabled in settings): a whole-repo improvement audit
-that outputs ranked, concrete findings without applying anything.
+Peon plays Warcraft orc peon and human peasant lines for session start, task
+acknowledgement, task completion, task error, and rapid prompt spam. `/peon`
+opens a settings panel. The two packs are mixed for every category, and a pick
+does not immediately repeat within that category
 
-## Design
+The extension intentionally omits the other sound packs, pack installation,
+relay mode, desktop notifications, preview sounds, and unsupported event
+categories from pi-peon-ping
 
-- Lives in `skills/repo-audit/SKILL.md`, served to pi as a package skill via
-  the `skills` entry in `package.json`. No extension glue or backend, the
-  skill is pure instructions for the model.
-- Kept from ponytail-audit: repo-wide scan, ranked one-line findings,
-  `<tag> <what>. <replacement>. [path]` format, the `net: -<N> lines,
-  -<M> deps possible` closer, and the cut/stdlib/native/yagni/shrink tags.
-- Extended with general code audit dimensions: dup (DRY), dep (dependency
-  hygiene), err (error handling), perf, sec, test, arch, doc.
-- Two discipline rules beyond ponytail: every finding must be verified by
-  reading the actual code and its usage (false positives are noise), and
-  the report caps at 15 findings so it forces prioritization.
-- Deliberate repo conventions (AGENTS.md) are never findings. Correctness
-  and security are out of scope except as red flags spotted in passing.
+## Assets, config, and state
 
-# Peon extension (pi-peon)
+The 33 WAV files live in `assets/peon/` and are played directly with macOS
+`afplay`. The sound packs are Orc Peon by tonyyont and Human Peasant by
+thomasKn from OpenPeon CESP, licensed CC-BY-NC-4.0
 
-## Goal
+Config is `<agent_dir>/peon.json`
 
-In-house replacement for the third-party pi-peon-ping extension: Warcraft
-orc peon and human peasant voice lines on pi lifecycle events (session
-start, task acknowledge, task complete, task error, rapid prompt spam).
-Everything pi-peon-ping added beyond that is cut: the other eight sound
-packs, the pack picker and installer, relay mode for remote sessions,
-desktop notifications, the preview sound, and the input.required /
-resource.limit categories (pi has no events for those, they were dead
-config). Both kept packs play together: every sound pick is random from
-both, never repeating the last one per category.
+- `volume`, set by the UI from 10% through 100%, with 50% as the default
+- `paused`, false by default
+- `silent_window_seconds`, 0 by default
+- `annoyed_threshold`, 3 by default
+- `annoyed_window_seconds`, 10 by default
+- One enabled flag for each of the five categories
 
-## Architecture
+The settings panel changes pause state, volume, silent window, and category
+flags. Config writes replace the file directly. A missing or invalid config
+uses defaults and logs non-missing-file errors. Settings-save failures are not
+shown in the panel
 
-```
-pi (coding agent)
-  └─ extensions/peon.ts     TS glue: event wiring + /peon settings panel
-       └─ src/peon.zig      one-shot backend: config, decisions, sound picking
-            └─ afplay       spawned per sound with the volume gain
-```
+Cross-event state is `<agent_dir>/peon-state.json`
 
-- The glue only moves events and settings. The backend owns every decision:
-  whether an event plays a sound (paused, category toggles, error gating,
-  debounce, silent window), which sound, and the afplay spawn (cutting off
-  the previous sound so lines never overlap).
-- The 33 wavs from the peon and peasant packs are embedded in the binary
-  (`src/peon/sounds.zig`, generated from the pack manifests) and extracted
-  to `<agent_dir>/peon-sounds/` on every call. Idempotent: existing files
-  are skipped. `agent_dir` is resolved by the glue via `getAgentDir()` and
-  sent in the request; the backend fails loudly when it is missing (no
-  `~/.pi/agent` fallback).
-- Config is `<agent_dir>/peon.json` (volume percent, paused, silent window,
-  spam threshold/window, five category toggles). It is read on every call
-  and rewritten by the set op.
-- `afplay` only: the user's platform is macOS, and the wsl/linux player
-  matrix of pi-peon-ping was bloat. A failed spawn logs one stderr line and
-  plays nothing; audio problems never break the event pipeline.
+- Last sound index for each category
+- A 16-entry ring of prompt timestamps
+- Last agent start and last completion time
+- PID of the last detached `afplay` process
 
-## Protocol (one-shot, request as one JSON argv element)
+State loads before each event and is written through a temporary file after it.
+The final rename is best-effort, matching the previous notification behavior.
+Invalid state uses defaults and logs the problem. Other state-save failures are
+logged but do not break the lifecycle event. A promise queue serializes events
+so two state read and write cycles do not overlap
 
-```json
-{"op":"config","agent_dir":"..."}                                       -> {"ok":true,"result":"<config json>"}
-{"op":"set","field":"volume","value":"75%","agent_dir":"..."}         -> {"ok":true}
-{"op":"set","field":"cat:task.error","value":"on","agent_dir":"..."}  -> {"ok":true}
-{"op":"event","event":"session_start","reason":"startup","agent_dir":"..."}
-{"op":"event","event":"agent_start","agent_dir":"..."}
-{"op":"event","event":"tool_error","agent_dir":"..."}
-{"op":"event","event":"agent_end","error":true,"agent_dir":"..."}
-```
+## Event behavior
 
-Fields: volume (10%..100%), paused (active|paused), silent_window_seconds
-(0s..3600s), cat:<category> (on|off). The set op validates and persists.
-Errors leave the result out: `{"ok":false,"error":"..."}`, exit 1. The
-config op carries the config serialized in its result text (the glue
-re-parses it for the settings panel). No argv prints a usage line, exit 2.
+- `session_start` plays for every start reason, including reload
+- `agent_start` records the start and prompt time, then plays rapid-spam audio
+  when the configured number of prompts falls in the configured window.
+  Otherwise it plays acknowledgement audio
+- A failed tool execution plays task-error audio
+- `agent_end` plays completion audio only when the last assistant stop reason
+  is not `error`, at least 5 seconds passed since the previous eligible end,
+  and the run met the silent-window duration
 
-## Zig behavior
+Paused or disabled categories do not play. Before a new sound starts, the
+extension sends `SIGTERM` to the recorded player PID. It starts `afplay`
+detached with ignored standard streams, calls `unref`, and records the new PID
+so voice lines do not overlap. Spawn failures log one line and do not break pi
 
-- `session_start` plays session.start for every reason, reload included
-  (matches the original).
-- `agent_start` plays task.acknowledge, or user.spam when at least
-  `annoyed_threshold` prompts arrived within `annoyed_window_seconds`
-  (ring buffer of prompt timestamps).
-- `tool_error` plays task.error when the category is on.
-- `agent_end` plays task.complete only when the run did not end in error
-  (this is the fix for the original's bug where an errored run still got
-  the cheerful complete sound), at most once per 5s debounce, and only
-  when the run took at least `silent_window_seconds` (the original
-  compared against session start, which made the setting mean something
-  else than its label said).
-- One sound at a time: a new play terminates the afplay whose pid is in
-  state, then spawns its own. The previous afplay is orphaned when the
-  process exits (reparented to launchd), so no zombies ever exist.
-
-## Cross-call state (<agent_dir>/peon-state.json)
-
-Every event is its own process, so the counters that used to live in the
-backend's memory round-trip through `peon-state.json`, loaded before an
-event op and written atomically (temp + rename) after it: the 5s debounce
-clock (`last_stop_time`), the silent-window baseline (`last_agent_start`),
-the spam timestamp ring, the last played index per category, and the pid of
-the still-running afplay. The glue serializes event calls through a promise
-chain so two back-to-back events cannot interleave their state read/write
-(the old persistent backend serialized them on its pipe for free). A state
-file problem never breaks a notification: it logs to stderr and that
-counter resets to its default for the event.
-
-## Notes
-
-- Sound packs: Orc Peon by tonyyont, Human Peasant by thomasKn
-  (OpenPeon CESP, CC-BY-NC-4.0). The generated `src/peon/sounds.zig`
-  credits them; regenerating it requires the pack wavs plus a jq pass over
-  the manifests, documented in the file header.
-- Sessions with no UI (print mode) never fire the event ops, so no sounds.
+Lifecycle sounds run only in sessions with a UI
 
 # Status extension (`extensions/status.ts`)
 
-## Goal
+## Goal and behavior
 
-`/status` shows live provider quota limits for OpenAI Codex subscriptions and
-OpenCode Go. It does not scan sessions, collect usage totals, render graphs or
-tables, export data, or write a cache. The view is adapted from omp
-(can1357/oh-my-pi)
+`/status` opens a TUI panel with current OpenAI Codex subscription and
+OpenCode Go quota windows. The view is adapted from can1357/oh-my-pi. It does
+not scan session use, store totals, or write a cache
 
-## Architecture
+Both providers are fetched in parallel with native `fetch` and independent
+30-second timeout signals
 
-The extension is pure TypeScript. `ctx.ui.custom` renders the panel and native
-`fetch` calls both provider APIs in parallel. There is no Zig backend, child
-process, wire protocol, state file, or cache
+- OpenCode Go calls `GET https://opencode.ai/zen/go/v1/usage` with
+  `Bearer $OPENCODE_API_KEY` and shows rolling, weekly, and monthly limits
+- Codex calls `GET https://chatgpt.com/backend-api/wham/usage`. Credentials,
+  OAuth refresh, and `auth.json` updates stay in pi's model registry. The
+  request includes the bearer token and `ChatGPT-Account-Id` when available
 
-OpenCode Go uses `GET https://opencode.ai/zen/go/v1/usage` with
-`Bearer $OPENCODE_API_KEY`. Codex uses
-`GET https://chatgpt.com/backend-api/wham/usage` with the bearer and
-`ChatGPT-Account-Id`. The extension resolves Codex credentials through pi's
-model registry with `resolveCodexAuth`, so OAuth refresh and `auth.json`
-updates stay in pi
+One provider can fail while the other still renders. The panel shows account
+information, used bars, free percentages, reset times, status colors, extra
+Codex feature limits, and saved reset credits. `[r]` refreshes, `[q]` or Esc
+closes, duplicate refreshes are ignored, and results that arrive after close
+are discarded
 
-Each request has a 30-second timeout. A provider failure renders on that
-provider while the other provider can still show its limits. The panel fetches
-when it opens, allows `[r]` refresh, and drops late results after it closes
-
-# Vision extension (pi-vision)
+# Vision extension (`extensions/vision.ts`)
 
 ## Goal
 
-In-house replacement for the third-party @getpipher/vision package: a
-`describe_image` tool that works with text-only primaries (deepseek-v4-flash
-cannot see images). Multimodal models are left alone entirely: the tool is
-hidden from them and pi's native image pass-through does the work, the same
-pattern Claude Code / Codex / Amp use. Everything image-related and all HTTP
-lives in Zig; the TS glue is ~230 lines of registration, capability sync,
-config, and auth resolution.
+`describe_image` lets a text-only primary model delegate image analysis to a
+configured image-capable model. For an image-capable primary, the tool is
+hidden and pi sends images to the model natively
 
-## Architecture
+## Tool visibility and config
 
-```
-pi (coding agent)
-  └─ extensions/vision.ts    TS glue: describe_image tool, capability sync, /vision, paste hint
-       └─ src/vision.zig     Zig backend: image detection + sips compression + base64 + HTTP
-```
+Tool visibility is synchronized on session start and model selection. When an
+image is attached to a text-only primary, the input hook adds a short hint so
+the model knows to call `describe_image`. The hint reports when no vision model
+is configured
 
-Why this split:
+Config is `<agent_dir>/vision.json` with `provider`, `model`, `maxDimension`,
+and `jpegQuality`. Defaults are 1568 pixels and quality 85. Unknown old keys
+are ignored. `/vision show` displays the selection, `/vision model` opens a
+picker of image-capable registry models, and `/vision model <provider/model>`
+validates and saves an exact choice
 
-- The glue is the only code inside the pi process, and pi's model registry is
-  the only place provider auth lives. The glue resolves the configured vision
-  model (`ctx.modelRegistry.find` + `getApiKeyAndHeaders`) and hands the
-  base URL, key, and extra headers to Zig per call. Zig stays stateless.
-- Zig owns everything else: path resolution, file read, format detection from
-  header bytes (PNG/JPEG/GIF/WebP, no decode), dimension check, sips
-  compression, base64, the OpenAI-compatible chat/completions request, the
-  response parse, the retry, and the deadline.
+At each call, the extension resolves the selected model and its credentials
+through pi's model registry. Provider headers are preserved. An Authorization
+bearer is added only when the resolved headers do not already contain one
 
-## Protocol (one-shot: one JSON request in argv, one JSON envelope on stdout)
+## Image processing
 
-```json
-{"op":"describe","path":"img.png","cwd":"/repo","prompt":"...","base_url":"https://openrouter.ai/api/v1","api_key":"sk-...","model":"xiaomi/mimo-v2.5","headers":"[[\"h\",\"v\"]]","max_dimension":1568,"jpeg_quality":85,"timeout_ms":60000}
-{"ok":true,"result":"<model text>","usage":{"input":...,"output":...}}       <- or {"ok":false,"error":"..."}
-```
+Paths can be absolute or relative to the current working directory. Source
+files are capped at 64 MiB. Format and dimensions are detected from header
+bytes for PNG, JPEG, GIF, and WebP
 
-`headers` is a JSON string of name/value pairs from pi's provider auth
-(serialized by the glue). If it contains no `authorization`, Zig adds
-`Authorization: Bearer <api_key>`.
+An image at or below the configured dimensions and below 10 MiB is sent
+byte-for-byte. Larger images use macOS `sips -Z`
 
-## Zig behavior
+- Opaque input becomes JPEG at the configured quality
+- GIF with transparency stays GIF
+- Transparent PNG and WebP become PNG because `sips` cannot write WebP
+- Temporary output is removed in a `finally` block and is also capped at
+  64 MiB
 
-- **Compression**: images within `max_dimension` (default 1568) and under
-  10MB are sent as-is, byte-for-byte (best quality, zero loss, fastest).
-  Bigger images go through `sips -Z <max_dim>` (macOS built-in, same pattern
-  as peon's afplay). Opaque images become JPEG at the configured quality
-  (default 85); images with alpha keep their transparency — GIF stays GIF,
-  PNG and WebP are re-encoded as PNG (sips cannot write WebP). The output
-  mime always matches what sips produced. The temp file is unlinked after
-  reading.
-- **Request**: `POST {base_url}/chat/completions` with the standard
-  `image_url` data-URL content block plus the prompt, `max_tokens: 4096`,
-  `temperature: 0`. Response text is `choices[0].message.content`, falling
-  back to `reasoning_content` for reasoning models that hide the content;
-  both fields accept a plain string or a blocks array (`text`/`thinking`/
-  `reasoning` blocks, joined with newlines) so block-style responses from
-  models like Xiaomi MiMo parse. Parse failures surface the raw body
-  (truncated) in the error for diagnosis.
-  Non-2xx responses surface the provider's `error.message` with the status.
-- **Retry**: one retry after 500ms for 429, 5xx, and network errors. 4xx,
-  timeouts, and parse failures fail immediately.
-- **Deadline**: the HTTP call runs on a worker thread so a hung provider
-  cannot stall the backend. The main thread waits with the deadline (60s
-  default, passed per call); on expiry it shuts down the worker's socket
-  (unblocking its read), waits up to 1s for it to exit, and joins. If the
-  worker is stuck before registering its socket (connect/TLS handshake), it
-  is abandoned and frees its own heap structs when it finishes, so repeated
-  slow connections cannot accumulate threads or allocations. Esc aborts the
-  call: pi.exec SIGTERMs the one-shot binary, so no request can outlive its
-  turn.
-- **Usage**: the chat/completions `usage` object (prompt/completion tokens)
-  is returned on the response envelope; the glue computes cost from the
-  vision model's pricing and reports it as `AgentToolResult.usage`, so
-  delegated describe_image tokens and cost appear in pi's session totals.
-- TLS uses the std lib's system CA bundle, which on macOS reads the system
-  keychains directly; no cert file handling.
+The request is an OpenAI-compatible `POST <baseUrl>/chat/completions` with a
+base64 data URL, the user prompt, `max_tokens: 4096`, and `temperature: 0`.
+Response content can be a string or an array of text, thinking, or reasoning
+blocks. `reasoning_content` is used when normal content is empty
 
-## Glue behavior
+Response bodies are capped at 1 MiB. Invalid successful JSON includes at most
+400 raw characters in the error. Non-success responses include the provider
+error message when available
 
-- `describe_image` visibility tracks the active model's capability via
-  `pi.getActiveTools()` / `setActiveTools()`: hidden for multimodal models
-  (native pass-through, zero delegation), visible for text-only ones.
-  Re-synced on `session_start` and `model_select`.
-- The `input` hook appends a one-line hint when an image is attached and the
-  primary is text-only: pi otherwise replaces pasted images with
-  "(image omitted: model does not support images)" and the model never knows
-  they existed. Multimodal primaries get the image natively and no hint.
-- Config is `~/.pi/agent/vision.json`: `provider`, `model`, `maxDimension`,
-  `jpegQuality`. Unknown keys from the old @getpipher/vision config are
-  ignored, so the existing file carries over. `/vision show` prints the
-  config; `/vision model <provider/model>` validates against the registry
-  (must exist and have image input) and saves; bare `/vision model` opens a
-  picker over vision-capable models.
-- The call goes through the shared `callZig` helper (pi.exec + argv JSON),
-  so Esc aborts by SIGTERMing the one-shot binary. No backend lifecycle
-  exists anymore.
+## Timeout, retry, cancellation, and usage
 
-## Flow
+The full tool execution has a 60-second abort controller. It combines config,
+auth resolution, image work, the request, retry delay, and response reading.
+The caller's cancellation aborts the same controller, including `fetch`, file
+reads, and `sips`
 
-`describe_image(path, prompt)` -> glue resolves the vision model + auth ->
-Zig reads the image, compresses if needed, base64s, POSTs -> on retryable
-failure one retry -> text returned to the model. `Esc` during the call
-SIGTERMs the one-shot binary. `input` with images on a text-only primary ->
-hint appended -> model calls describe_image.
+The request retries once after 500 ms for HTTP 429, HTTP 5xx, and network
+`TypeError` failures. Other HTTP failures, timeouts, content errors, and parse
+errors from successful responses do not retry
 
-## Notes
+Prompt and completion tokens from the delegated response are converted to pi
+tool usage. Cost is calculated from the selected model's pricing, so image
+analysis appears in session totals
 
-- The delegated token usage rides the response envelope; the glue's
-  `toToolUsage` converts it into pi's Usage shape, with cost computed from
-  the model's pricing, so pi includes it in session totals.
-- Zig 0.16 API notes: `std.http.Client` is a plain struct
-  (`{ .allocator, .io }`), `fetch` discards the body without a
-  `response_writer`, `Io.Writer.fixed` buffers capture it (`out.end` is the
-  written length), `Io.net.IpAddress.listen`/`connect` take
-  `*const IpAddress`, `Io.sleep(io, duration, .awake)` replaces
-  nanosleep, `std.Io.net.Stream.Reader.stream` exposes the raw socket for
-  deadline shutdowns, and `Connection.stream_reader.stream.socket.handle`
-  is the client-side socket. The `Io.Clock` enum has `.real`/`.awake`/
-  `.boot` (no `.monotonic`).
-- The old `~/.pi/agent/vision-audit.log` from @getpipher/vision is
-  orphaned once the package is removed; harmless.
+The compression path requires macOS `sips`. Supported images that do not need
+compression do not call it
 
-# Search extension (pi-search)
+# Search extension (`extensions/search.ts`)
 
 ## Goal
 
-In-house replacement for the pi-web-access package (uninstalled) and the
-original Codex-backed pi-search: a single `web_search` tool that queries the
-Exa API with the user's `EXA_API_KEY` (from the shell environment, e.g.
-`~/.zshrc`) and returns a numbered source list with excerpts. Exa has no
-built-in answer synthesis, so the model writes the grounded answer and cites
-sources as `[n]` markers against the returned list. No config file, no auth
-flow: `answer` mode requests longer excerpts (maxCharacters 900) so the
-model can synthesize; `results` mode requests short excerpts (250) and
-returns just the compact list, faster and cheaper.
+`web_search` sends one query to Exa and returns a numbered source list. The
+calling model writes the answer and cites entries with `[n]`. The API key is
+read from `EXA_API_KEY` at call time. There is no config file or auth flow
 
-## Architecture
+## Request and result behavior
 
-```
-pi (coding agent)
-  └─ extensions/search.ts    TS glue: tool schema, EXA_API_KEY from env
-       └─ src/search.zig      Zig backend: Exa request body, response parse,
-                              source list formatting, deadline, cost usage
-            └─ api.exa.ai/search  (HTTPS, JSON request/response)
-```
+The extension sends `POST https://api.exa.ai/search` with `x-api-key`,
+`type: "auto"`, and `useAutoprompt: false`. `numResults` defaults to 8 and is
+capped at 10. `domainFilter` values become allowed domains, or excluded
+domains when prefixed with `-`. Day, week, month, and year recency values map
+to an ISO UTC `startPublishedDate`
 
-Why this split:
+`answer` mode requests excerpts up to 900 bytes. `results` mode requests
+compact excerpts up to 250 bytes. Titles are normalized and capped at 200
+bytes. Results are deduplicated by URL and capped at 30 sources. The complete
+formatted output is capped at 32 KiB. An empty result is the successful text
+`No results found.`
 
-- The glue's only jobs are the tool schema and the API key: read
-  `process.env.EXA_API_KEY` (fails loudly at call time when missing) and
-  forward it per call. Esc aborts by SIGTERMing the one-shot binary, so no
-  request can outlive its turn.
-- Everything else is Zig: the Exa request body (query, numResults capped at
-  Exa's standard 10, `type: "auto"` with `useAutoprompt: false` so the query
-  is never rewritten, includeDomains/excludeDomains from the domain filters,
-  startPublishedDate from the recency filter, contents.text.maxCharacters
-  per mode), the JSON response parse (results deduped by url, capped at 30),
-  the numbered source list, the single retry, the hard deadline, and the
-  cost accounting.
+The Exa response body is capped at 4 MiB. Error response text used for API
+messages is capped at 8 KiB. A missing results array or invalid JSON fails the
+tool. Exa's positive `costDollars.total` is returned as tool usage with zero
+tokens so the search cost appears in session totals
 
-## Protocol (one-shot: one JSON request in argv, one JSON envelope on stdout)
+## Timeout, retry, and cancellation
 
-```json
-{"op":"search","query":"...","mode":"answer","num_results":8,"recency":"week","domains":["example.com","-bad.com"],"api_key":"...","timeout_ms":30000}
-{"ok":true,"result":"Sources:\n1. Title (url)\n   excerpt...","usage":{"input":0,...,"cost":{"total":0.007}}}       <- or {"ok":false,"error":"..."}
-```
+One 30-second timeout signal covers both attempts and the delay. The caller's
+abort signal is combined with it, so cancellation stops fetch and retry sleep
 
-`domains` entries with a leading `-` are blocked; the rest are allowed.
-`recency` is day/week/month/year and maps to `startPublishedDate`, computed
-in Zig as an ISO 8601 UTC timestamp via `std.time.epoch`. `num_results`
-caps at 10. The tool param names (`mode`, `numResults`, `recencyFilter`,
-`domainFilter`) keep the old pi-web-access surface so the model's habits
-carry over, and the `[n]` citation habit carries over too: the numbered
-source list keeps the same shape, only the answer synthesis moved from the
-server to the model.
+HTTP 429, HTTP 5xx, and network `TypeError` failures retry once after 500 ms.
+Other HTTP errors, including out-of-credit responses, fail immediately.
+Redirects are not followed
 
-## Zig behavior
+A missing `EXA_API_KEY` produces a clear failed tool result. The public
+parameter names remain `mode`, `numResults`, `recencyFilter`, and
+`domainFilter`
 
-- **Request body**: POST to `https://api.exa.ai/search` with `x-api-key`
-  (no other auth) and a JSON body carrying query, numResults, type,
-  useAutoprompt, includeDomains, excludeDomains, startPublishedDate, and
-  contents.text.maxCharacters. Optional fields are omitted when absent.
-  `useAutoprompt: false` matters: Exa rewrites the query by default, and
-  the model already planned it.
-- **Response parse**: `results[]` objects yield title/url/text, deduped by
-  url and capped at 30. A missing `results` array is an error; an empty one
-  returns "No results found." as a clean outcome. `costDollars.total` (USD)
-  becomes the tool result's usage JSON, so pi includes web_search cost in
-  session totals with no tokens to report.
-- **Formatting**: `Sources:` followed by numbered `Title (url)` entries
-  with a normalized excerpt (`answer` mode up to 900 chars, `results` mode
-  up to 250). Total output capped at 32KB.
-- **Failure handling**: non-2xx surfaces Exa's `error`/`message` with the
-  status. 429/5xx/network errors retry once after 500ms; 4xx (including
-  402 out-of-credits) fail immediately. The HTTP call runs on a worker
-  thread with a 30s deadline (the shared `httpWithDeadline` machinery in
-  `common.zig`, same as pi-vision), so a hung endpoint cannot stall the
-  backend.
-
-## Glue behavior
-
-- The API key comes from `process.env.EXA_API_KEY`; no Codex auth, no pi
-  model registry involvement. A missing key yields a clear error telling
-  the user to export it before starting pi.
-- No config file, no provider selection: the tool is always registered and
-  fails loudly at call time without the key.
-- The call goes through the shared `callZig` helper (pi.exec + argv JSON),
-  so Esc aborts by SIGTERMing the one-shot binary. No backend lifecycle
-  exists anymore.
-
-## Flow
-
-`web_search(query, mode, ...)` -> glue reads EXA_API_KEY -> Zig posts the
-search and parses the JSON -> numbered source list with excerpts returned
--> the model writes the answer with `[n]` citations resolving to the list.
-`results` mode returns just the compact list.
-
-## Notes
-
-- One-shot: the binary runs once per call and exits. No unref dance, no
-  session_shutdown wiring, and in-flight aborts kill only the binary.
-- Exa's free tier is 1000 credits per month, one search per credit; the
-  per-search cost (currently ~$0.007) rides the tool result's usage so pi
-  includes it in session totals. The old Codex-backed search was replaced because the
-  server-side synthesis pipeline (query planning + search + answer
-  generation before the first token) regularly blew the 60s deadline;
-  Exa returns in milliseconds and the answer synthesis moved to the model,
-  which was already writing the final answer anyway.
-- `queries` arrays and multi-provider fan-out are deliberately gone: the
-  model plans the query, and parallel fan-out to several providers was the
-  bloat this extension replaces.
-# Footer extension (extensions/footer.ts)
+# Footer extension (`extensions/footer.ts`)
 
 ## Goal
 
-Replace pi's built-in status footer with a cleaner, opencode-inspired
-footer. Two lines plus optional extension statuses:
+The custom footer replaces pi's built-in footer with two main lines and an
+optional extension-status line
 
+```text
+π  ~/Projects/pi  main *1 ?2 +1
+↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   deepseek-v4-flash • max
 ```
-π  ~/Projects/pi  main *1 ?2 +1                       <- workspace + git status
-↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   deepseek-v4-flash • max   <- stats, model right
-```
 
-Drops the built-in footer's cache segments (R = cache read, W = cache
-write, CH = cache hit %) and the `(auto)` auto-compaction marker, and adds
-a tok/s readout: live while streaming, frozen at the last value once
-idle. All colors come from the active pi theme.
+It removes cache and automatic-compaction segments, adds live throughput, and
+uses the active theme
 
-## Architecture
+## Data and lifecycle
 
-Pure TypeScript glue, no Zig backend: everything is already available to
-extensions, so there is no protocol and no backend binary.
+Session input, output, and cost totals include assistant messages, tool
+results, compactions, and branch summaries. Context use comes from
+`ctx.getContextUsage()`. It shows `?/window` immediately after compaction until
+the next response provides verified use
 
-- Token/cost totals: summed from `ctx.sessionManager.getEntries()`
-  (assistant, toolResult, compaction and branch_summary usage), the same
-  data the built-in footer uses.
-- Context usage: `ctx.getContextUsage()` absolute tokens over the window
-  (`38,234/1.0M`, thousands-separated numerator), colored on the absolute
-  token count (warning past 100k, error past 200k, with a fraction-of-
-  window fallback of 60%/90% for small windows) instead of the percentage
-  of the window that is full, because quality degrades with raw token
-  count ("context rot"): NoLiMa (ICML 2025) finds most models at half
-  their short-context performance by 32k tokens and Anthropic describes a
-  continuous gradient, not a cliff. The source is
-  compaction-aware: right after /compact the tokens are unknown until the
-  next LLM response, so it shows `?/1.0M`; a `session_compact` listener
-  re-renders at that moment (session_info_changed only fires on session
-  name changes), and once the next response lands the value anchors on its
-  verified usage, which reflects the actual post-compaction context.
-- Git branch, extension statuses, provider count: `footerData` passed to
-  the `ctx.ui.setFooter()` factory. `onBranchChange` triggers re-renders.
-- Git status counters (omp-style): pi only exposes the branch, so the
-  extension spawns `git status --porcelain -b` itself on a 5s interval
-  while the footer is enabled (plus on branch change) and parses the
-  porcelain output into per-file counters appended to the branch:
-  `main *1 ?2 +1` = 1 file with unstaged worktree changes, 2 untracked,
-  1 staged. A clean tree shows just the branch. The interval is cleared
-  on footer dispose and on `/footer` toggle (one `git` spawn every 5s,
-  ~10-40ms on a normal repo).
-- Model + reasoning level: `ctx.model` and `ctx.thinkingLevel` (live
-  getters), right-aligned like the built-in footer, with the `(provider)`
-  prefix when more than one provider has models.
-- Cost segment: always visible, starting at $0.000 before the first
-  billed response.
-- tok/s: estimated from streamed characters (`text_delta` +
-  `thinking_delta` lengths from `message_update` events, ~4 chars per
-  token), smoothed over a sliding 15-second window. It is the last segment
-  on the stats line so the rest of the line never shifts when it appears.
-  It is always visible: resets to 0.0 at session start, updates live while
-  a stream is active and freezes at the last measured value on
-  `message_end` (a stream too short to measure live freezes its overall
-  average). Providers only report real token usage at stream end, so a
-  character-based estimate is the only live option; it is an
-  approximation.
-- Nerd Font icons: fae-pi U+E22C (the `π` logo), md-folder_open U+F0770
-  and fa-code-fork U+F126. Verified present in FiraCode Nerd Font.
+Context color uses absolute thresholds of 100,000 tokens for warning and
+200,000 for error. For smaller windows, 60% and 90% are fallback thresholds
 
-## Glue behavior
+Pi supplies the branch, provider count, and extension statuses. The extension
+runs `git --no-optional-locks status --porcelain -b` when enabled, on branch
+changes, and every 5 seconds. It counts files with unstaged work as `*N`,
+untracked files as `?N`, and staged files as `+N`. The interval and branch
+listener are removed when the footer is disposed or disabled
 
-- Enabled automatically at session start (TUI mode only); the `/footer`
-  command toggles between this footer and the built-in one.
-- `message_update` / `message_end` / `model_select` /
-  `thinking_level_select` / `session_info_changed` / `session_compact`
-  handlers call `tui.requestRender()` through a module-level handle that
-  `dispose()` clears (identity-checked so a replaced footer cannot null a
-  newer one). The `git status` interval is cleared in the same `dispose()`
-  and on explicit footer disable.
-- Extension statuses set via `ctx.ui.setStatus()` still render on a third
-  footer line, same as the built-in footer.
+Throughput estimates one token per four streamed text or thinking characters.
+It uses a rolling 15-second sample window, ignores gaps longer than 2 seconds,
+and waits for 2 seconds of active data before updating. It starts at `0.0` for
+each session, updates during streaming, and freezes the last value when idle.
+A short stream uses its overall average
 
-# Subagent extension (extensions/subagent.ts)
+The model and thinking level are right-aligned. The provider is shown when
+more than one provider is available. Extension statuses use a third line
+
+The footer starts automatically for TUI sessions. `/footer` switches between
+it and the built-in footer. Message, model, thinking, session-info, compaction,
+branch, and git-status changes request a render
+
+# Subagent extension (`extensions/subagent.ts`)
 
 ## Goal
 
-Hand off meaty, self-contained tasks to an isolated sub-session so the
-caller's context window stays low. The main session only ever contains
-the task string and the returned summary; the subagent's full transcript
-lives in its own session. The tool is `subagent` with a required task and
-optional per-call model and reasoning overrides. This is a structural
-exception to the one-shot backend model because it runs *another pi agent
-loop* inside the main process
+`subagent` runs a self-contained task in an isolated pi `AgentSession` and
+returns only its final report. The parent context contains the task, returned
+report, and usage instead of the full work transcript
 
-## Architecture
+## Session design
 
-Pure TypeScript, no Zig backend. The "backend" is pi's own agent loop:
-every `subagent` call runs a second, fully isolated `AgentSession` via
-the SDK (`createAgentSession`) in the same process, prompts it with the
-task, waits for it to finish, and returns only its final message as the
-tool result.
+Each call creates one session in the current project directory. Sibling tool
+calls can run concurrently with no shared session state. The subagent gets
+`read`, `bash`, `edit`, and `write`, plus `web_search` and `describe_image`
+from an extension filter. The exact tool allowlist is a second control that
+also prevents recursive subagent calls. Skills and project instruction files
+still load
 
-- One `AgentSession` per tool call, fully independent. Pi executes
-  sibling tool calls from one assistant turn concurrently, so several
-  `subagent` calls in one turn run several subagents in parallel. No
-  shared mutable state between sub-sessions.
-- Sub-session tools: the built-ins (`read`, `bash`, `edit`, `write`)
-  plus the allowlisted extensions `search.ts` (`web_search`) and
-  `vision.ts` (`describe_image`). A `DefaultResourceLoader` with an
-  `extensionsOverride` filters every other extension out by source file
-  name, so `subagent` cannot recurse into itself and the sub-session's
-  system prompt stays small. The explicit `tools` allowlist is the second
-  guard: only the six names are ever callable. Skills and
-  AGENTS.md context files load normally, so the subagent follows the
-  same project conventions.
-- Model and thinking level inherit independently from the caller
-  (`ctx.model` / `ctx.thinkingLevel`) when their optional tool parameters
-  are omitted. A model override is an exact `provider/model` reference or
-  an unambiguous bare model ID. An explicit reasoning override must be one
-  of pi's supported levels and must be supported by the selected model or
-  the call fails. When only the model is overridden, pi clamps the inherited
-  parent level to that model's supported levels.
-- Transcripts persist under `<agent_dir>/subagents/<ts>_<id>.jsonl`
-  (a `SessionManager.create` with a custom session dir), link the main
-  session via `parentSession`, and can be resumed with
-  `SessionManager.open`.
-- Cost accounting: the combined usage of the sub-session's assistant
-  messages is summed and returned on the tool result's `usage` field,
-  which pi includes in the caller's session totals.
-- The model catalog + auth runtime (`ModelRuntime.create`) and the
-  filtered loader are created once per process (lazy) and shared across
-  calls. `pi`'s cwd is fixed per process, so the loader's cwd cannot
-  drift.
+The model and thinking level inherit independently from the caller. A model
+override must be an exact `provider/model` or an unambiguous model ID. An
+explicit reasoning level must be supported by that model. When only the model
+changes, pi clamps the inherited level to the selected model
 
-## Glue behavior
+The model runtime and filtered resource loader are created once per pi process
+and shared. Each agent session remains separate
 
-- One tool `subagent` with required `task` plus optional `model` and
-  `reasoning` parameters. Omitting both preserves the original behavior.
-  The description tells the main agent when to delegate, when to inherit,
-  and to fire independent tasks as parallel calls.
-- Live progress: `text_delta` events stream into `onUpdate` (rolling
-  tail, capped for display) so the TUI shows the subagent working.
-- Cancellation: the tool's abort signal calls `session.abort()`, the
-  model call stops, and the partial transcript stays on disk.
-- The final assistant message is the report: extracted, truncated with
-  `truncateHead` to the tool result limit, and returned with the
-  transcript path so the caller can point follow-up work at it. Tool-result
-  details also record the effective `provider/model` and reasoning level.
+Transcripts are stored at `<agent_dir>/subagents/<timestamp>_<id>.jsonl` and
+link to the parent session when it has a session file. They can be inspected
+or opened later with pi's session manager
 
-## Notes
+Text deltas stream to the tool update display. The rolling display keeps at
+most the trailing 4,000 characters after its buffer grows past 8,000. The
+caller's abort signal calls `session.abort()`. A partial transcript remains on
+disk, and the tool reports cancellation after the session stops
 
-- Startup per call is heavier than a Zig one-shot (loader reload +
-  two extension factories + agent loop), around a second, which is
-  irrelevant next to the LLM run it gates.
-- Concurrency is unbounded for now: N parallel subagents is N streams
-  on the caller's API key. Rate limits are the practical ceiling.
+The final assistant text is truncated with pi's standard tool-result limit.
+When truncation occurs, the result includes counts and the transcript path.
+Every result also includes the effective model, reasoning level, and
+transcript path. Assistant-message usage across the child session is summed
+and returned so pi includes subagent cost in the parent totals
+
+Concurrency is not limited in code. Provider rate limits are the practical
+limit
