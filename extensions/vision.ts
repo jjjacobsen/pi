@@ -40,7 +40,8 @@ function loadConfig() {
       maxDimension: Number.isFinite(raw.maxDimension) ? raw.maxDimension : DEFAULT_MAX_DIMENSION,
       jpegQuality: Number.isFinite(raw.jpegQuality) ? raw.jpegQuality : DEFAULT_JPEG_QUALITY,
     };
-  } catch {
+  } catch (error) {
+    if (error?.code !== "ENOENT") console.error(`pi-vision: config load failed (${error?.message ?? error}), using defaults`);
     return { maxDimension: DEFAULT_MAX_DIMENSION, jpegQuality: DEFAULT_JPEG_QUALITY };
   }
 }

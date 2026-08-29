@@ -98,11 +98,11 @@ function defaultState() {
     timestamp_head: 0,
     last_agent_start: 0,
     last_stop_time: 0,
-    afplay_pid: null,
   };
 }
 
 const CATEGORY_INDEX = Object.fromEntries(Object.keys(SOUNDS).map((category, index) => [category, index]));
+let afplay;
 
 function object(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("expected object");
@@ -151,7 +151,6 @@ function normalizeState(value) {
     timestamp_head: field(value, "timestamp_head", defaults.timestamp_head),
     last_agent_start: field(value, "last_agent_start", defaults.last_agent_start),
     last_stop_time: field(value, "last_stop_time", defaults.last_stop_time),
-    afplay_pid: field(value, "afplay_pid", defaults.afplay_pid),
   };
   if (!Array.isArray(state.last_played) || state.last_played.length !== 5) throw new Error("invalid state");
   if (!Array.isArray(state.timestamps) || state.timestamps.length !== MAX_PROMPT_TRACK) throw new Error("invalid state");
@@ -161,7 +160,6 @@ function normalizeState(value) {
   integer(state.timestamp_head, 0);
   integer(state.last_agent_start);
   integer(state.last_stop_time);
-  if (state.afplay_pid !== null) integer(state.afplay_pid, -0x80000000, 0x7fffffff);
   return state;
 }
 
@@ -246,12 +244,7 @@ function play(config, state, category) {
   if (config.paused || !config.categories[category]) return;
   const sound = pickSound(state, category);
 
-  if (state.afplay_pid !== null) {
-    try {
-      process.kill(state.afplay_pid, "SIGTERM");
-    } catch {}
-    state.afplay_pid = null;
-  }
+  if (afplay) afplay.kill("SIGTERM");
 
   const volume = Math.min(Math.max(config.volume, 0), 100) / 100;
   try {
@@ -259,9 +252,12 @@ function play(config, state, category) {
       detached: true,
       stdio: "ignore",
     });
+    afplay = child;
     child.once("error", (err) => console.error(`pi-peon: afplay spawn failed (${err.message})`));
+    child.once("close", () => {
+      if (afplay === child) afplay = undefined;
+    });
     child.unref();
-    state.afplay_pid = child.pid ?? null;
   } catch (err) {
     console.error(`pi-peon: afplay spawn failed (${err?.message ?? err})`);
   }
@@ -380,7 +376,9 @@ function registerPeonCommand(pi) {
           Math.min(items.length + 2, 15),
           getSettingsListTheme(),
           (id, newValue) => {
-            setConfig(id, newValue).catch(() => {});
+            setConfig(id, newValue).catch((error) => {
+              ctx.ui.notify(`Peon settings save failed: ${error?.message ?? error}`, "error");
+            });
           },
           () => done(undefined),
         );

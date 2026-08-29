@@ -214,20 +214,23 @@ function buildDigest(raw) {
 
     let file = "";
     let hunks = 0;
+    let includeHunk = false;
     let interesting = 0;
     let declarations = 0;
     for (const line of lines) {
       if (byteLength(out) + byteLength(file) >= DIGEST_LIMIT) break;
       if (line.startsWith("@@")) {
-        if (hunks >= 8) continue;
+        includeHunk = hunks < 8;
+        if (!includeHunk) continue;
         hunks++;
         file += `  ${line}\n`;
         continue;
       }
-      if (!line || (line[0] !== "+" && line[0] !== "-") || line.startsWith("+++") || line.startsWith("---")) continue;
+      if (!includeHunk || !line || (line[0] !== "+" && line[0] !== "-") || line.startsWith("+++") || line.startsWith("---")) continue;
       const content = line.slice(1);
+      const classified = content.trimStart();
       if (isNoiseLine(content) || interesting >= 14) continue;
-      if (DECL_PREFIXES.some((prefix) => content.startsWith(prefix)) && declarations < 10) {
+      if (DECL_PREFIXES.some((prefix) => classified.startsWith(prefix)) && declarations < 10) {
         declarations++;
         interesting++;
         file += `  ${line}\n`;
@@ -285,6 +288,9 @@ async function analyze(pi, cwd, signal) {
 
   const add = await runGit(pi, root, ["add", "-A"], signal, 4096);
   if (!add.ok) throw new Error("git add failed");
+  const initialTree = await runGit(pi, root, ["write-tree"], signal, 128);
+  if (!initialTree.ok) throw new Error("git write-tree failed");
+  const tree = trim(initialTree.stdout);
   const files = await runGit(pi, root, ["diff", "--cached", "-M", "--name-status"], signal, 64 * 1024);
   if (!files.ok) throw new Error("git diff --name-status failed");
   const names = trim(files.stdout);
@@ -294,6 +300,8 @@ async function analyze(pi, cwd, signal) {
   const diff = await runGit(pi, root, ["diff", "--cached", "-M", "-U3"], signal);
   const style = await runGit(pi, root, ["log", "--pretty=format:%s", "-25"], signal, 8 * 1024);
   if (!stat.ok || !diff.ok) throw new Error("git diff failed");
+  const finalTree = await runGit(pi, root, ["write-tree"], signal, 128);
+  if (!finalTree.ok || trim(finalTree.stdout) !== tree) throw new Error("staged changes changed during analysis; run /commit again");
 
   let context = `## Repository\n${path.basename(root)}\n\n`;
   const languages = topLanguages(names);
@@ -309,7 +317,7 @@ async function analyze(pi, cwd, signal) {
   if (style.ok && subjects) context += `\n## Recent commit style (last 25 subjects)\n${subjects}\n`;
   const guidance = commitGuidance(root);
   if (guidance) context += `\n## Repository commit guidance (AGENTS.md)\n${guidance}\n`;
-  return byteSlice(context, CONTEXT_LIMIT);
+  return { context: byteSlice(context, CONTEXT_LIMIT), tree };
 }
 
 function isVagueDescription(description) {
@@ -391,6 +399,8 @@ function commitWithInput(root, message, signal) {
     });
     const stdout = [];
     const stderr = [];
+    let stdoutLength = 0;
+    let stderrLength = 0;
     let killed = false;
     let forceTimer;
     const sendSignal = (value) => {
@@ -414,8 +424,20 @@ function commitWithInput(root, message, signal) {
     };
     const timer = setTimeout(kill, TIMEOUT_MS);
     signal?.addEventListener("abort", kill, { once: true });
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.stdout.on("data", (chunk) => {
+      const remaining = MAX_GIT_OUT - stdoutLength;
+      if (remaining <= 0) return;
+      const bytes = Buffer.from(chunk);
+      stdout.push(bytes.subarray(0, remaining));
+      stdoutLength += Math.min(bytes.length, remaining);
+    });
+    child.stderr.on("data", (chunk) => {
+      const remaining = 16 * 1024 - stderrLength;
+      if (remaining <= 0) return;
+      const bytes = Buffer.from(chunk);
+      stderr.push(bytes.subarray(0, remaining));
+      stderrLength += Math.min(bytes.length, remaining);
+    });
     child.stdin.on("error", () => {});
     child.once("error", (error) => {
       cleanup();
@@ -426,8 +448,8 @@ function commitWithInput(root, message, signal) {
       if (killed) return reject(new Error("git: killed (aborted or timed out)"));
       resolve({
         ok: code === 0,
-        stdout: byteSlice(Buffer.concat(stdout).toString(), MAX_GIT_OUT),
-        stderr: byteSlice(Buffer.concat(stderr).toString(), 16 * 1024),
+        stdout: Buffer.concat(stdout, stdoutLength).toString(),
+        stderr: Buffer.concat(stderr, stderrLength).toString(),
       });
     });
     child.stdin.end(`${message.replace(/\n+$/g, "")}\n`);
@@ -435,11 +457,13 @@ function commitWithInput(root, message, signal) {
   });
 }
 
-async function commit(pi, cwd, message, signal) {
+async function commit(pi, cwd, message, signal, expectedTree) {
   const root = await gitRoot(pi, cwd, signal);
   if (!root) throw new Error("not a git repository");
   const staged = await runGit(pi, root, ["diff", "--cached", "--name-status"], signal, 64 * 1024);
   if (!staged.ok || !trim(staged.stdout)) throw new Error("nothing is staged; run /commit again so the working tree is re-snapshotted");
+  const tree = await runGit(pi, root, ["write-tree"], signal, 128);
+  if (!tree.ok || trim(tree.stdout) !== expectedTree) throw new Error("staged changes changed while writing the message; run /commit again");
   const result = await commitWithInput(root, trim(message), signal);
   if (!result.ok) throw new Error(trim(result.stderr) || "git commit failed");
   const hashResult = await runGit(pi, root, ["rev-parse", "--short", "HEAD"], signal, 64);
@@ -489,12 +513,12 @@ export default function (pi: ExtensionAPI) {
       const cwd = ctx.cwd;
       showSpinner(ctx, "analyzing changes");
       try {
-        const context = await analyze(pi, cwd, ctx.signal);
-        if (!context) return notify(ctx, "nothing to commit", "info");
+        const analysis = await analyze(pi, cwd, ctx.signal);
+        if (!analysis) return notify(ctx, "nothing to commit", "info");
 
         const model = serializableModel(ctx.model);
         if (!model) return notify(ctx, "no model available", "error");
-        const prompt = buildPrompt(context, (args ?? "").trim(), sessionTail(ctx));
+        const prompt = buildPrompt(analysis.context, (args ?? "").trim(), sessionTail(ctx));
 
         showSpinner(ctx, "writing commit message");
         let message = stripFences(await askModel(model, prompt, cwd, ctx.signal));
@@ -508,7 +532,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         showSpinner(ctx, "creating commit");
-        notify(ctx, await commit(pi, cwd, message, ctx.signal), "success");
+        notify(ctx, await commit(pi, cwd, message, ctx.signal, analysis.tree), "success");
       } catch (error) {
         notify(ctx, error?.message ?? String(error), "error");
       } finally {

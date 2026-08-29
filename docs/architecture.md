@@ -14,6 +14,8 @@ under the agent directory when it must survive a restart
   stdin, stdout, and stderr, then closes the parent descriptor
 - An abort sends `SIGTERM` to the child
 - The result is `exited N` or `signal N`
+- `registerTerminalCommand` provides the shared TUI validation, terminal
+  handoff, restoration, and result notification used by `/lg` and `/nvim`
 
 `extensions/lib/toolkit.ts` contains two groups of helpers
 
@@ -53,8 +55,9 @@ automatic trigger. It is inspired by tmonk/pi-committer
    current model, low thinking, no tools, and compaction disabled
 5. Validate the message. On failure, append the exact problems and ask once
    more
-6. Recheck that staged changes exist, run `git commit -F -`, then report the
-   short hash and header
+6. Recheck that staged changes exist and that `git write-tree` still matches
+   the tree used for analysis
+7. Run `git commit -F -`, then report the short hash and header
 
 The prompt can include `/commit` arguments as intent and the last 12 user or
 assistant session entries, capped at 4,000 characters. The diff remains the
@@ -74,9 +77,10 @@ noise, and a substantive body of at least 50 bytes. Allowed types are `feat`,
 
 Each git command and the commit child have a 60-second timeout. The command
 signal cancels git processes, the commit child, and the message-writing agent
-session. Commit stdout and stderr are drained concurrently, so verbose hooks
-do not block the child. A TUI widget shows analysis, writing, and commit
-progress. Headless sessions skip the widget and notifications safely
+session. Commit stdout and stderr are drained concurrently into bounded
+buffers, so verbose hooks do not block the child or grow memory without a
+limit. A TUI widget shows analysis, writing, and commit progress. Headless
+sessions skip the widget and notifications safely
 
 There is no fallback message and no confirmation prompt. A second invalid
 message reports the validation problems and the last attempt. One invocation
@@ -180,21 +184,21 @@ Config is `<agent_dir>/peon.json`
 
 The settings panel changes pause state, volume, silent window, and category
 flags. Config writes replace the file directly. A missing or invalid config
-uses defaults and logs non-missing-file errors. Settings-save failures are not
-shown in the panel
+uses defaults and logs non-missing-file errors. Settings-save failures are
+shown as UI errors
 
 Cross-event state is `<agent_dir>/peon-state.json`
 
 - Last sound index for each category
 - A 16-entry ring of prompt timestamps
 - Last agent start and last completion time
-- PID of the last detached `afplay` process
 
 State loads before each event and is written through a temporary file after it.
 The final rename is best-effort, matching the previous notification behavior.
 Invalid state uses defaults and logs the problem. Other state-save failures are
 logged but do not break the lifecycle event. A promise queue serializes events
-so two state read and write cycles do not overlap
+so two state read and write cycles do not overlap. The active `afplay` child is
+kept only in process memory, so Peon never signals a PID restored from disk
 
 ## Event behavior
 
@@ -231,11 +235,11 @@ Both providers are fetched in parallel with native `fetch` and independent
   OAuth refresh, and `auth.json` updates stay in pi's model registry. The
   request includes the bearer token and `ChatGPT-Account-Id` when available
 
-One provider can fail while the other still renders. The panel shows account
-information, used bars, free percentages, reset times, status colors, extra
-Codex feature limits, and saved reset credits. `[r]` refreshes, `[q]` or Esc
-closes, duplicate refreshes are ignored, and results that arrive after close
-are discarded
+One provider can fail while the other still renders. Provider response bodies
+are capped at 1 MiB before JSON parsing. The panel shows account information,
+used bars, free percentages, reset times, status colors, extra Codex feature
+limits, and saved reset credits. `[r]` refreshes, `[q]` or Esc closes, duplicate
+refreshes are ignored, and results that arrive after close are discarded
 
 # Vision extension (`extensions/vision.ts`)
 
@@ -254,9 +258,10 @@ is configured
 
 Config is `<agent_dir>/vision.json` with `provider`, `model`, `maxDimension`,
 and `jpegQuality`. Defaults are 1568 pixels and quality 85. Unknown old keys
-are ignored. `/vision show` displays the selection, `/vision model` opens a
-picker of image-capable registry models, and `/vision model <provider/model>`
-validates and saves an exact choice
+are ignored. A missing file uses defaults, while invalid or unreadable config
+also uses defaults and logs the error. `/vision show` displays the selection,
+`/vision model` opens a picker of image-capable registry models, and
+`/vision model <provider/model>` validates and saves an exact choice
 
 At each call, the extension resolves the selected model and its credentials
 through pi's model registry. Provider headers are preserved. An Authorization
@@ -329,7 +334,8 @@ formatted output is capped at 32 KiB. An empty result is the successful text
 The Exa response body is capped at 4 MiB. Error response text used for API
 messages is capped at 8 KiB. A missing results array or invalid JSON fails the
 tool. Exa's positive `costDollars.total` is returned as tool usage with zero
-tokens so the search cost appears in session totals
+tokens, including when no sources are found, so the search cost appears in
+session totals
 
 ## Timeout, retry, and cancellation
 
@@ -371,9 +377,10 @@ Context color uses absolute thresholds of 100,000 tokens for warning and
 
 Pi supplies the branch, provider count, and extension statuses. The extension
 runs `git --no-optional-locks status --porcelain -b` when enabled, on branch
-changes, and every 5 seconds. It counts files with unstaged work as `*N`,
-untracked files as `?N`, and staged files as `+N`. The interval and branch
-listener are removed when the footer is disposed or disabled
+changes, and every 5 seconds. Only one status process runs at a time, and each
+has a 4-second timeout. It counts files with unstaged work as `*N`, untracked
+files as `?N`, and staged files as `+N`. The interval and branch listener are
+removed when the footer is disposed or disabled
 
 Throughput estimates one token per four streamed text or thinking characters.
 It uses a rolling 15-second sample window, ignores gaps longer than 2 seconds,

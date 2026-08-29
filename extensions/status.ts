@@ -11,6 +11,7 @@ import { Container, Spacer, matchesKey, truncateToWidth, visibleWidth } from "@e
 import { resolveCodexAuth } from "./lib/toolkit";
 
 const TIMEOUT_MS = 30_000;
+const MAX_RESPONSE_BYTES = 1024 * 1024;
 const CODEX_URL = "https://chatgpt.com/backend-api/wham/usage";
 const OPENCODE_URL = "https://opencode.ai/zen/go/v1/usage";
 
@@ -38,7 +39,16 @@ interface LimitsData {
 async function fetchJson(url: string, headers: Record<string, string>) {
 	const response = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
 	if (!response.ok) throw new Error(`request failed (${response.status})`);
-	return response.json();
+	if (!response.body) throw new Error("response had no body");
+	const chunks = [];
+	let length = 0;
+	for await (const chunk of response.body) {
+		const bytes = Buffer.from(chunk);
+		length += bytes.length;
+		if (length > MAX_RESPONSE_BYTES) throw new Error("response exceeded the 1MB cap");
+		chunks.push(bytes);
+	}
+	return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
 }
 
 function providerError(provider: string, error: unknown): ProviderLimits {

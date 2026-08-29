@@ -142,7 +142,7 @@ function formatResults(parsed, excerptCap) {
       }
     : undefined;
 
-  if (sources.length === 0) return { text: "No results found." };
+  if (sources.length === 0) return { text: "No results found.", usage };
 
   let text = "Sources:\n";
   for (const [index, source] of sources.entries()) {

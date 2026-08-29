@@ -93,6 +93,7 @@ interface GitStatus {
 
 let gitStatus: GitStatus | null = null; // null = not in a repo / unknown
 let gitStatusTimer: ReturnType<typeof setInterval> | null = null;
+let gitStatusInFlight = false;
 
 let footerEnabled = true;
 let footerTui: TUI | null = null;
@@ -129,11 +130,14 @@ function sanitizeStatusText(text: string): string {
 }
 
 function refreshGitStatus(ctx: ExtensionContext): void {
+	if (gitStatusInFlight) return;
+	gitStatusInFlight = true;
 	execFile(
 		"git",
 		["--no-optional-locks", "status", "--porcelain", "-b"],
-		{ cwd: ctx.sessionManager.getCwd(), encoding: "utf8" },
+		{ cwd: ctx.sessionManager.getCwd(), encoding: "utf8", timeout: GIT_STATUS_POLL_MS - 1000 },
 		(error, stdout) => {
+			gitStatusInFlight = false;
 			if (error) {
 				// Not a repo, git missing, or cwd gone: nothing to show
 				gitStatus = null;
