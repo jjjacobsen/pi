@@ -15,8 +15,7 @@
 // - The subagent gets the built-in tools (read, bash, edit, write) plus the
 //   allowlisted extensions (search.ts -> web_search, vision.ts ->
 //   describe_image). The resource loader filters every other extension out:
-//   the shared-daemon extension (lightpanda) never runs here, the subagent
-//   tool cannot recurse into itself, and the subagent's system prompt stays
+//   the subagent tool cannot recurse into itself, and the system prompt stays
 //   small. The tools allowlist is the second guard: even if a filter leak
 //   slips an extension in, only the six names are callable.
 // - Model and thinking level inherit from the caller by default. Optional
@@ -50,8 +49,7 @@ const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "m
 // name. Everything else is filtered out. search.ts registers web_search and
 // holds no shared state; vision.ts registers describe_image and syncs its
 // own tool visibility against the sub-session's model. Every other extension
-// would bring a shared daemon, session-bound UI, or recursion, so it stays
-// out.
+// is outside the subagent tool allowlist, so it stays out.
 const SUBAGENT_EXTENSIONS = new Set(["search.ts", "vision.ts"]);
 
 // The exact tools a subagent can call. The first four are built-ins, the

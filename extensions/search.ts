@@ -31,13 +31,12 @@ export default function searchExtension(pi: ExtensionAPI) {
     name: TOOL_NAME,
     label: "Web Search",
     description:
-      "Search the web via the Exa API and return a numbered source list with excerpts. Exa returns raw results with no built-in answer synthesis, so write the answer yourself and cite sources as [n] markers resolving to the numbered list. Mode 'answer' (default) returns sources with longer excerpts for synthesis; mode 'results' returns a compact list only, faster and cheaper. Use web_search for current, niche, or factual queries; when you need full page content, fetch the result URLs with the browser tools.",
+      "Search the web via the Exa API and return a numbered source list with excerpts. Exa returns raw results with no built-in answer synthesis, so write the answer yourself and cite sources as [n] markers resolving to the numbered list. Mode 'answer' (default) returns sources with longer excerpts for synthesis; mode 'results' returns a compact list only, faster and cheaper. Use web_search for current, niche, or factual queries.",
     promptSnippet: "Search the web and return an answer with cited sources",
     promptGuidelines: [
       "Use web_search when a question needs current, niche, or factual information the model may not know: recent events, version numbers, API docs, prices, or anything with a right answer on the web. The backend searches Exa and returns a numbered source list with excerpts; Exa does not synthesize answers, so write the answer yourself and cite sources as [n] markers resolving to the numbered list.",
       "Default mode 'answer' returns sources with longer excerpts for synthesis. Use mode 'results' for quick lookups where only the source list matters, it is faster and cheaper.",
       "recencyFilter narrows to the past day/week/month/year (Exa filters by published date); domainFilter restricts to domains (prefix with - to exclude, e.g. [\"openai.com\", \"-reddit.com\"]).",
-      "When a source's full content matters (API docs, long articles), fetch the URL with browser tools after searching instead of re-searching.",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "The search query." }),

@@ -128,7 +128,7 @@ pub fn respondOutcomeExit(arena: Allocator, io: std.Io, outcome: Outcome) noretu
 }
 
 // ---------------------------------------------------------------------------
-// HTTP call with deadline (shared by pi-vision, pi-search, pi-lightpanda)
+// HTTP call with deadline (shared by pi-vision and pi-search)
 //
 // Both backends POST to a remote endpoint on a worker thread so a hung
 // provider cannot stall the main loop. The worker runs with its own arena

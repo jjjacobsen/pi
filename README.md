@@ -15,15 +15,11 @@ orgs I know and trust are welcome when rewriting them myself adds no value
 3. `curl -fsSL https://bun.sh/install | bash` to install bun
 4. `bun install -g @earendil-works/pi-coding-agent` to install pi
 5. `mise run build` to compile the extension binaries into `zig-out/bin`
-6. `brew install lightpanda-io/browser/lightpanda`
-7. `mise run daemon-start` - renders the LaunchAgent plist into
-   `~/Library/LaunchAgents/com.pijon.lightpanda.plist` and starts the daemon.
-   Confirm with `mise run daemon-status`
-8. Install the packages into pi, then restart pi
+6. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
    - `pi install git:git@github.com:earendil-works/pi-transcribe`
    - `pi install npm:@ff-labs/pi-fff`
-9. Export `EXA_API_KEY` before starting pi (the search extension needs it)
+7. Export `EXA_API_KEY` before starting pi (the search extension needs it)
 
 ## Layout
 
@@ -44,15 +40,6 @@ Technical details for every extension live in [docs/architecture.md](docs/archit
 your repo's style, using your git history, AGENTS.md, and the current
 session for context. It stops before staging while `goal.md` or `handoff.md`
 exists in the repository root
-
-### lightpanda - headless browser
-
-Gives the model a real headless browser with tools to navigate, read,
-click, fill forms, and extract content from any page. All pi processes
-share one persistent tab by default; a pi process can be pointed at its
-own tab (browser_pick_session) and tabs can be listed and closed.
-Needs the lightpanda daemon running (`mise run daemon-start`), see
-docs/daemons.md
 
 ### lazygit - full-screen git TUI via /lg
 

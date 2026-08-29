@@ -3,7 +3,6 @@ const std = @import("std");
 // Each entry in this list becomes a binary installed to zig-out/bin/.
 // Add new extension backends here as the repo grows.
 const bins = .{
-    .{ .name = "pi-lightpanda", .path = "src/lightpanda.zig" },
     .{ .name = "pi-commit", .path = "src/commit.zig" },
     .{ .name = "pi-lg", .path = "src/lazygit.zig" },
     .{ .name = "pi-nvim", .path = "src/nvim.zig" },

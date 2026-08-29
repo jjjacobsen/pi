@@ -218,7 +218,7 @@ const PAT_BRANCH_S = "\"type\": \"branch_summary\"";
 /// Tool results are skipped unless they carry usage: delegated model calls
 /// (describe_image, web_search) report their token accounting on the tool
 /// result, and that usage appears nowhere else, so it must be aggregated;
-/// plain tool output (multi-megabyte reads, browser dumps) has no usage and
+/// plain tool output (including multi-megabyte reads) has no usage and
 /// is skipped without ever being decoded. The usage key is serialized after
 /// the content, so a whole-line check is required, not just the head.
 fn lineMightBeRelevant(line: []const u8) bool {

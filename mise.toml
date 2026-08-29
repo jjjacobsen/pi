@@ -2,18 +2,6 @@
 run = "zig build"
 description = "Build all extension binaries"
 
-[tasks.daemon-status]
-run = "bash scripts/daemon-status.sh"
-description = "Check that the lightpanda daemon is running"
-
-[tasks.daemon-start]
-run = "bash scripts/daemon-start.sh"
-description = "Start the lightpanda daemon when it is not running"
-
-[tasks.daemon-restart]
-run = "bash scripts/daemon-restart.sh"
-description = "Restart lightpanda so it picks up a freshly installed binary"
-
 [tools]
 hk = "1.54.0"
 gitleaks = "latest"

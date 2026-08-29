@@ -2,19 +2,11 @@
 
 ## 2026-08-13
 
-- A `b.addRunArtifact` run does not update `zig-out/bin/pi-browser`: it
-  runs from the build cache, only `installArtifact` writes zig-out. After
-  editing `src/`, run plain `zig build` before driving the binary directly,
-  or you test a stale build (cost a full repro cycle while debugging the
-  browser log spam).
 - Zig 0.16 removed `std.time.milliTimestamp()`. The supported way to read a
   clock is `std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts)` with a
   `std.posix.timespec`; note the field names are `sec`/`nsec` on macOS and
   `tv_sec`/`tv_nsec` on Linux. Also, `std.posix.poll`'s error set in 0.16
   does not include `error.Interrupted`, so a `switch` on it fails to compile.
-- `lightpanda mcp --help` claims `--http-timeout` defaults to 10000, but
-  `src/Config.zig` (`httpTimeout orelse 5000`) is the actual default. Trust
-  the source, not the help text.
 - The pi vision tool (describe_image) returned "Vision model returned no
   content" for a Ghostty TUI screenshot; OCR'd it with a one-off Swift
   script using the Vision framework (`VNRecognizeTextRequest`, accurate
@@ -39,7 +31,7 @@
 - `std.process.run` in 0.16 has no stdin pipe (always `.ignore`); for
   `git commit -F -` you must `spawn` manually, write stdin, close it, drain
   stdout/stderr with raw `posix.read`, then `child.wait`. Close the pipe
-  files yourself and null the child fields, like pi-lightpanda does.
+  files yourself and null the child fields.
 - `Io.Dir.readFileAlloc(dir, io, path, allocator, limit)` takes an
   `Io.Limit` (`.limited(n)`), not a byte count; wrong arg order silently
   means `error.StreamTooLong` for big files.
@@ -59,8 +51,8 @@
   `command not found`; use a background process + `sleep` + `ps` + `kill`
   instead.
 - Extensions that spawn a backend child with piped stdio keep pi's event
-  loop alive: `pi -p` never exits after print mode (browser.ts, commit.ts,
-  lazygit.ts all had this). Unref the child and its stdin/stdout
+  loop alive: `pi -p` never exits after print mode (commit.ts and
+  lazygit.ts both had this). Unref the child and its stdin/stdout
   so pi can exit; the backend self-terminates on stdin EOF.
 
 ## 2026-08-15 (shared backend.ts)
@@ -91,8 +83,8 @@ extensions/ as a hk step.
   rpc` hangs forever: the backend responds (verified alive and healthy), but
   the response line never reaches the glue, and the pending promise never
   settles, even on child exit. Backends hang around as idle processes until
-  pi exits. Affects every createBackend extension (commit, lg, browser,
-  peon). TUI mode is fine
+  pi exits. Affects every createBackend extension (commit, lg, peon). TUI
+  mode is fine
 - Workaround: guard commands that need the backend with `ctx.mode !== "tui"`
   and refuse before touching the backend
 
@@ -213,29 +205,6 @@ extensions/ as a hk step.
   Fixed with a project-wide stamp (zig-out/.pi-build-stamp.json): the
   rebuild now runs at most once per source change.
 
-## 2026-08-15 — browser extension: every tool call hung forever (protocol drift)
-
-- `extensions/lib/backend.ts` (shared glue) sends `{"id":N,"op":"...",...}`
-  on its wire; every other backend's `Request` struct parses `op`. But
-  `src/browser.zig`'s `Request` parsed a `tool` field (an old pre-shared-glue
-  protocol), so every real browser_* call failed with `MissingField`. The
-  backend answered with the unmatchable id 0, the glue's pending map had no
-  entry for it, and the caller's promise never settled: an infinite hang,
-  no error, no log.
-- What made it invisible: exercising `Browser.call` directly bypasses the
-  wire protocol, and my first harness drove the binary with the documented
-  `tool` format instead of reading what the glue actually sends. The bug
-  only shows through the real
-  glue (Node) or by sending `op` yourself. Repro: feed the backend
-  `{"id":5,"op":"goto","params":"{}"}` and watch it reply
-  `{"id":0,"ok":false,"error":"MissingField"}` while the caller waits.
-- Fixed: renamed the field to `op` in `src/browser.zig` (+ protocol comments,
-  `docs/architecture.md`), and hardened `extensions/lib/backend.ts` to log
-  responses with unknown ids / non-JSON lines to stderr instead of dropping
-  them silently, so a future protocol drift fails loudly instead of hanging.
-- Lesson: test the glue's actual wire bytes, not the documented ones; and
-  when a tool hangs forever with no error, check the backend's id-0 replies.
-
 ## 2026-08-15 — Exa search rewrite
 
 - Sourcing `~/.zshrc` inside a bash tool session dies silently before the
@@ -311,44 +280,6 @@ extensions/ as a hk step.
   changed (dirty stays false), which is by design, and it reuses the same
   `pi-usage-cache.bin` the persistent backend wrote, so no migration is
   needed between models.
-
-## 2026-08-18 — browser conversion (daemon model)
-
-- `lightpanda mcp` accepts a `tools/call` POST with no initialize
-  handshake: it creates the MCP session on first use from the
-  `Mcp-Session-Id` header. This means the one-shot client needs only one
-  POST per call. Verified in a spike against the 2026.08 nightly; the
-  risk is a future build requiring the handshake, which would need the
-  initialize + notifications/initialized POSTs added back (a comment in
-  src/browser.zig says so).
-- Deleting `respond`/`respondOutcome` from common.zig broke the build
-  because src/search.zig still imported `respondOutcome` as a dead
-  alias (it only ever called `respondOutcomeExit`). Removed the dead
-  import with the deletion.
-- The browser result cap moved from 256KB (old head/tail logic) to the
-  shared 64KiB WorkerSlot limit (documented MAX_RESULT_TEXT), with a 60KiB
-  head/tail cap inside it. Accepted tradeoff for reusing the
-  httpWithDeadline machinery shared with search/vision.
-- hk's end-of-file-fixer wants a trailing newline on every new file
-  (browser.ts, both daemon scripts, browser.zig); run `mise x -- hk util
-  end-of-file-fixer --fix <files>` after writing them.
-
-## 2026-08-19 — browser session override (per-process tabs)
-
-- lightpanda's anonymous session `"default"` is a permanent catch-all that
-  cannot be closed ("the default session cannot be closed"); it is never
-  used by the extension because every call sends a session header. Harmless,
-  but it appears in every session_list output.
-- `session_close` on named sessions genuinely frees them (verified) and
-  lightpanda re-creates a session on its next use, so "close then use" is
-  the way to reset a tab, including `pi-main`.
-- lightpanda rejects `session_close` when the request is attached to the
-  session being closed ("cannot close the session you are attached to").
-  The glue's browser_close_session therefore attaches to the permanent
-  empty "default" session (sending `Mcp-Session-Id: default` reuses it,
-  verified, and closing any named session from that context works).
-- The glue's `params` values are typed `unknown`, so reading
-  `params.session` needed a `String()` coercion, not a cast.
 
 ## 2026-08-20 — npm install-script approval
 
