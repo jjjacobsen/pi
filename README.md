@@ -59,12 +59,11 @@ happen, like session start or task complete. `/peon` opens the settings
 panel to adjust volume and which events make noise. Replaces the
 third-party pi-peon-ping extension
 
-### usage - usage dashboard via /usage
+### status - provider limits via /status
 
-`/usage` shows how many tokens and dollars you've burned, with graphs,
-tables, and provider quota bars. Replaces
-`@tmustier/pi-usage-extension`; the limits view is adapted from
-omp (can1357/oh-my-pi)
+`/status` shows live OpenAI Codex and OpenCode Go quota limits. It does not
+collect session usage or write a cache. The view is adapted from omp
+(can1357/oh-my-pi)
 
 ### footer - custom status footer via /footer
 
@@ -95,8 +94,8 @@ plus `web_search` and `describe_image`, and can be called several times in
 one turn to run tasks in parallel. Model and reasoning inherit independently
 from the caller unless a call sets either optional override. Its full
 transcript is saved under the agent dir
-(`~/.pi/agent/subagents/`), is resumable, and its usage counts toward
-`/usage` in the caller's session. Pure TypeScript via pi's SDK, no Zig
+(`~/.pi/agent/subagents/`), is resumable, and its usage counts toward pi's
+session totals. Pure TypeScript via pi's SDK, no Zig
 backend, see docs/architecture.md
 
 ## Adding a new extension

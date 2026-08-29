@@ -7,7 +7,6 @@ const bins = .{
     .{ .name = "pi-lg", .path = "src/lazygit.zig" },
     .{ .name = "pi-nvim", .path = "src/nvim.zig" },
     .{ .name = "pi-peon", .path = "src/peon.zig" },
-    .{ .name = "pi-usage", .path = "src/usage.zig" },
     .{ .name = "pi-vision", .path = "src/vision.zig" },
     .{ .name = "pi-search", .path = "src/search.zig" },
 };

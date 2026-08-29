@@ -21,10 +21,9 @@
 // - Model and thinking level inherit from the caller by default. Optional
 //   per-call overrides select an exact model and/or reasoning level.
 // - The transcript is persisted under <agent_dir>/subagents/<ts>_<id>.jsonl
-//   so any run can be resumed (SessionManager.open) or inspected. /usage
-//   never sees it: the collect scan only reads <agent_dir>/sessions.
+//   so any run can be resumed (SessionManager.open) or inspected.
 // - The subagent's combined LLM usage rides back on the tool result's usage
-//   field, so /usage aggregates the spend under the caller's session.
+//   field, so pi includes the spend in the caller's session totals.
 // - Esc aborts the sub-session (signal -> session.abort()); progress
 //   streams to the TUI via onUpdate.
 
@@ -100,8 +99,8 @@ function findExactModel(modelRuntime, reference) {
   return idMatches.length === 1 ? idMatches[0] : undefined;
 }
 
-// Sum the sub-session's per-assistant-message usage into the shape pi's
-// /usage aggregator expects on tool results.
+// Sum the sub-session's per-assistant-message usage into the shape pi
+// expects on tool results.
 function sumUsage(session) {
   let total;
   for (const message of session.messages) {

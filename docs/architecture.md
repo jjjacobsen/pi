@@ -449,101 +449,31 @@ counter resets to its default for the event.
   the manifests, documented in the file header.
 - Sessions with no UI (print mode) never fire the event ops, so no sounds.
 
-# Usage extension (pi-usage)
+# Status extension (`extensions/status.ts`)
 
 ## Goal
 
-`/usage` is a usage dashboard for the pi agent: per-period usage stats
-(graphs, table) plus live provider quota limits (OpenAI Codex
-subscription and OpenCode Go). Replaces `@tmustier/pi-usage-extension`
-(removed from `~/.pi/agent/settings.json` packages; same command name). The
-original extension's UI is ported as-is, its data pipeline is rewritten in
-Zig with a binary cache, and the provider-limits view is ported from omp
-(can1357/oh-my-pi).
+`/status` shows live provider quota limits for OpenAI Codex subscriptions and
+OpenCode Go. It does not scan sessions, collect usage totals, render graphs or
+tables, export data, or write a cache. The view is adapted from omp
+(can1357/oh-my-pi)
 
 ## Architecture
 
-```
-pi (coding agent)
-  └─ extensions/usage.ts            TS glue: /usage command, TUI rendering
-       └─ extensions/lib/usage/     types.ts, graph.ts, export.ts (ported)
-            └─ src/usage.zig        Zig backend: scan/parse/cache/aggregate,
-                                    provider-limit fetches
-```
+The extension is pure TypeScript. `ctx.ui.custom` renders the panel and native
+`fetch` calls both provider APIs in parallel. There is no Zig backend, child
+process, wire protocol, state file, or cache
 
-Why this split:
+OpenCode Go uses `GET https://opencode.ai/zen/go/v1/usage` with
+`Bearer $OPENCODE_API_KEY`. Codex uses
+`GET https://chatgpt.com/backend-api/wham/usage` with the bearer and
+`ChatGPT-Account-Id`. The extension resolves Codex credentials through pi's
+model registry with `resolveCodexAuth`, so OAuth refresh and `auth.json`
+updates stay in pi
 
-- pi's inline TUI (`ctx.ui.custom`) is TypeScript-only, so all rendering
-  stays in TS. The two original views (graph/table) and their
-  keybindings are ported from the tmuster extension nearly verbatim; the
-  limits view renders the quota data the backend fetches.
-- Everything slow lives in Zig: session-JSONL scanning and parsing, the
-  on-disk cache, aggregation into the five periods plus hourly buckets,
-  and the HTTPS fetches for provider limits.
-
-## Protocol (one JSON request as a single argv element, one JSON envelope on stdout)
-
-```json
-{"op":"collect","bounds":{"todayMs":..,"weekStartMs":..,"lastWeekStartMs":..,"last30DaysStartMs":..,"nowMs":..},"agent_dir":"..."}
-{"ok":true,"result":"{\"bounds\":..,\"hourly\":..,\"today\":..,\"thisWeek\":..,\"lastWeek\":..,\"last30Days\":..,\"allTime\":..,\"warnings\":[...]}"}
-{"op":"limits","codex_access":"...","codex_account_id":"...","codex_email":"..."}
-{"ok":true,"result":"{\"fetchedAt\":..,\"providers\":[...]}"}
-```
-
-- `collect` is local-only. Bounds are computed by the glue (local calendar
-  midnights; Zig has no portable local-timezone API), and the agent dir
-  rides the request (the glue's `getAgentDir`, pi's own resolution, never
-  an env fallback). The backend scans `<agent_dir>/sessions` for `.jsonl`
-  files, re-parses only files whose (size, mtime) changed since the binary
-  cache (`<agent_dir>/pi-usage-cache.bin`), aggregates, and returns one JSON
-  payload. A file that fails to stat/read/parse keeps
-  its cached rows and adds a warning to the payload, so a partial scan is
-  never persisted as success or reported as clean.
-- `limits` fetches quota over HTTPS on the main thread; a hung network is
-  bounded by the glue's `pi.exec` timeout (30s). OpenCode Go uses
-  `GET https://opencode.ai/zen/go/v1/usage` with `Bearer $OPENCODE_API_KEY`
-  (env). Codex uses `GET https://chatgpt.com/backend-api/wham/usage` with
-  the bearer and `ChatGPT-Account-Id` from the request: the glue resolves
-  the access token (and JWT account id/email) through pi's model registry
-  (`getApiKeyAndHeaders` on an openai-codex model), so OAuth refresh and
-  `auth.json` rewriting stay in pi and this backend never touches the
-  credential file.
-
-## Zig behavior
-
-- The JSONL parser pre-filters lines by byte patterns (assistant/session/
-  thinking/compaction/branch_summary/toolResult-with-usage) so
-  multi-megabyte tool results are never decoded. Tool-result usage
-  (describe_image, web_search) is aggregated as auxiliary provider cost
-  under the tool name: those delegated calls report their tokens nowhere
-  else, so skipping them understated totals.
-- The cache is a binary little-endian format: magic `PIUC`, version 1, an
-  interned string table, then per file a fixed-size message record set
-  (74 bytes per message). Writes go through a temp file + rename.
-- Dedupe of copied branch history uses a hash of (auxiliary, sourceId,
-  timestamp, token fingerprint).
-
-## Notes
-
-- The glue resolves the Codex credentials for the limits op through pi's
-  model registry and forwards them per request; the Limits view fetches
-  quotas on first view (not at panel open), enforces one in-flight request,
-  and drops the result when the panel closes. Scan warnings from the
-  collect payload render under the title, so a partial scan is visible.
-- The original JSON cache (`usage-extension-cache.json`) is left in place
-  but unused; the extension never reads it.
-- The cache path differs from the tmuster one, so the two extensions cannot
-  corrupt each other's data even if both are installed.
-- Zig 0.16 API notes: `std.posix` no longer exposes `pipe`/`close`/`write`/
-  `getpid`; use `posix.system.pipe(&fds)` / `posix.system.close(fd)` /
-  `posix.system.write(fd, ...)` / `posix.system.getpid()` with
-  `posix.errno()` for return codes. `std.ArrayList(T)` is the unmanaged
-  list; use `std.array_list.AlignedManaged(T, null)` for the managed
-  variant. `Io.Dir` replaces `std.fs.cwd()` (`statFile` returns
-  `Io.Timestamp` mtime with `.toMilliseconds()`). File stat exposes
-  `.permissions` directly (no `.mode`); `File.setPermissions(io, perms)`
-  preserves modes. `std.base64.url_safe_no_pad` is a `Codecs` value; the
-  decoder is the capitalized `.Decoder` field.
+Each request has a 30-second timeout. A provider failure renders on that
+provider while the other provider can still show its limits. The panel fetches
+when it opens, allows `[r]` refresh, and drops late results after it closes
 
 # Vision extension (pi-vision)
 
@@ -620,8 +550,7 @@ Why this split:
 - **Usage**: the chat/completions `usage` object (prompt/completion tokens)
   is returned on the response envelope; the glue computes cost from the
   vision model's pricing and reports it as `AgentToolResult.usage`, so
-  delegated describe_image tokens and cost appear in pi's footer and /usage
-  totals.
+  delegated describe_image tokens and cost appear in pi's session totals.
 - TLS uses the std lib's system CA bundle, which on macOS reads the system
   keychains directly; no cert file handling.
 
@@ -656,8 +585,8 @@ hint appended -> model calls describe_image.
 ## Notes
 
 - The delegated token usage rides the response envelope; the glue's
-  `toToolUsage` converts it into pi's Usage shape (with cost computed from
-  the model's pricing) so /usage counts it.
+  `toToolUsage` converts it into pi's Usage shape, with cost computed from
+  the model's pricing, so pi includes it in session totals.
 - Zig 0.16 API notes: `std.http.Client` is a plain struct
   (`{ .allocator, .io }`), `fetch` discards the body without a
   `response_writer`, `Io.Writer.fixed` buffers capture it (`out.end` is the
@@ -735,8 +664,8 @@ server to the model.
 - **Response parse**: `results[]` objects yield title/url/text, deduped by
   url and capped at 30. A missing `results` array is an error; an empty one
   returns "No results found." as a clean outcome. `costDollars.total` (USD)
-  becomes the tool result's usage JSON so /usage aggregates web_search
-  under the Tools provider (no tokens to report, cost only).
+  becomes the tool result's usage JSON, so pi includes web_search cost in
+  session totals with no tokens to report.
 - **Formatting**: `Sources:` followed by numbered `Title (url)` entries
   with a normalized excerpt (`answer` mode up to 900 chars, `results` mode
   up to 250). Total output capped at 32KB.
@@ -770,8 +699,8 @@ search and parses the JSON -> numbered source list with excerpts returned
 - One-shot: the binary runs once per call and exits. No unref dance, no
   session_shutdown wiring, and in-flight aborts kill only the binary.
 - Exa's free tier is 1000 credits per month, one search per credit; the
-  per-search cost (currently ~$0.007) rides the tool result's usage so
-  /usage reflects it. The old Codex-backed search was replaced because the
+  per-search cost (currently ~$0.007) rides the tool result's usage so pi
+  includes it in session totals. The old Codex-backed search was replaced because the
   server-side synthesis pipeline (query planning + search + answer
   generation before the first token) regularly blew the 60s deadline;
   Exa returns in milliseconds and the answer synthesis moved to the model,
@@ -901,12 +830,10 @@ tool result.
 - Transcripts persist under `<agent_dir>/subagents/<ts>_<id>.jsonl`
   (a `SessionManager.create` with a custom session dir), link the main
   session via `parentSession`, and can be resumed with
-  `SessionManager.open`. `/usage` never sees them: the usage collect
-  scan only reads `<agent_dir>/sessions`.
+  `SessionManager.open`.
 - Cost accounting: the combined usage of the sub-session's assistant
   messages is summed and returned on the tool result's `usage` field,
-  which pi persists, so `/usage` aggregates the subagent spend under the
-  caller's session exactly like `web_search` costs.
+  which pi includes in the caller's session totals.
 - The model catalog + auth runtime (`ModelRuntime.create`) and the
   filtered loader are created once per process (lazy) and shared across
   calls. `pi`'s cwd is fixed per process, so the loader's cwd cannot

@@ -11,7 +11,7 @@ export function toolError(text): never {
 }
 
 // ---------------------------------------------------------------------------
-// Codex subscription auth (shared by web_search and the /usage limits fetch)
+// Codex subscription auth for the /status limits fetch
 // ---------------------------------------------------------------------------
 
 // Pick an openai-codex model from pi's model registry, preferring the
@@ -54,7 +54,7 @@ export async function resolveCodexAuth(ctx) {
 // Convert a backend usage JSON object into pi's AgentToolResult.usage shape.
 // Token fields come from the backend; cost is computed from the model's own
 // pricing via pi's accounting (calculateCost), so the reported totals match
-// pi's footer and the /usage aggregator.
+// pi's session accounting.
 export function toToolUsage(model, u) {
   if (!u) return undefined;
   const input = u.input ?? 0;

@@ -110,8 +110,8 @@ fn formatResult(arena: Allocator, sources: []const Source) ![]const u8 {
     return out.items;
 }
 
-// Exa's costDollars.total (USD) as pi usage JSON, so /usage aggregates
-// web_search under the Tools provider. No tokens to report; cost only.
+// Exa's costDollars.total (USD) as pi usage JSON for session totals
+// No tokens to report, cost only
 fn usageJson(arena: Allocator, total: f64) ![]const u8 {
     return std.fmt.allocPrint(arena, "{{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":0,\"reasoning\":0,\"cost\":{{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":{d}}}}}", .{total});
 }

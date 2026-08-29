@@ -9,8 +9,8 @@
 //
 // The glue's only jobs: read the user's Exa API key from the environment,
 // forward the call, and carry the backend-reported Exa cost through as the
-// tool result's usage field so /usage aggregates web_search under the Tools
-// provider. Esc aborts by SIGTERMing the one-shot binary, so no HTTP request
+// tool result's usage field so pi includes it in session totals. Esc aborts
+// by SIGTERMing the one-shot binary, so no HTTP request
 // can outlive its turn.
 //
 // Request:  {"op":"search","query":"...","mode":"answer","num_results":8,"recency":"week","domains":["example.com","-bad.com"],"api_key":"...","timeout_ms":30000}
@@ -75,8 +75,8 @@ export default function searchExtension(pi: ExtensionAPI) {
           },
           { signal, timeout: DEFAULT_TIMEOUT_MS },
         );
-        // Exa's cost (USD) rides on the backend usage JSON; forward it so
-        // /usage aggregates web_search under the Tools provider.
+        // Exa's cost (USD) rides on the backend usage JSON, so forward it
+        // into pi's session totals.
         return { content: [{ type: "text" as const, text: res.result }], details: {}, ...(res.usage ? { usage: res.usage } : {}) };
       } catch (e) {
         return toolError(e instanceof Error ? e.message : String(e));
