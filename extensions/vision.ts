@@ -32,11 +32,19 @@ function loadConfig() {
   const path = join(getAgentDir(), "vision.json");
   try {
     const raw = JSON.parse(readFileSync(path, "utf8"));
+    const maxDimension = raw.maxDimension ?? DEFAULT_MAX_DIMENSION;
+    const jpegQuality = raw.jpegQuality ?? DEFAULT_JPEG_QUALITY;
+    if (!Number.isSafeInteger(maxDimension) || maxDimension < 1 || maxDimension > 16384) {
+      throw new Error("maxDimension must be an integer from 1 through 16384");
+    }
+    if (!Number.isSafeInteger(jpegQuality) || jpegQuality < 1 || jpegQuality > 100) {
+      throw new Error("jpegQuality must be an integer from 1 through 100");
+    }
     return {
       provider: typeof raw.provider === "string" ? raw.provider : undefined,
       model: typeof raw.model === "string" ? raw.model : undefined,
-      maxDimension: Number.isFinite(raw.maxDimension) ? raw.maxDimension : DEFAULT_MAX_DIMENSION,
-      jpegQuality: Number.isFinite(raw.jpegQuality) ? raw.jpegQuality : DEFAULT_JPEG_QUALITY,
+      maxDimension,
+      jpegQuality,
     };
   } catch (error) {
     if (error?.code !== "ENOENT") console.error(`pi-vision: config load failed (${error?.message ?? error}), using defaults`);

@@ -20,8 +20,7 @@ under the agent directory when it must survive a restart
 
 `extensions/lib/toolkit.ts` contains two groups of helpers
 
-- `toolError` throws tool failures, and `toToolUsage` converts delegated model
-  tokens to pi usage and calculates cost from the model pricing
+- `toolError` throws tool failures so pi marks them as failed tool calls
 - The Codex helpers choose a subscription model, resolve credentials through
   pi, and read the account ID and email from the OAuth token
 
@@ -233,7 +232,7 @@ OpenCode Go quota windows. The view is adapted from can1357/oh-my-pi. It does
 not scan session use, store totals, or write a cache
 
 Both providers are fetched in parallel with native `fetch` and independent
-30-second timeout signals
+30-second timeout signals. Closing the panel aborts both requests
 
 - OpenCode Go calls `GET https://opencode.ai/zen/go/v1/usage` with
   `Bearer $OPENCODE_API_KEY` and shows rolling, weekly, and monthly limits
@@ -263,9 +262,10 @@ the model knows to call `describe_image`. The hint reports when no vision model
 is configured
 
 Config is `<agent_dir>/vision.json` with `provider`, `model`, `maxDimension`,
-and `jpegQuality`. Defaults are 1568 pixels and quality 85. Unknown old keys
-are ignored. A missing file uses defaults, while invalid or unreadable config
-also uses defaults and logs the error. `/vision show` displays the selection,
+and `jpegQuality`. Defaults are 1568 pixels and quality 85. Dimensions must be
+integers from 1 through 16,384 and quality must be an integer from 1 through
+100. Unknown old keys are ignored. A missing file uses defaults, while invalid
+or unreadable config also uses defaults and logs the error. `/vision show` displays the selection,
 `/vision model` opens a picker of image-capable registry models, and
 `/vision model <provider/model>` validates and saves an exact choice
 
@@ -368,8 +368,10 @@ uses the active theme
 ## Data and lifecycle
 
 Session input, output, and cost totals include assistant messages, tool
-results, compactions, and branch summaries. Context use comes from
-`ctx.getContextUsage()`. It shows `?/window` immediately after compaction until
+results, compactions, and branch summaries. The footer scans restored history
+once, then adds usage only from new entries instead of rescanning on each
+stream update. Context use comes from `ctx.getContextUsage()`. It shows
+`?/window` immediately after compaction until
 the next response provides verified use
 
 Context color uses absolute thresholds of 100,000 tokens for warning and
@@ -383,7 +385,8 @@ files as `?N`, and staged files as `+N`. The interval and branch listener are
 removed when the footer is disposed or disabled
 
 Throughput estimates one token per four streamed text or thinking characters.
-It uses a rolling 15-second sample window and excludes both time and character
+Other assistant stream events do not add samples. It uses a rolling 15-second
+sample window and excludes both time and character
 growth across gaps longer than 2 seconds. It waits for 2 seconds of active data
 before updating, starts at `0.0` for each session, updates during streaming,
 and freezes the last value when idle. A short stream uses its overall average

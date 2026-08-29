@@ -96,3 +96,10 @@
   `@earendil-works/pi-coding-agent` failed the full TypeScript check. Use the
   public `ModelRuntime.getModels()` catalog and match `provider/model` first,
   then an unambiguous exact model ID.
+
+## 2026-08-29
+
+- `Object.entries(auth.headers)` inferred each provider header as `unknown`,
+  even though runtime values are `string | null`, so filtering out `null` did
+  not make `Object.fromEntries` assignable to fetch's string header record.
+  Build a `Record<string, string>` in a loop and copy only string values.

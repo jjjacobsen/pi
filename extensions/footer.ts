@@ -101,6 +101,7 @@ let stream: StreamState | null = null;
 let streaming = false;
 let lastTokPerSec = "0.0"; // always shown; "0.0" until the first measurement
 let streamFrozen = false; // a tok/s value was frozen during the current stream
+let totalsCache;
 
 // =============================================================================
 // Formatting helpers
@@ -172,28 +173,41 @@ function gitStatusSuffix(status: GitStatus): string {
 	return parts.length > 0 ? " " + parts.join(" ") : "";
 }
 
-function sessionTotals(ctx: ExtensionContext): { input: number; output: number; cost: number } {
-	let input = 0;
-	let output = 0;
-	let cost = 0;
-	for (const entry of ctx.sessionManager.getEntries()) {
-		if (entry.type === "message") {
-			if (entry.message.role === "assistant") {
-				input += entry.message.usage.input;
-				output += entry.message.usage.output;
-				cost += entry.message.usage.cost.total;
-			} else if (entry.message.role === "toolResult" && entry.message.usage) {
-				input += entry.message.usage.input;
-				output += entry.message.usage.output;
-				cost += entry.message.usage.cost.total;
-			}
-		} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
-			input += entry.usage.input;
-			output += entry.usage.output;
-			cost += entry.usage.cost.total;
-		}
+function addEntryUsage(totals, entry): void {
+	let usage;
+	if (entry.type === "message") {
+		if (entry.message.role === "assistant") usage = entry.message.usage;
+		else if (entry.message.role === "toolResult") usage = entry.message.usage;
+	} else if (entry.type === "branch_summary" || entry.type === "compaction") {
+		usage = entry.usage;
 	}
-	return { input, output, cost };
+	if (!usage) return;
+	totals.input += usage.input;
+	totals.output += usage.output;
+	totals.cost += usage.cost.total;
+}
+
+function sessionTotals(ctx: ExtensionContext): { input: number; output: number; cost: number } {
+	const manager = ctx.sessionManager;
+	const entries = manager.getEntries();
+	let totals = { input: 0, output: 0, cost: 0 };
+	let start = 0;
+	if (
+		totalsCache?.manager === manager &&
+		totalsCache.entryCount <= entries.length &&
+		(totalsCache.entryCount === 0 || entries[totalsCache.entryCount - 1] === totalsCache.lastEntry)
+	) {
+		totals = { ...totalsCache.totals };
+		start = totalsCache.entryCount;
+	}
+	for (let index = start; index < entries.length; index++) addEntryUsage(totals, entries[index]);
+	totalsCache = {
+		manager,
+		entryCount: entries.length,
+		lastEntry: entries[entries.length - 1],
+		totals,
+	};
+	return totals;
 }
 
 // =============================================================================
@@ -362,12 +376,13 @@ function enableFooter(ctx: ExtensionContext): void {
 export default function (pi: ExtensionAPI) {
 	pi.on("message_update", (event) => {
 		const ev = event.assistantMessageEvent;
+		if (ev.type !== "text_delta" && ev.type !== "thinking_delta") return;
 		if (!stream || stream.messageTimestamp !== event.message.timestamp) {
 			stream = { messageTimestamp: event.message.timestamp, startMs: Date.now(), chars: 0, samples: [] };
 			streaming = true;
 			streamFrozen = false;
 		}
-		if (ev.type === "text_delta" || ev.type === "thinking_delta") stream.chars += ev.delta.length;
+		stream.chars += ev.delta.length;
 		const now = Date.now();
 		stream.samples.push({ t: now, chars: stream.chars });
 		while (stream.samples.length > 2 && now - stream.samples[0]!.t > SAMPLE_WINDOW_MS) stream.samples.shift();
@@ -404,6 +419,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		lastTokPerSec = "0.0"; // fresh session starts at 0.0, not a stale frozen value
+		totalsCache = undefined;
 		if (footerEnabled && ctx.mode === "tui") enableFooter(ctx);
 	});
 

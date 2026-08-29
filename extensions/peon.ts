@@ -156,8 +156,8 @@ function normalizeState(value) {
   if (!Array.isArray(state.timestamps) || state.timestamps.length !== MAX_PROMPT_TRACK) throw new Error("invalid state");
   for (const item of state.last_played) if (item !== null) integer(item, 0, 0xffffffff);
   for (const item of state.timestamps) integer(item);
-  integer(state.timestamp_count, 0);
-  integer(state.timestamp_head, 0);
+  integer(state.timestamp_count, 0, MAX_PROMPT_TRACK);
+  integer(state.timestamp_head, 0, MAX_PROMPT_TRACK - 1);
   integer(state.last_agent_start);
   integer(state.last_stop_time);
   return state;

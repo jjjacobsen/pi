@@ -36,8 +36,10 @@ interface LimitsData {
 	providers: ProviderLimits[];
 }
 
-async function fetchJson(url: string, headers: Record<string, string>) {
-	const response = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+async function fetchJson(url: string, headers: Record<string, string>, callerSignal?: AbortSignal) {
+	const timeoutSignal = AbortSignal.timeout(TIMEOUT_MS);
+	const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
+	const response = await fetch(url, { headers, signal });
 	if (!response.ok) throw new Error(`request failed (${response.status})`);
 	if (!response.body) throw new Error("response had no body");
 	const chunks = [];
@@ -67,10 +69,10 @@ function parseResetAt(value): number | null {
 	return Number.isNaN(reset) ? null : reset;
 }
 
-async function fetchOpenCodeLimits(): Promise<ProviderLimits> {
+async function fetchOpenCodeLimits(signal: AbortSignal): Promise<ProviderLimits> {
 	const apiKey = process.env.OPENCODE_API_KEY;
 	if (!apiKey) throw new Error("OPENCODE_API_KEY is not set");
-	const payload = await fetchJson(OPENCODE_URL, { Authorization: `Bearer ${apiKey}` });
+	const payload = await fetchJson(OPENCODE_URL, { Authorization: `Bearer ${apiKey}` }, signal);
 	const descriptors = [
 		["rolling", "5 Hour limit"],
 		["weekly", "Weekly limit"],
@@ -143,12 +145,16 @@ function appendCodexWindows(limits: LimitInfo[], rateLimit, now: number, feature
 	if (rateLimit.secondary_window) limits.push(codexLimit(rateLimit.secondary_window, "Secondary window", explicitlyAllowed, now, feature));
 }
 
-async function fetchCodexLimits(ctx: ExtensionCommandContext, now: number): Promise<ProviderLimits> {
+async function fetchCodexLimits(ctx: ExtensionCommandContext, now: number, signal: AbortSignal): Promise<ProviderLimits> {
 	const auth = await resolveCodexAuth(ctx);
 	if (!auth) throw new Error("no openai-codex credentials; log in with /login");
-	const headers = { Authorization: `Bearer ${auth.apiKey}` };
+	const headers: Record<string, string> = {};
+	for (const [name, value] of Object.entries(auth.headers)) {
+		if (typeof value === "string") headers[name] = value;
+	}
+	headers.Authorization = `Bearer ${auth.apiKey}`;
 	if (auth.accountId) headers["ChatGPT-Account-Id"] = auth.accountId;
-	const payload = await fetchJson(CODEX_URL, headers);
+	const payload = await fetchJson(CODEX_URL, headers, signal);
 	const limits: LimitInfo[] = [];
 	appendCodexWindows(limits, payload.rate_limit, now);
 	for (const additional of payload.additional_rate_limits ?? []) {
@@ -164,11 +170,11 @@ async function fetchCodexLimits(ctx: ExtensionCommandContext, now: number): Prom
 	};
 }
 
-async function fetchLimits(ctx: ExtensionCommandContext): Promise<LimitsData> {
+async function fetchLimits(ctx: ExtensionCommandContext, signal: AbortSignal): Promise<LimitsData> {
 	const fetchedAt = Date.now();
 	const [codex, opencode] = await Promise.all([
-		fetchCodexLimits(ctx, fetchedAt).catch((error) => providerError("openai-codex", error)),
-		fetchOpenCodeLimits().catch((error) => providerError("opencode-go", error)),
+		fetchCodexLimits(ctx, fetchedAt, signal).catch((error) => providerError("openai-codex", error)),
+		fetchOpenCodeLimits(signal).catch((error) => providerError("opencode-go", error)),
 	]);
 	return { fetchedAt, providers: [codex, opencode] };
 }
@@ -249,12 +255,13 @@ class StatusComponent {
 	private data: LimitsData | null = null;
 	private inFlight = false;
 	private disposed = false;
+	private controller: AbortController | null = null;
 
 	constructor(
 		private theme: Theme,
 		private requestRender: () => void,
 		private done: () => void,
-		private fetcher: () => Promise<LimitsData>
+		private fetcher: (signal: AbortSignal) => Promise<LimitsData>
 	) {
 		this.fetch();
 	}
@@ -263,14 +270,17 @@ class StatusComponent {
 		if (this.disposed || this.inFlight) return;
 		this.inFlight = true;
 		this.data = null;
+		this.controller = new AbortController();
+		const controller = this.controller;
 		this.requestRender();
-		this.fetcher()
+		this.fetcher(controller.signal)
 			.then((data) => {
 				if (this.disposed) return;
 				this.data = data;
 				this.requestRender();
 			})
 			.finally(() => {
+				if (this.controller === controller) this.controller = null;
 				this.inFlight = false;
 			});
 	}
@@ -323,6 +333,8 @@ class StatusComponent {
 	invalidate(): void {}
 	dispose(): void {
 		this.disposed = true;
+		this.controller?.abort();
+		this.controller = null;
 	}
 }
 
@@ -336,7 +348,7 @@ export default function (pi: ExtensionAPI) {
 				border.addChild(new Spacer(1));
 				border.addChild(new DynamicBorder((text: string) => theme.fg("border", text)));
 				border.addChild(new Spacer(1));
-				const status = new StatusComponent(theme, () => tui.requestRender(), () => done(), () => fetchLimits(ctx));
+				const status = new StatusComponent(theme, () => tui.requestRender(), () => done(), (signal) => fetchLimits(ctx, signal));
 				return {
 					render: (width: number) => {
 						const lines = [...border.render(width), ...status.render(width), "", theme.fg("border", "─".repeat(width))];
