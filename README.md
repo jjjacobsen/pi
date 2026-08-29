@@ -16,20 +16,14 @@ orgs I know and trust are welcome when rewriting them myself adds no value
 4. `bun install -g @earendil-works/pi-coding-agent` to install pi
 5. `mise run build` to compile the extension binaries into `zig-out/bin`
 6. `brew install lightpanda-io/browser/lightpanda`
-7. `/bin/bash -c "$(curl -fsSL https://cua.ai/driver/install.sh)"`, then grant
-   CuaDriver.app Accessibility and Screen Recording in System Settings
-   - It will prompt you when you run `daemon-start` to enable the
-     settings. Keep running `daemon-restart` and enabling permissions
-     until it is happy
-8. `mise run daemon-start` - renders the LaunchAgent plists into
-   `~/Library/LaunchAgents` (com.pijon.lightpanda, com.trycua.cua-driver) and
-   starts both daemons. Confirm with `mise run daemon-status`: both should
-   report running
-9. Install the packages into pi, then restart pi
+7. `mise run daemon-start` - renders the LaunchAgent plist into
+   `~/Library/LaunchAgents/com.pijon.lightpanda.plist` and starts the daemon.
+   Confirm with `mise run daemon-status`
+8. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
    - `pi install git:git@github.com:earendil-works/pi-transcribe`
    - `pi install npm:@ff-labs/pi-fff`
-10. Export `EXA_API_KEY` before starting pi (the search extension needs it)
+9. Export `EXA_API_KEY` before starting pi (the search extension needs it)
 
 ## Layout
 
@@ -59,15 +53,6 @@ share one persistent tab by default; a pi process can be pointed at its
 own tab (browser_pick_session) and tabs can be listed and closed.
 Needs the lightpanda daemon running (`mise run daemon-start`), see
 docs/daemons.md
-
-### cua - desktop computer use
-
-Lets the model drive your desktop through accessibility trees and semantic
-element actions without stealing your cursor. Screenshot, zoom, cursor, and
-pixel-coordinate capabilities are absent from model context by default;
-`/visual-tools` toggles them for the current extension runtime. New sessions
-and extension reloads start with them off. Lightpanda is not affected. Needs
-the Cua Driver daemon running with Accessibility and Screen Recording granted
 
 ### lazygit - full-screen git TUI via /lg
 

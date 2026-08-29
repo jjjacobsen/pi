@@ -10,11 +10,10 @@ the binary cannot take down pi. The shared parts live in two files:
   the one-shot responders (`respondExit` / `respondOutcomeExit`, which
   print the `{"ok":true,"result":...}` envelope and exit 0/1), buffered
   writer (`writeAllIo`), JSON-escaped writer helper (`appendJsonEscaped`),
-  monotonic and realtime clocks (`nowMs` / `nowRealtimeMs`), the line
-  reader with deadline (`readLine`, still used by pi-cua to drain the
-  cua-driver child's stdout), and the command runner (`runCmd`, `gitRoot`,
-  `GitResult`). Since pi-search and pi-vision were built, it also holds the
-  HTTP-with-deadline machinery they share (`httpWithDeadline`, `WorkerSlot`,
+  monotonic and realtime clocks (`nowMs` / `nowRealtimeMs`), and the command
+  runner (`runCmd`, `gitRoot`, `GitResult`). Since pi-search and pi-vision
+  were built, it also holds the HTTP-with-deadline machinery they share
+  (`httpWithDeadline`, `WorkerSlot`,
   `workerFinish`, `isRetryableStatus` / `isRetryableErr`, `parseHeaders`):
   each backend keeps its own fetch worker and response parsing, and the
   worker-slot lifecycle (socket shutdown on deadline, abandoned-worker
@@ -249,149 +248,6 @@ provides session_new/list/close for lifecycle.
   browser version our extension is tested against and allow local patches.
   Add the submodule under e.g. `third_party/lightpanda` and build it with a
   mise task; the daemon plist would point at the locally built binary.
-
-# Computer-use extension (pi-cua)
-
-## Goal
-
-Give the pi coding agent control of the host desktop through [Cua
-Driver](https://github.com/trycua/cua) (`cua-driver` 0.20+): real apps,
-signed-in browser sessions, and the current OS user session, without moving
-the system cursor (each command targets a window instead of the shared
-cursor). Accessibility trees and semantic element actions are active by
-default. Screenshot, zoom, cursor, and pixel-coordinate capabilities are
-inactive until the user toggles `/visual-tools`, so normal desktop work stays
-programmatic and spends no vision tokens.
-
-## Architecture
-
-```
-pi (coding agent)
-  └─ extensions/cua.ts     TS glue: 19 schemas + /visual-tools, one-shot callZig
-       └─ src/cua.zig      Zig backend: spawns `cua-driver call` per request, exits
-            └─ cua-driver  CLI proxy to the CuaDriver daemon (CuaDriver.app on macOS)
-```
-
-Why this split:
-
-- pi extensions must be TypeScript modules, so the glue registers the tool
-  schemas (one per cua-driver MCP tool; params pass through as a JSON
-  string, so the keys must match the MCP argument names) and forwards each
-  call to src/cua.zig as a one-shot process via the shared `callZig`
-  helper (one JSON argv element, one JSON envelope on stdout, exit). It also
-  owns the in-memory `/visual-tools` toggle: `pi.setActiveTools()` removes
-  visual-only definitions from model context, and mixed click definitions
-  are re-registered without pixel fields while off. Esc aborts by pi.exec
-  SIGTERMing the one-shot binary, so no driver call outlives its turn; the
-  in-flight `cua-driver call` is a short-lived CLI that finishes on its own.
-- Everything else is Zig: the argv build, the child lifecycle, the 120s
-  deadline, stdout/stderr handling, the screenshot directory, and the
-  get_window_state extraction.
-
-## Protocol (one-shot: argv JSON in, envelope out)
-
-```json
-{"op":"call","agent_dir":"...","tool":"get_window_state","params":"{\"pid\":123}"}  -> Zig (argv[1])
-{"ok":true,"result":"..."}                                                               <- Zig
-{"ok":false,"error":"..."}                                                              <- failures
-```
-
-`params` is a JSON string containing the raw arguments object (same shape
-as pi-lightpanda). The glue sends op/agent_dir/tool/params. The binary
-requires `agent_dir` (pi resolves it via `getAgentDir()`) and fails loudly
-when missing: screenshots live under `{agent_dir}/cua-screenshots/`.
-
-## Zig behavior
-
-- **One spawn per call**: `cua-driver call [--screenshot-out-file <path>]
-  <tool> <params-json>`. The child's stdin is `.ignore` (a /dev/null open):
-  cua-driver call reads stdin when it is piped, which would block forever
-  on the backend's open pipe. stdout is drained to EOF (one JSON result
-  line, pretty-printed; draining past the 64KB pipe buffer is what keeps a
-  large elements array from deadlocking `wait`), stderr is drained on a
-  background thread into a capped buffer (the thread is joined before the
-  buffer is read or freed).
-- **Result rules** (learned from the real CLI, verified against 0.20.0):
-  - Non-empty stdout is the result, even when the payload is an in-band
-    error like `{"code":"window_id_not_found",...}` or
-    `invalid_arguments`: those are normal operational outcomes the model
-    must see and recover from, so they pass through as results.
-  - Empty stdout means the call failed: the stderr text is the error (e.g.
-    "Permission denied: tool 'x' has no reviewed risk classification"),
-    falling back to the exit term.
-  - Exit codes are never used to judge success (invalid args exit 0).
-  - The 120s default deadline is enforced via the
-    shared poll-based readLine; on expiry the child is SIGTERMed and
-    reaped (`child.kill` closes its pipes, which also unblocks the stderr
-    thread). A missing binary surfaces "failed to spawn ...", not a hang.
-    The glue's pi.exec timeout runs 10s longer than this deadline, so a
-    slow call surfaces as the deadline's clean "TimedOut" envelope
-    instead of a pi.exec kill.
-- **Screenshots**: image tools (get_window_state, get_desktop_state, zoom)
-  always get `--screenshot-out-file` pointing into
-  `{agent_dir}/cua-screenshots/` (shot-<millis>.png/.jpg). The response
-  does NOT echo the path back (the docs claim `screenshot_file_path`, the
-  real CLI omits it), so the backend tracks it: get_window_state gets it
-  appended by the extraction, the other two get a `screenshot: <path>`
-  prefix line. While visual tools are off, the glue removes the
-  get_window_state screenshot line before returning its AX tree. The driver
-  still creates that file because get_window_state is an image tool, but the
-  model cannot discover or inspect it. The dir is created on demand and
-  pruned to the newest 25 files per call.
-- **get_window_state extraction**: the driver returns the AX tree twice
-  (model-facing `tree_markdown` with `[element_index N]` tags plus a
-  `structuredContent.elements` array of up to 2000 JSON rows, each carrying
-  an `element_token` and an optional `selected` flag). The elements array
-  is redundant bloat for the model and is dropped, but its tokens and
-  selected flags are injected into the markdown rows (`[N] tok=...
-  [selected]`) and the `snapshot_id` is surfaced, so every tree row is
-  directly clickable via `element_token` or `element_index + snapshot_id`
-  with no pixel math and no screenshot. The result also keeps what action
-  selection needs: pid/window_id, element count, window bounds,
-  `degraded_reason`, background-input route statuses, and the escalation
-  recommendation. Screenshot path + dimensions are also kept while visual
-  tools are on. A payload without `tree_markdown` (in-band errors) passes
-  through raw.
-- Result text is capped at 256KB with head/tail truncation (shared
-  pattern with pi-lightpanda), so a huge tree cannot flood the model's
-  context or the session file.
-
-## Flow
-
-The default flow is `computer_list_apps` / `computer_list_windows` to find a
-target, `computer_get_window_state` for the AX tree (re-snapshot every turn:
-indices and element_tokens go stale), then actions by `element_token` or
-`element_index + snapshot_id`. The AX path works on backgrounded windows
-without focus steal. Screenshot, zoom, screen-size, cursor-position, cursor
-movement, and pixel fields on mixed click tools are absent from model context.
-When the user runs `/visual-tools`, those definitions and fields become active:
-get_window_state exposes its screenshot path, `describe_image` can inspect it,
-`x,y` coordinates address screenshot pixels, and `computer_zoom` can crop a
-region. Running `/visual-tools` again restores the semantic-only tool set.
-Lightpanda is unchanged because its tools interact through the DOM rather than
-screen pixels.
-
-## Notes
-
-- The `/visual-tools` state is in memory only. Every extension runtime starts
-  off, including pi startup, `/reload`, `/new`, `/resume`, `/fork`, and
-  `/clone`; no session entry or config file persists it.
-- The glue and binary never outlive the call: no persistent process, no
-  lifecycle management, no session_shutdown wiring. A crash in the binary
-  cannot take down pi. Screenshots live under `{agent_dir}/cua-screenshots/`
-  (`getAgentDir()` resolves the same directory whether the session is a
-  default install or a rebranded/`PI_CODING_AGENT_DIR` build).
-- Requires the Cua Driver daemon running and macOS Accessibility + Screen
-  Recording granted to CuaDriver.app (`cua-driver permissions status`).
-  Standard permission mode is assumed; approval prompts surface as driver
-  errors the model relays. The extension itself makes no external calls
-  beyond the local daemon.
-- Session labels are deliberately not managed: cua-driver falls back to
-  the authenticated transport's implicit lifecycle session. Explicit
-  `start_session`/`end_session` management is future work.
-- Tool surface is the focused 19-tool observation/action loop; the other
-  ~37 driver tools (browser_*, clipboard, recording, menus, ...) are
-  deliberately not exposed. Add them per tool when needed.
 
 # Commit extension (pi-commit)
 
@@ -1189,7 +1045,7 @@ tool result.
   plus the allowlisted extensions `search.ts` (`web_search`) and
   `vision.ts` (`describe_image`). A `DefaultResourceLoader` with an
   `extensionsOverride` filters every other extension out by source file
-  name, so shared-daemon extensions (`lightpanda`, `cua`) never start
+  name, so the shared-daemon extension (`lightpanda`) never starts
   here, `subagent` cannot recurse into itself, and the sub-session's
   system prompt stays small. The explicit `tools` allowlist is the
   second guard: only the six names are ever callable. Skills and

@@ -15,7 +15,7 @@
 // - The subagent gets the built-in tools (read, bash, edit, write) plus the
 //   allowlisted extensions (search.ts -> web_search, vision.ts ->
 //   describe_image). The resource loader filters every other extension out:
-//   shared-daemon extensions (lightpanda, cua) never run here, the subagent
+//   the shared-daemon extension (lightpanda) never runs here, the subagent
 //   tool cannot recurse into itself, and the subagent's system prompt stays
 //   small. The tools allowlist is the second guard: even if a filter leak
 //   slips an extension in, only the six names are callable.

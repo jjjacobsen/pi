@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# Start the persistent daemons the pi extensions talk to, but only the ones
-# that are not running:
-#   lightpanda  the headless browser daemon behind the browser_* tools
-#   CuaDriver   the desktop automation daemon behind the computer_* tools
+# Start the persistent lightpanda daemon behind the browser_* tools when it
+# is not running
 #
-# Both run as launchd LaunchAgents so they survive reboots and are restarted
-# by launchd if they crash. The plists are rendered from the templates in
-# scripts/ into ~/Library/LaunchAgents on demand with this machine's paths,
-# so a second computer just needs lightpanda installed
-# (brew install lightpanda-io/browser/lightpanda) and CuaDriver.app
-# installed (https://github.com/trycua/cua), then this task run once.
+# It runs as a launchd LaunchAgent so it survives reboots and is restarted by
+# launchd if it crashes. The plist is rendered from the template in scripts/
+# into ~/Library/LaunchAgents on demand with this machine's paths, so a second
+# computer only needs lightpanda installed before this task runs
 #
 # Uninstall: launchctl bootout gui/$(id -u)/<label> and delete the matching
 # ~/Library/LaunchAgents plist.
@@ -17,11 +13,8 @@ set -euo pipefail
 
 LP_LABEL=com.pijon.lightpanda
 LP_PLIST="$HOME/Library/LaunchAgents/$LP_LABEL.plist"
-CUA_LABEL=com.trycua.cua-driver
-CUA_PLIST="$HOME/Library/LaunchAgents/$CUA_LABEL.plist"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LP_TEMPLATE="$REPO_DIR/scripts/$LP_LABEL.plist"
-CUA_TEMPLATE="$REPO_DIR/scripts/$CUA_LABEL.plist"
 
 # Bootstrap a LaunchAgent plist, handling the case where the agent is
 # already loaded but the process is dead: bootout, then bootstrap fresh.
@@ -51,30 +44,6 @@ else
     echo "lightpanda: started (port 8931, logs in ~/Library/Logs/lightpanda.*.log)"
   else
     echo "lightpanda: failed to start, see ~/Library/Logs/lightpanda.err.log" >&2
-    exit 1
-  fi
-fi
-
-# --- CuaDriver (desktop automation) ---
-if pgrep -f "cua-driver serve" >/dev/null 2>&1; then
-  echo "CuaDriver: already running"
-else
-  CUA_BIN="/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
-  if [ ! -x "$CUA_BIN" ]; then
-    echo "CuaDriver: binary not found at $CUA_BIN, install from https://github.com/trycua/cua" >&2
-    exit 1
-  fi
-  # Render the vendor template
-  # (https://cua.ai/docs/how-to-guides/driver/keep-running) with this
-  # machine's log dir.
-  sed -e "s|__LOG_DIR__|$HOME/Library/Logs|g" "$CUA_TEMPLATE" > "$CUA_PLIST"
-  plutil -lint "$CUA_PLIST" >/dev/null
-  bootstrap_agent "$CUA_LABEL" "$CUA_PLIST"
-  sleep 2
-  if pgrep -f "cua-driver serve" >/dev/null 2>&1; then
-    echo "CuaDriver: started (logs in ~/Library/Logs/cua-driver.*.log)"
-  else
-    echo "CuaDriver: failed to start, see ~/Library/Logs/cua-driver.err.log" >&2
     exit 1
   fi
 fi

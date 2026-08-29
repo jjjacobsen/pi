@@ -255,39 +255,6 @@ extensions/ as a hk step.
   takes no allocator argument. Using the managed `List` with the unmanaged
   call shape fails to compile.
 
-## 2026-08-15 — pi-cua extension (Cua Driver)
-
-- `cua-driver call` exit codes are unreliable: `invalid_arguments` exits 0
-  with an in-band JSON error on stdout, unknown tools exit 1 with the
-  message on stderr, and `window_id_not_found` exits non-zero with JSON on
-  stdout. Judge success by stdout content (non-empty = result, in-band
-  `code` payloads pass through to the model), never by the exit code.
-- The docs claim `--screenshot-out-file` makes get_window_state respond
-  with `screenshot_file_path`; the real 0.20.0 CLI omits the key entirely.
-  Track the path yourself (the backend chose it).
-- `cua-driver call <tool>` reads stdin when it is piped (it waits for JSON
-  args) — a spawned child must get `/dev/null` stdin (`.ignore` in Zig
-  0.16 spawn), which the CLI tolerates, or it blocks forever on the
-  parent's open pipe.
-- The tool input schemas admit fields the CLI rejects at runtime
-  (`additionalProperties: false`, e.g. list_apps has no properties at
-  all); unknown fields come back as in-band `invalid_arguments` JSON, so
-  glue schemas must match the MCP argument names exactly
-  (`cua-driver describe <tool>` is the source of truth).
-- `list_apps` ignores a `{"name":...}` filter (no such schema field); the
-  CLI silently ignores the extra field instead of rejecting it.
-- `std.StringHashMap` does NOT copy key memory in Zig 0.16 ("Key memory is
-  managed by the caller"). Keys built in a stack buffer (e.g.
-  `std.fmt.bufPrint`) and then `put` into the map silently point at
-  reused stack slots once the buffer goes out of scope - lookups then
-  miss or hit the wrong entry, and `grow` panics on the duplicate. Dupe
-  keys into an arena before `put`. Diagnosed via a map-iterator debug
-  print showing two entries with the same key.
-- A `b.addRunArtifact` run does not refresh `zig-out/bin/<name>`: the run
-  artifact goes to the build cache, so hand-testing the installed binary
-  after a source change runs a stale build (panics/old behavior). Run
-  `zig build` first to install the new binary, then exercise it.
-
 ## 2026-08-17
 
 - Driving `createBackend` logic with a standalone harness: `extensions/lib/backend.ts` is TypeScript for pi which runs under Node (`#!/usr/bin/env node`), not Bun, so harnesses must transpile (`bun build --target=node`) and run under `node`, placed at `extensions/lib/` so `import.meta.dirname`-based root resolution lands on the repo. The unref'd child+pipes mean a harness with no ref'd handles exits before pipe I/O completes ("unsettled top-level await"): add a `setInterval(() => {}, 1000)` keep-alive. Also: `bun build` emits `+ \`\n\`` for `+ "\n"` as a template literal with a real newline, so textual patches around the write line land inside the string and corrupt the payload.
@@ -332,28 +299,6 @@ extensions/ as a hk step.
   terminal /dev/tty" immediately, which conveniently exercised the full run
   path including the signal-handler install without needing a real tty).
 
-## 2026-08-18 — one-shot conversion (pi-cua)
-
-- `readLine` and `MAX_LINE` are NOT stdin-loop-only: cua keeps them after
-  conversion because the `cua-driver call` child's stdout is drained with
-  the shared poll-based `readLine` against its own fd and deadline. Removing
-  them while converting main (they serve the old persistent stdin loop)
-  broke the build. The conversion checklist's "drop readLine" step applies
-  only to the stdin loop, not the child drain.
-- Deadline handoff: the glue's pi.exec timeout must exceed the Zig-side
-  CALL_TIMEOUT_MS. The Zig deadline reaps the child and returns a clean
-  "TimedOut" ok=false envelope; if pi.exec times out first it SIGTERMs the
-  one-shot and the model sees a generic "killed" instead. Used
-  `timeout: CALL_TIMEOUT_MS + 10000` (130s) in the glue with the 120s Zig
-  bound unchanged. The 10s is pure margin; the envelope always wins.
-- `cua-driver call get_window_state` requires BOTH pid and window_id
-  ("Missing required integer field: window_id" otherwise), and a window on
-  another Space legitimately returns an empty tree with
-  `degraded: ax_window_unresolved` + `background: refused
-  (off_space_or_ax_unresolved)` + `escalation: recommended foreground`.
-  Both are correct driver behavior, easy to mistake for a regression when
-  smoke-testing off-Space windows.
-
 ## 2026-08-18
 
 - Smoke-testing one-shot binaries with a pipe to `head` reports `head`'s
@@ -369,11 +314,6 @@ extensions/ as a hk step.
 
 ## 2026-08-18 — browser conversion (daemon model)
 
-- CuaDriver's process name is `cua-driver` (the CFBundleExecutable), not
-  `CuaDriver`, so `pgrep -x CuaDriver` never matches and `open -a` can
-  silently launch a duplicate. The status/start scripts match
-  `pgrep -f "cua-driver serve"` instead, which also avoids matching the
-  unrelated ChatGPT cua_node processes.
 - `lightpanda mcp` accepts a `tools/call` POST with no initialize
   handshake: it creates the MCP session on first use from the
   `Mcp-Session-Id` header. This means the one-shot client needs only one

@@ -2,8 +2,8 @@
 //
 // Every backend here is one-shot: one JSON request as a single argv element,
 // one JSON response envelope on stdout, exit 0/1. These helpers are the
-// shared part of that (line reader with deadline, buffered writer,
-// JSON-escaped responder, process runner, HTTP-with-deadline worker). Each
+// shared part of that (buffered writer, JSON-escaped responder, process
+// runner, HTTP-with-deadline worker). Each
 // backend keeps its own request parsing, op dispatch, and protocol structs.
 
 const std = @import("std");
@@ -13,8 +13,6 @@ const json = std.json;
 const Allocator = std.mem.Allocator;
 
 pub const List = std.array_list.AlignedManaged(u8, null);
-
-pub const CHUNK = 64 * 1024;
 
 pub const GitResult = struct {
     ok: bool,
@@ -36,51 +34,6 @@ pub fn nowRealtimeMs() i64 {
     var ts: std.c.timespec = undefined;
     if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
-}
-
-// Reads one newline-delimited line from a fd. The returned slice is owned by
-// `arena` (or page_allocator when null) and survives until the next call.
-// Returns null on EOF. `line_buf` holds leftover bytes between calls and must
-// be distinct per fd; `max_line` caps a single line. `deadline` is a
-// wall-clock millisecond timestamp; when set and data has not arrived by
-// then, returns error.Timeout. Pass null for no deadline.
-pub fn readLine(fd: posix.fd_t, line_buf: *List, max_line: usize, arena: ?Allocator, deadline: ?i64) !?[]const u8 {
-    const alloc = arena orelse std.heap.page_allocator;
-    var consumed: usize = 0;
-    while (true) {
-        if (mem.indexOfScalar(u8, line_buf.items[consumed..], '\n')) |rel| {
-            const idx = consumed + rel;
-            const line = try alloc.dupe(u8, line_buf.items[0..idx]);
-            consumed = idx + 1;
-            if (consumed == line_buf.items.len) {
-                line_buf.clearRetainingCapacity();
-            } else {
-                const rest = line_buf.items.len - consumed;
-                mem.copyForwards(u8, line_buf.items[0..rest], line_buf.items[consumed..]);
-                line_buf.shrinkRetainingCapacity(rest);
-            }
-            return line;
-        }
-        if (line_buf.items.len > max_line) return error.LineTooLong;
-        if (deadline) |dl| {
-            const remaining = dl - nowMs();
-            if (remaining <= 0) return error.Timeout;
-            var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.IN, .revents = 0 }};
-            _ = posix.poll(&fds, @intCast(@min(remaining, 2147483647))) catch |err| return err;
-            // Only proceed to read when there is data or the pipe is closed;
-            // anything else (spurious wake) re-checks the deadline.
-            if (fds[0].revents & (posix.POLL.IN | posix.POLL.ERR | posix.POLL.HUP) == 0) continue;
-        }
-        var chunk: [CHUNK]u8 = undefined;
-        const n = try posix.read(fd, &chunk);
-        if (n == 0) {
-            if (line_buf.items.len == 0) return null;
-            const line = try alloc.dupe(u8, line_buf.items);
-            line_buf.clearRetainingCapacity();
-            return line;
-        }
-        try line_buf.appendSlice(chunk[0..n]);
-    }
 }
 
 pub fn writeAllIo(io: std.Io, file: std.Io.File, bytes: []const u8) !void {
