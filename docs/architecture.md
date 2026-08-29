@@ -411,7 +411,10 @@ explicit reasoning level must be supported by that model. When only the model
 changes, pi clamps the inherited level to the selected model
 
 The model runtime and filtered resource loader are created once per pi process
-and shared. Each agent session remains separate
+and shared. Concurrent first calls share the same initialization promise. The
+extension filter compares exact source paths, so an unrelated extension with a
+matching filename cannot enter the sub-session. Each agent session remains
+separate
 
 Transcripts are stored at `<agent_dir>/subagents/<timestamp>_<id>.jsonl` and
 link to the parent session when it has a session file. They can be inspected
@@ -419,8 +422,15 @@ or opened later with pi's session manager
 
 Text deltas stream to the tool update display. The rolling display keeps at
 most the trailing 4,000 characters after its buffer grows past 8,000. The
-caller's abort signal calls `session.abort()`. A partial transcript remains on
-disk, and the tool reports cancellation after the session stops
+caller's abort signal calls `session.abort()`, including when it was already
+aborted before session startup. A partial transcript remains on disk, and the
+tool reports cancellation after the session stops. Listener removal and
+session disposal use one cleanup path
+
+The delegated task is sent literally without command, skill-command, or prompt
+template expansion. The terminal assistant message must contain text. Error
+and aborted stop reasons fail the tool with the model error and transcript
+path. A length stop returns its partial report with an incomplete warning
 
 The final assistant text is truncated with pi's standard tool-result limit.
 When truncation occurs, the result includes counts and the transcript path.

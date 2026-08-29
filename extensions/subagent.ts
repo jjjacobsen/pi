@@ -39,17 +39,17 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum } from "@earendil-works/pi-ai/compat";
-import { basename, join } from "node:path";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const TOOL_NAME = "subagent";
 const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-// Extensions whose factories may run inside a sub-session, by source file
-// name. Everything else is filtered out. search.ts registers web_search and
-// holds no shared state; vision.ts registers describe_image and syncs its
-// own tool visibility against the sub-session's model. Every other extension
-// is outside the subagent tool allowlist, so it stays out.
-const SUBAGENT_EXTENSIONS = new Set(["search.ts", "vision.ts"]);
+// Extensions whose factories may run inside a sub-session. Exact paths avoid
+// admitting an unrelated extension with the same filename.
+const SUBAGENT_EXTENSIONS = new Set(
+  ["search.ts", "vision.ts"].map((name) => fileURLToPath(new URL(name, import.meta.url))),
+);
 
 // The exact tools a subagent can call. The first four are built-ins, the
 // last two come from the allowlisted extensions above.
@@ -70,23 +70,25 @@ Rules:
 // runtime, and the filtered resource loader (discovery runs once). A fresh
 // pair is built when the extension reloads. cwd comes from the first call;
 // pi's cwd is fixed per process, so it cannot drift.
-let shared: { modelRuntime: ModelRuntime; loader: DefaultResourceLoader } | undefined;
+let sharedPromise;
 
-async function ensureShared(cwd: string) {
-  if (shared) return shared;
+async function createShared(cwd: string) {
   const modelRuntime = await ModelRuntime.create();
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir: getAgentDir(),
     extensionsOverride: (base) => ({
       ...base,
-      extensions: base.extensions.filter((ext) => SUBAGENT_EXTENSIONS.has(basename(ext.path))),
+      extensions: base.extensions.filter((ext) => SUBAGENT_EXTENSIONS.has(ext.path)),
     }),
     systemPromptOverride: (base) => [base, SUBAGENT_INSTRUCTIONS].filter(Boolean).join("\n\n"),
   });
   await loader.reload();
-  shared = { modelRuntime, loader };
-  return shared;
+  return { modelRuntime, loader };
+}
+
+function ensureShared(cwd: string) {
+  return (sharedPromise ??= createShared(cwd));
 }
 
 function findExactModel(modelRuntime, reference) {
@@ -128,19 +130,19 @@ function sumUsage(session) {
   return total;
 }
 
-// The last assistant message's text: that is the subagent's final report and
-// what the caller receives.
-function lastAssistantText(session) {
+function lastAssistantMessage(session) {
   for (let i = session.messages.length - 1; i >= 0; i--) {
     const message = session.messages[i];
-    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
-    const text = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("\n");
-    if (text) return text;
+    if (message.role === "assistant") return message;
   }
-  return "";
+}
+
+function assistantText(message) {
+  if (!Array.isArray(message.content)) return "";
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
 }
 
 export default function subagentExtension(pi: ExtensionAPI) {
@@ -173,6 +175,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      signal?.throwIfAborted();
       if (!ctx.model) {
         throw new Error("subagent: no active model in this session");
       }
@@ -230,39 +233,53 @@ export default function subagentExtension(pi: ExtensionAPI) {
       const onAbort = () => {
         void session.abort();
       };
-      signal?.addEventListener("abort", onAbort);
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
-        await session.prompt(params.task);
-      } catch (error) {
-        session.dispose();
-        throw error;
+        await session.prompt(params.task, { expandPromptTemplates: false, source: "extension" });
+
+        const transcript = session.sessionFile;
+        if (signal?.aborted) {
+          throw new Error(`subagent cancelled; transcript: ${transcript ?? "not persisted"}`);
+        }
+
+        const message = lastAssistantMessage(session);
+        if (!message) {
+          throw new Error(`subagent produced no assistant response; transcript: ${transcript ?? "not persisted"}`);
+        }
+        if (message.stopReason === "error" || message.stopReason === "aborted") {
+          throw new Error(
+            `subagent ${message.stopReason}: ${message.errorMessage ?? "no error details"}; transcript: ${transcript ?? "not persisted"}`,
+          );
+        }
+
+        const report = assistantText(message);
+        if (!report) {
+          throw new Error(`subagent produced no final text; transcript: ${transcript ?? "not persisted"}`);
+        }
+
+        const usage = sumUsage(session);
+        const trunc = truncateHead(report, {});
+        let content = trunc.content;
+        if (trunc.truncated) {
+          content += `\n\n[Summary truncated: kept ${trunc.outputLines}/${trunc.totalLines} lines (${trunc.outputBytes}/${trunc.totalBytes} bytes). Full transcript: ${transcript}]`;
+        }
+        if (message.stopReason === "length") {
+          content += "\n\n[Subagent output stopped at the model output limit and may be incomplete.]";
+        }
+        content += `\n\nSubagent transcript: ${transcript ?? "(not persisted)"}`;
+
+        return {
+          content: [{ type: "text" as const, text: content }],
+          details: { transcript, model: `${model.provider}/${model.id}`, reasoning: thinkingLevel },
+          ...(usage ? { usage } : {}),
+        };
       } finally {
         signal?.removeEventListener("abort", onAbort);
         unsubscribe();
+        session.dispose();
       }
-
-      const transcript = session.sessionFile;
-      const usage = sumUsage(session);
-      const report = lastAssistantText(session);
-      session.dispose();
-
-      if (signal?.aborted) {
-        throw new Error("subagent cancelled");
-      }
-
-      const trunc = truncateHead(report, {});
-      let content = trunc.content;
-      if (trunc.truncated) {
-        content += `\n\n[Summary truncated: kept ${trunc.outputLines}/${trunc.totalLines} lines (${trunc.outputBytes}/${trunc.totalBytes} bytes). Full transcript: ${transcript}]`;
-      }
-      content += `\n\nSubagent transcript: ${transcript ?? "(not persisted)"}`;
-
-      return {
-        content: [{ type: "text" as const, text: content }],
-        details: { transcript, model: `${model.provider}/${model.id}`, reasoning: thinkingLevel },
-        ...(usage ? { usage } : {}),
-      };
     },
   });
 }
