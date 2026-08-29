@@ -218,13 +218,15 @@ function activeRatePerSec(samples: { t: number; chars: number }[]): number | nul
 	// Inter-sample gaps longer than MAX_GAP_MS are downtime and don't count
 	// toward the denominator; returns null until MIN_ACTIVE_MS accumulates.
 	let activeMs = 0;
+	let chars = 0;
 	for (let i = 1; i < samples.length; i++) {
 		const gap = samples[i]!.t - samples[i - 1]!.t;
-		if (gap <= MAX_GAP_MS) activeMs += gap;
+		if (gap <= MAX_GAP_MS) {
+			activeMs += gap;
+			chars += samples[i]!.chars - samples[i - 1]!.chars;
+		}
 	}
-	if (activeMs < MIN_ACTIVE_MS) return null;
-	const chars = samples[samples.length - 1]!.chars - samples[0]!.chars;
-	if (chars <= 0) return null;
+	if (activeMs < MIN_ACTIVE_MS || chars <= 0) return null;
 	return (chars / CHARS_PER_TOKEN) / (activeMs / 1000);
 }
 

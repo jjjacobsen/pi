@@ -4,6 +4,7 @@
 // source list, and forwards Exa's reported cost into pi's session totals.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { toolError } from "./lib/toolkit";
@@ -153,21 +154,6 @@ function formatResults(parsed, excerptCap) {
   return { text: truncateUtf8(text, MAX_ANSWER), usage };
 }
 
-function sleep(ms, signal) {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve(undefined);
-    }, ms);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
 function interruptionError(callerSignal) {
   if (callerSignal?.aborted) return new Error("web_search aborted");
   return new Error(`search timed out after ${DEFAULT_TIMEOUT_MS}ms`);
@@ -204,7 +190,7 @@ async function search(params, apiKey, callerSignal) {
       if (!response.ok) {
         const error = await exaError(response);
         if ((response.status === 429 || (response.status >= 500 && response.status <= 599)) && attempt === 0) {
-          await sleep(RETRY_BACKOFF_MS, signal);
+          await sleep(RETRY_BACKOFF_MS, undefined, { signal });
           continue;
         }
         throw error;
@@ -222,7 +208,7 @@ async function search(params, apiKey, callerSignal) {
       if (signal.aborted) throw interruptionError(callerSignal);
       if (error instanceof TypeError && attempt === 0) {
         try {
-          await sleep(RETRY_BACKOFF_MS, signal);
+          await sleep(RETRY_BACKOFF_MS, undefined, { signal });
         } catch {
           throw interruptionError(callerSignal);
         }

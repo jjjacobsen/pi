@@ -208,24 +208,30 @@ function parseSeconds(value) {
   return number;
 }
 
-async function setConfig(field, value) {
-  const config = await loadConfig();
-  if (field === "paused") {
-    if (value !== "active" && value !== "paused") throw new Error("set: paused expects active|paused");
-    config.paused = value === "paused";
-  } else if (field === "volume") {
-    config.volume = parsePercent(value);
-  } else if (field === "silent_window_seconds") {
-    config.silent_window_seconds = parseSeconds(value);
-  } else if (field.startsWith("cat:")) {
-    if (value !== "on" && value !== "off") throw new Error("set: category expects on|off");
-    const category = field.slice(4);
-    if (!(category in config.categories)) throw new Error("set: unknown category");
-    config.categories[category] = value === "on";
-  } else {
-    throw new Error("set: unknown field");
-  }
-  await saveConfig(config);
+let configQueue = Promise.resolve();
+
+function setConfig(field, value) {
+  const pending = configQueue.then(async () => {
+    const config = await loadConfig();
+    if (field === "paused") {
+      if (value !== "active" && value !== "paused") throw new Error("set: paused expects active|paused");
+      config.paused = value === "paused";
+    } else if (field === "volume") {
+      config.volume = parsePercent(value);
+    } else if (field === "silent_window_seconds") {
+      config.silent_window_seconds = parseSeconds(value);
+    } else if (field.startsWith("cat:")) {
+      if (value !== "on" && value !== "off") throw new Error("set: category expects on|off");
+      const category = field.slice(4);
+      if (!(category in config.categories)) throw new Error("set: unknown category");
+      config.categories[category] = value === "on";
+    } else {
+      throw new Error("set: unknown field");
+    }
+    await saveConfig(config);
+  });
+  configQueue = pending.catch(() => {});
+  return pending;
 }
 
 function pickSound(state, category) {
@@ -301,10 +307,12 @@ async function handleEvent(event, extra = {}) {
   } else if (event === "tool_error") {
     play(config, state, "task.error");
   } else if (event === "agent_end" && !extra["error"] && now - state.last_stop_time >= DEBOUNCE_MS) {
-    state.last_stop_time = now;
     const runMs = now - state.last_agent_start;
     const silentMs = config.silent_window_seconds * 1000;
-    if (silentMs <= 0 || runMs < 0 || runMs >= silentMs) play(config, state, "task.complete");
+    if (silentMs <= 0 || runMs < 0 || runMs >= silentMs) {
+      state.last_stop_time = now;
+      play(config, state, "task.complete");
+    }
   }
 
   try {

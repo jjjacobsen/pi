@@ -13,9 +13,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
+import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { toToolUsage, toolError } from "./lib/toolkit";
+import { toolError } from "./lib/toolkit";
 
 const TOOL_NAME = "describe_image";
 const DEFAULT_MAX_DIMENSION = 1568;
@@ -23,8 +23,6 @@ const DEFAULT_JPEG_QUALITY = 85;
 const TIMEOUT_MS = 60000;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const FORCE_COMPRESS_BYTES = 10 * 1024 * 1024;
-const MAX_RESPONSE_BYTES = 1024 * 1024;
-const RETRY_BACKOFF_MS = 500;
 
 // ---------------------------------------------------------------------------
 // Config (~/.pi/agent/vision.json). Unknown keys from older configs are
@@ -229,101 +227,8 @@ async function compressImage(path, info, maxDimension, jpegQuality, signal) {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI-compatible chat/completions request and response handling.
-
-function textFromValue(value) {
-  if (typeof value === "string") return value || undefined;
-  if (!Array.isArray(value)) return undefined;
-  const parts = [];
-  for (const block of value) {
-    if (!block || typeof block !== "object") continue;
-    for (const key of ["text", "thinking", "reasoning"]) {
-      if (typeof block[key] === "string" && block[key].length > 0) {
-        parts.push(block[key]);
-        break;
-      }
-    }
-  }
-  return parts.length > 0 ? parts.join("\n") : undefined;
-}
-
-async function responseBody(response) {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const chunks = [];
-  let length = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    length += value.length;
-    if (length > MAX_RESPONSE_BYTES) {
-      await reader.cancel();
-      throw new Error("vision model response exceeds the 1MB cap");
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks, length).toString("utf8");
-}
-
-function completionUsage(usage) {
-  if (!usage) return undefined;
-  const input = usage.prompt_tokens ?? 0;
-  const output = usage.completion_tokens ?? 0;
-  return {
-    input,
-    output,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: usage.total_tokens ?? input + output,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
-}
-
-function isRetryableStatus(status) {
-  return status === 429 || (status >= 500 && status <= 599);
-}
-
-async function requestCompletion(url, headers, body, signal) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body,
-    redirect: "manual",
-    signal,
-  });
-  const raw = await responseBody(response);
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    if (response.ok) throw new Error(`invalid JSON in vision model response: ${raw.slice(0, 400)}`);
-    return { retryable: isRetryableStatus(response.status), error: `vision model returned HTTP ${response.status}` };
-  }
-
-  if (!response.ok) {
-    const message = typeof parsed?.error?.message === "string" ? `: ${parsed.error.message}` : "";
-    return {
-      retryable: isRetryableStatus(response.status),
-      error: `vision model returned HTTP ${response.status}${message}`,
-    };
-  }
-
-  const message = parsed?.choices?.[0]?.message;
-  const text = textFromValue(message?.content) ?? textFromValue(message?.reasoning_content);
-  if (!text) throw new Error("vision model returned no content");
-  return { text, usage: completionUsage(parsed.usage) };
-}
 
 async function describeImage(params, model, auth, signal) {
-  const baseUrl = (auth.baseUrl ?? model.baseUrl)?.replace(/\/+$/, "");
-  if (!baseUrl) throw new Error("missing base_url");
-  const url = `${baseUrl}/chat/completions`;
-  try {
-    new URL(url);
-  } catch {
-    throw new Error(`invalid base_url: ${baseUrl}`);
-  }
-
   const prompt = params.prompt.trim();
   if (!prompt) throw new Error("missing prompt");
   const rawPath = params.image_path.trim();
@@ -361,41 +266,37 @@ async function describeImage(params, model, auth, signal) {
     mime = compressed.mime;
   }
 
-  const body = JSON.stringify({
-    model: model.id,
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "image_url", image_url: { url: `data:${mime};base64,${payload.toString("base64")}` } },
-          { type: "text", text: prompt },
-        ],
-      },
-    ],
-    max_tokens: 4096,
-    temperature: 0,
-  });
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(auth.headers ?? {})) {
-    if (value !== null) headers.set(name, String(value));
+  const requestModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+  const response = await completeSimple(
+    requestModel,
+    {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", data: payload.toString("base64"), mimeType: mime },
+            { type: "text", text: prompt },
+          ],
+          timestamp: Date.now(),
+        },
+      ],
+    },
+    {
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      signal,
+      maxTokens: 4096,
+      temperature: 0,
+      maxRetries: 1,
+    },
+  );
+  if (response.stopReason === "error" || response.stopReason === "aborted") {
+    throw new Error(response.errorMessage || `vision model stopped with ${response.stopReason}`);
   }
-  headers.set("content-type", "application/json");
-  if (!headers.has("authorization") && auth.apiKey) headers.set("authorization", `Bearer ${auth.apiKey}`);
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let result;
-    try {
-      result = await requestCompletion(url, headers, body, signal);
-    } catch (error) {
-      if (signal.aborted) throw signal.reason;
-      if (!(error instanceof TypeError) || attempt === 1) throw error;
-      await sleep(RETRY_BACKOFF_MS, undefined, { signal });
-      continue;
-    }
-    if (result.text) return result;
-    if (!result.retryable || attempt === 1) throw new Error(result.error);
-    await sleep(RETRY_BACKOFF_MS, undefined, { signal });
-  }
+  const text = response.content.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim()
+    || response.content.filter((part) => part.type === "thinking").map((part) => part.thinking).join("\n").trim();
+  if (!text) throw new Error("vision model returned no content");
+  return { text, usage: response.usage };
 }
 
 function waitFor(promise, signal) {
@@ -484,8 +385,7 @@ export default function visionExtension(pi: ExtensionAPI) {
           auth,
           controller.signal,
         );
-        const usage = toToolUsage(visionModel, result.usage);
-        return { content: [{ type: "text" as const, text: result.text }], details: {}, ...(usage ? { usage } : {}) };
+        return { content: [{ type: "text" as const, text: result.text }], details: {}, usage: result.usage };
       } catch (error) {
         const failure = controller.signal.aborted ? controller.signal.reason : error;
         const message = timedOut

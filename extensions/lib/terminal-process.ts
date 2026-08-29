@@ -72,7 +72,13 @@ export function registerTerminalCommand(pi, options) {
 
       const target = path.resolve(ctx.cwd, (args ?? "").trim() || ".");
       try {
-        const cwd = await options.prepare(target, ctx.signal);
+        try {
+          await capture(options.command, ["--version"], { signal: ctx.signal });
+        } catch (error) {
+          if (ctx.signal?.aborted) throw new Error(`${options.command} validation aborted`);
+          throw new Error(spawnError(options.command, options.installCommand, error));
+        }
+        const cwd = options.prepare ? await options.prepare(target, ctx.signal) : target;
         await ctx.ui.custom((tui, theme, _keybindings, done) => {
           void (async () => {
             let outcome;

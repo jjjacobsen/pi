@@ -1,7 +1,4 @@
-// Small shared helpers for the extension glue: tool-error shaping for
-// the HTTP-delegating tools (search, vision) and Codex subscription auth.
-
-import { calculateCost } from "@earendil-works/pi-ai/compat";
+// Small shared helpers for tool-error shaping and Codex subscription auth.
 
 // Shape a failure as a tool error: pi marks returned tool results as
 // successful and only thrown errors as failures, so this throws. The model
@@ -49,31 +46,4 @@ export async function resolveCodexAuth(ctx) {
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok || !auth.apiKey) return undefined;
   return { model, apiKey: auth.apiKey, headers: auth.headers ?? {}, ...codexJwtClaims(auth.apiKey) };
-}
-
-// Convert a backend usage JSON object into pi's AgentToolResult.usage shape.
-// Token fields come from the backend; cost is computed from the model's own
-// pricing via pi's accounting (calculateCost), so the reported totals match
-// pi's session accounting.
-export function toToolUsage(model, u) {
-  if (!u) return undefined;
-  const input = u.input ?? 0;
-  const output = u.output ?? 0;
-  const cacheRead = u.cacheRead ?? 0;
-  const cacheWrite = u.cacheWrite ?? 0;
-  const usage = {
-    input,
-    output,
-    cacheRead,
-    cacheWrite,
-    totalTokens: u.totalTokens ?? input + output + cacheRead + cacheWrite,
-    reasoning: u.reasoning ?? undefined,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  };
-  try {
-    calculateCost(model, usage);
-  } catch {
-    // Model has no pricing; tokens still count, cost stays zero.
-  }
-  return usage;
 }

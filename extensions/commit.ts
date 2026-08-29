@@ -38,6 +38,7 @@ function hideSpinner(ctx) {
 
 const THINKING_LEVEL = "low";
 const MAX_SESSION_TAIL = 4000;
+const MAX_INTENT = 2 * 1024;
 const TIMEOUT_MS = 60000;
 const MAX_GIT_OUT = 32 * 1024 * 1024;
 const RAW_DIFF_LIMIT = 6 * 1024;
@@ -74,19 +75,6 @@ function resourceLoader() {
     extendResources: () => {},
     reload: async () => {},
   };
-}
-
-function serializableModel(model) {
-  if (!model || typeof model !== "object") return undefined;
-  const copy: Record<string, any> = {};
-  for (const key of [
-    "provider", "id", "name", "api", "baseUrl", "reasoning",
-    "input", "cost", "contextWindow", "maxTokens",
-  ]) {
-    const value = model[key];
-    if (value !== undefined && typeof value !== "function") copy[key] = value;
-  }
-  return copy.provider && copy.id ? copy : undefined;
 }
 
 async function askModel(model, prompt, cwd, signal) {
@@ -148,6 +136,14 @@ function byteSlice(text, limit) {
   if (bytes.length <= limit) return text;
   while (limit > 0 && (bytes[limit] & 0xc0) === 0x80) limit--;
   return bytes.subarray(0, limit).toString();
+}
+
+function byteTail(text, limit) {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= limit) return text;
+  let start = bytes.length - limit;
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+  return bytes.subarray(start).toString();
 }
 
 async function runGit(pi, root, args, signal, stdoutLimit = MAX_GIT_OUT) {
@@ -472,10 +468,13 @@ async function commit(pi, cwd, message, signal, expectedTree) {
 }
 
 function buildPrompt(context, intent, tail) {
-  const parts = ["Write ONE conventional commit message for the changes below.", "", "## Diff context", context];
-  if (intent) parts.push("", "User intent (use only when supported by the diff):", intent);
-  if (tail) parts.push("", "Recent session context (intent only; the diff stays the source of truth):", tail);
-  return parts.join("\n");
+  const prefix = "Write ONE conventional commit message for the changes below.\n\n## Diff context\n";
+  const suffix = [];
+  if (intent) suffix.push("", "User intent (use only when supported by the diff):", byteSlice(intent, MAX_INTENT));
+  if (tail) suffix.push("", "Recent session context (intent only; the diff stays the source of truth):", tail);
+  const rest = suffix.join("\n");
+  const contextLimit = Math.max(0, CONTEXT_LIMIT - byteLength(prefix) - byteLength(rest));
+  return byteSlice(`${prefix}${byteSlice(context, contextLimit)}${rest}`, CONTEXT_LIMIT);
 }
 
 function sessionTail(ctx) {
@@ -492,7 +491,7 @@ function sessionTail(ctx) {
       else if (Array.isArray(content)) text = content.filter((part) => part?.type === "text").map((part) => part.text).join("\n");
       if (text.trim()) lines.push(`[${role}] ${text.trim()}`);
     }
-    return lines.join("\n").slice(-MAX_SESSION_TAIL);
+    return byteTail(lines.join("\n"), MAX_SESSION_TAIL);
   } catch {
     return "";
   }
@@ -516,7 +515,7 @@ export default function (pi: ExtensionAPI) {
         const analysis = await analyze(pi, cwd, ctx.signal);
         if (!analysis) return notify(ctx, "nothing to commit", "info");
 
-        const model = serializableModel(ctx.model);
+        const model = ctx.model;
         if (!model) return notify(ctx, "no model available", "error");
         const prompt = buildPrompt(analysis.context, (args ?? "").trim(), sessionTail(ctx));
 
@@ -524,7 +523,8 @@ export default function (pi: ExtensionAPI) {
         let message = stripFences(await askModel(model, prompt, cwd, ctx.signal));
         let problems = validate(message);
         if (problems) {
-          const retryPrompt = `${prompt}\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
+          const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
+          const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
           const retry = stripFences(await askModel(model, retryPrompt, cwd, ctx.signal));
           problems = validate(retry);
           if (problems) return notify(ctx, `message rejected after retry:\n${problems}Last attempt:\n${retry}`, "error");

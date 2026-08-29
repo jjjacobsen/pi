@@ -103,6 +103,11 @@ implementation details
 
 ## Prompts
 
+### handoff - save session context
+
+`/handoff` writes the current goal, state, decisions, validation, blockers, and
+next steps to `handoff.md` so a new session can continue the work
+
 ### q - question only
 
 `/q` expands into an instruction telling the model not to change anything,

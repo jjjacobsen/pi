@@ -14,8 +14,9 @@ under the agent directory when it must survive a restart
   stdin, stdout, and stderr, then closes the parent descriptor
 - An abort sends `SIGTERM` to the child
 - The result is `exited N` or `signal N`
-- `registerTerminalCommand` provides the shared TUI validation, terminal
-  handoff, restoration, and result notification used by `/lg` and `/nvim`
+- `registerTerminalCommand` validates the executable with `--version`, then
+  provides the shared TUI validation, terminal handoff, restoration, and result
+  notification used by `/lg` and `/nvim`
 
 `extensions/lib/toolkit.ts` contains two groups of helpers
 
@@ -59,15 +60,18 @@ automatic trigger. It is inspired by tmonk/pi-committer
    the tree used for analysis
 7. Run `git commit -F -`, then report the short hash and header
 
-The prompt can include `/commit` arguments as intent and the last 12 user or
-assistant session entries, capped at 4,000 characters. The diff remains the
-source of truth
+The prompt can include `/commit` arguments as intent, capped at 2 KiB, and the
+last 12 user or assistant session entries, capped at 4 KiB. The complete prompt
+is capped at 24 KiB and reserves room for both forms of intent before it trims
+the diff context. The diff remains the source of truth
 
 Small diffs up to 6 KiB are sent as-is. Larger diffs become a declaration-like
 digest with at most 8 hunks and 14 selected lines per file. The digest is
-capped at 12 KiB and the complete model context at 24 KiB. Git stdout is
-normally capped at 32 MiB, stderr at 16 KiB, and smaller metadata calls use
-lower caps. Commit guidance is capped at 2 KiB
+capped at 12 KiB. Git stdout is normally capped at 32 MiB, stderr at 16 KiB,
+and smaller metadata calls use lower caps. Commit guidance is capped at 2 KiB
+
+The isolated session receives the complete active model definition so custom
+headers, compatibility settings, and sampling parameters stay intact
 
 Validation requires an allowed Conventional Commit type, an optional valid
 scope, a specific description, a header no longer than 100 bytes, no raw diff
@@ -183,9 +187,10 @@ Config is `<agent_dir>/peon.json`
 - One enabled flag for each of the five categories
 
 The settings panel changes pause state, volume, silent window, and category
-flags. Config writes replace the file directly. A missing or invalid config
-uses defaults and logs non-missing-file errors. Settings-save failures are
-shown as UI errors
+flags. Config writes replace the file directly. Settings updates are serialized from
+load through save so rapid changes cannot overwrite each other. A missing or
+invalid config uses defaults and logs non-missing-file errors. Settings-save
+failures are shown as UI errors
 
 Cross-event state is `<agent_dir>/peon-state.json`
 
@@ -209,7 +214,8 @@ kept only in process memory, so Peon never signals a PID restored from disk
 - A failed tool execution plays task-error audio
 - `agent_end` plays completion audio only when the last assistant stop reason
   is not `error`, at least 5 seconds passed since the previous eligible end,
-  and the run met the silent-window duration
+  and the run met the silent-window duration. A run that is too short does not
+  start the debounce window
 
 Paused or disabled categories do not play. Before a new sound starts, the
 extension sends `SIGTERM` to the recorded player PID. It starts `afplay`
@@ -264,8 +270,9 @@ also uses defaults and logs the error. `/vision show` displays the selection,
 `/vision model <provider/model>` validates and saves an exact choice
 
 At each call, the extension resolves the selected model and its credentials
-through pi's model registry. Provider headers are preserved. An Authorization
-bearer is added only when the resolved headers do not already contain one
+through pi's model registry. It sends the request through pi-ai's
+provider-neutral `completeSimple` dispatch, preserving provider headers,
+provider API behavior, and an authentication-specific base URL
 
 ## Image processing
 
@@ -282,14 +289,9 @@ byte-for-byte. Larger images use macOS `sips -Z`
 - Temporary output is removed in a `finally` block and is also capped at
   64 MiB
 
-The request is an OpenAI-compatible `POST <baseUrl>/chat/completions` with a
-base64 data URL, the user prompt, `max_tokens: 4096`, and `temperature: 0`.
-Response content can be a string or an array of text, thinking, or reasoning
-blocks. `reasoning_content` is used when normal content is empty
-
-Response bodies are capped at 1 MiB. Invalid successful JSON includes at most
-400 raw characters in the error. Non-success responses include the provider
-error message when available
+The provider-neutral request contains a base64 image block and the user prompt,
+with 4,096 maximum output tokens and temperature 0. Normal text is returned,
+or thinking text when the provider returns no normal text
 
 ## Timeout, retry, cancellation, and usage
 
@@ -298,13 +300,11 @@ auth resolution, image work, the request, retry delay, and response reading.
 The caller's cancellation aborts the same controller, including `fetch`, file
 reads, and `sips`
 
-The request retries once after 500 ms for HTTP 429, HTTP 5xx, and network
-`TypeError` failures. Other HTTP failures, timeouts, content errors, and parse
-errors from successful responses do not retry
+Provider adapters can retry once. Other failures return the provider's error
+through the tool result
 
-Prompt and completion tokens from the delegated response are converted to pi
-tool usage. Cost is calculated from the selected model's pricing, so image
-analysis appears in session totals
+The delegated response already contains pi-native usage and calculated cost,
+so image analysis appears in session totals without a conversion layer
 
 The compression path requires macOS `sips`. Supported images that do not need
 compression do not call it
@@ -383,10 +383,10 @@ files as `?N`, and staged files as `+N`. The interval and branch listener are
 removed when the footer is disposed or disabled
 
 Throughput estimates one token per four streamed text or thinking characters.
-It uses a rolling 15-second sample window, ignores gaps longer than 2 seconds,
-and waits for 2 seconds of active data before updating. It starts at `0.0` for
-each session, updates during streaming, and freezes the last value when idle.
-A short stream uses its overall average
+It uses a rolling 15-second sample window and excludes both time and character
+growth across gaps longer than 2 seconds. It waits for 2 seconds of active data
+before updating, starts at `0.0` for each session, updates during streaming,
+and freezes the last value when idle. A short stream uses its overall average
 
 The model and thinking level are right-aligned. The provider is shown when
 more than one provider is available. Extension statuses use a third line
