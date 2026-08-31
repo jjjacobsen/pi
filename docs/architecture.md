@@ -140,6 +140,35 @@ signal sends `SIGTERM` to neovim, and there is no fixed run timeout
 The Unix-only, late-spawn blink, background agent-loop, and hard-process-death
 limits are the same as lazygit
 
+# Browser skill (`skills/browser/SKILL.md`)
+
+## Goal and design
+
+The `browser` skill controls the installed Playwright CLI through Bash. It is
+adapted from Microsoft's official Playwright CLI skill, but narrows the workflow
+to one named `browser` session, compact accessibility snapshots, and element
+refs
+
+The browser runs headless by default with Playwright's `--persistent` managed
+profile. Playwright stores that profile in its operating-system cache, so the
+repo and pi agent directory hold no browser profile. The profile includes
+cookies and browser storage and can preserve authentication after the browser
+closes. The skill sets `PLAYWRIGHT_MCP_OUTPUT_DIR` when it opens a browser, so
+snapshots and other generated output go to `~/.pi/agent/playwright/` instead of
+the current project
+
+When authentication is missing, the agent closes the headless browser and
+opens the same persistent session with `--headed`. Jonah enters credentials,
+passkeys, and MFA directly in that window. After confirmation, the agent closes
+it and reopens the target headless with the same profile. The skill forbids
+credential collection and authentication-state inspection by default
+
+The skill uses snapshots, focused snapshot searches, and fresh element refs
+after page changes. Screenshots, coordinates, normal Chrome attachment, and
+raw DOM evaluation are not the normal control path. Consequential final actions
+require confirmation, and the browser closes after the task without deleting
+the persistent profile
+
 # Repo audit skill (`skills/repo-audit/SKILL.md`)
 
 ## Goal and design

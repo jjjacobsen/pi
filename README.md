@@ -126,6 +126,14 @@ the plan was already fully approved in conversation
 
 ## Skills
 
+### browser - deterministic browser automation
+
+Controls a Playwright-managed browser through compact accessibility snapshots
+and element references. It runs headless with one persistent managed profile by
+default, writes generated output under `~/.pi/agent/playwright/`, and uses a
+visible browser only for a manual authentication handoff.
+Adapted from the official [Microsoft Playwright CLI skill](https://github.com/microsoft/playwright-cli)
+
 ### repo-audit - whole-repo improvement audit
 
 Scans the whole repo for over-engineering, dead code, duplication, and
