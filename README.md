@@ -63,9 +63,10 @@ collect session usage or write a cache. The view is adapted from omp
 ### footer - custom status footer via /footer
 
 The custom footer shows your workspace, git branch and status (`*N ?N +N`
-worktree-changed / untracked / staged counters, polled from `git status`),
-token and cost stats, and a context color set on absolute tokens (warning
-~100k, error ~200k). `/footer` switches between it and the built-in footer.
+worktree-changed / untracked / staged counters, polled from `git status`), an
+icon and count when Playwright CLI browsers are open, token and cost stats, and
+a context color set on absolute tokens (warning ~100k, error ~200k). `/footer`
+switches between it and the built-in footer.
 The design takes inspiration from opencode and omp
 (can1357/oh-my-pi)
 

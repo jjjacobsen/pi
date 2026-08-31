@@ -425,7 +425,16 @@ more than one provider is available. Extension statuses use a third line
 
 The footer starts automatically for TUI sessions. `/footer` switches between
 it and the built-in footer. Message, model, thinking, session-info, compaction,
-branch, and git-status changes request a render
+branch, git-status, and Playwright-status changes request a render
+
+The footer runs `playwright-cli list --all --json` immediately and every 10
+seconds. It counts open browser sessions across all Playwright CLI workspaces.
+When the count is positive, a yellow web icon and count appear as a first-line
+segment directly after git status with the same two-space gap. Zero renders
+nothing. A failed command or invalid response retains the last known count, and
+invalid JSON is logged. Only one Playwright status process runs at a time, and
+each has a 9-second timeout and 4 MiB output cap. The timer stops when the
+custom footer is disposed or disabled
 
 # Subagent extension (`extensions/subagent.ts`)
 
