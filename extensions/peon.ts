@@ -102,7 +102,14 @@ function defaultState() {
 }
 
 const CATEGORY_INDEX = Object.fromEntries(Object.keys(SOUNDS).map((category, index) => [category, index]));
-let afplay;
+let activePlayer;
+
+function playerCommand(volume, sound) {
+  const file = path.join(ASSET_DIR, sound);
+  if (process.platform === "darwin") return { command: "afplay", args: ["-v", String(volume), file] };
+  if (process.platform === "linux") return { command: "pw-play", args: ["--volume", String(volume), file] };
+  return undefined;
+}
 
 function object(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("expected object");
@@ -250,22 +257,28 @@ function play(config, state, category) {
   if (config.paused || !config.categories[category]) return;
   const sound = pickSound(state, category);
 
-  if (afplay) afplay.kill("SIGTERM");
+  if (activePlayer) activePlayer.kill("SIGTERM");
 
   const volume = Math.min(Math.max(config.volume, 0), 100) / 100;
+  const player = playerCommand(volume, sound);
+  if (!player) {
+    console.error(`pi-peon: audio playback is unsupported on ${process.platform}`);
+    return;
+  }
+
   try {
-    const child = spawn("afplay", ["-v", String(volume), path.join(ASSET_DIR, sound)], {
+    const child = spawn(player.command, player.args, {
       detached: true,
       stdio: "ignore",
     });
-    afplay = child;
-    child.once("error", (err) => console.error(`pi-peon: afplay spawn failed (${err.message})`));
+    activePlayer = child;
+    child.once("error", (err) => console.error(`pi-peon: ${player.command} spawn failed (${err.message})`));
     child.once("close", () => {
-      if (afplay === child) afplay = undefined;
+      if (activePlayer === child) activePlayer = undefined;
     });
     child.unref();
   } catch (err) {
-    console.error(`pi-peon: afplay spawn failed (${err?.message ?? err})`);
+    console.error(`pi-peon: ${player.command} spawn failed (${err?.message ?? err})`);
   }
 }
 

@@ -51,7 +51,8 @@ background, so you can browse commits and stage diffs
 
 Plays Warcraft 3 orc peon and human peasant voice lines when things
 happen, like session start or task complete. `/peon` opens the settings
-panel to adjust volume and which events make noise. Adapted from the
+panel to adjust volume and which events make noise. Audio plays through
+`afplay` on macOS or PipeWire's `pw-play` on Linux/Omarchy. Adapted from the
 third-party `pi-peon-ping` extension
 
 ### status - provider limits via /status

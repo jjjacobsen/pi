@@ -24,11 +24,11 @@ under the agent directory when it must survive a restart
 - The Codex helpers choose a subscription model, resolve credentials through
   pi, and read the account ID and email from the OAuth token
 
-The extension imports live in bun's global install at
-`~/.bun/install/global/node_modules`. Pi aliases these packages to its bundled
-copies at runtime. `tsconfig.json` points its `paths` and `typeRoots` at the
-same global install so editor and command-line types match the running pi
-version. These absolute paths are machine-specific
+Core pi packages and TypeBox are declared as `peerDependencies`, so pi uses its
+bundled copies at runtime, and pinned `devDependencies` provide matching local
+types for development. `@types/node` is development-only. `tsconfig.json` uses
+standard local `node_modules` resolution, keeping type checking portable across
+machines
 
 `strict: false` is explicit because the extension code is deliberately light
 on annotations. `hk.pkl` runs `tsc --noEmit -p tsconfig.json`, and `mise.toml`
@@ -202,7 +202,8 @@ categories from pi-peon-ping
 ## Assets, config, and state
 
 The 33 WAV files live in `assets/peon/` and are played directly with macOS
-`afplay`. The sound packs are Orc Peon by tonyyont and Human Peasant by
+`afplay` on Darwin or PipeWire's `pw-play` on Linux (including Omarchy). The
+sound packs are Orc Peon by tonyyont and Human Peasant by
 thomasKn from OpenPeon CESP, licensed CC-BY-NC-4.0
 
 Config is `<agent_dir>/peon.json`
@@ -230,8 +231,8 @@ State loads before each event and is written through a temporary file after it.
 The final rename is best-effort, matching the previous notification behavior.
 Invalid state uses defaults and logs the problem. Other state-save failures are
 logged but do not break the lifecycle event. A promise queue serializes events
-so two state read and write cycles do not overlap. The active `afplay` child is
-kept only in process memory, so Peon never signals a PID restored from disk
+so two state read and write cycles do not overlap. The active audio-player child
+is kept only in process memory, so Peon never signals a PID restored from disk
 
 ## Event behavior
 
@@ -246,9 +247,11 @@ kept only in process memory, so Peon never signals a PID restored from disk
   start the debounce window
 
 Paused or disabled categories do not play. Before a new sound starts, the
-extension sends `SIGTERM` to the recorded player PID. It starts `afplay`
-detached with ignored standard streams, calls `unref`, and records the new PID
-so voice lines do not overlap. Spawn failures log one line and do not break pi
+extension sends `SIGTERM` to the recorded player PID. It starts `afplay` on
+macOS or `pw-play` on Linux, passing the configured 0–1 volume to either player.
+The player is detached with ignored standard streams, `unref` is called, and the
+new PID is recorded so voice lines do not overlap. Unsupported platforms and
+spawn failures log one line and do not break pi
 
 Lifecycle sounds run only in sessions with a UI
 
