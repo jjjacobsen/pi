@@ -103,3 +103,11 @@
   even though runtime values are `string | null`, so filtering out `null` did
   not make `Object.fromEntries` assignable to fetch's string header record.
   Build a `Record<string, string>` in a loop and copy only string values.
+
+## 2026-09-02
+
+- Playwright CLI 0.1.18 defaults to the Google Chrome channel at
+  `/opt/google/chrome/chrome`, but Omarchy supplies Chromium at
+  `/usr/bin/chromium`. Setting
+  `PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium` on `open` uses the system
+  browser successfully and avoids a separate browser download.

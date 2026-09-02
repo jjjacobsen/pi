@@ -9,8 +9,8 @@ people and organizations I trust
 
 1. `git clone git@github.com:jjjacobsen/pi.git` and `cd` in
 2. `mise trust` then `mise install` to pull the pinned development tools
-3. `curl -fsSL https://bun.sh/install | bash` to install bun
-4. `bun install -g @earendil-works/pi-coding-agent` to install pi
+3. `mise use -g pi@latest` to install pi
+4. `mise use -g npm:@playwright/cli@0.1.18` to install Playwright CLI for the browser skill
 5. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
    - `pi install git:git@github.com:earendil-works/pi-transcribe`
@@ -134,6 +134,11 @@ Controls a Playwright-managed browser through compact accessibility snapshots
 and element references. It runs headless with one persistent managed profile by
 default, writes generated output under `~/.pi/agent/playwright/`, and uses a
 visible browser only for a manual authentication handoff.
+
+On Omarchy, the skill uses the installed system Chromium at
+`/usr/bin/chromium` through `PLAYWRIGHT_MCP_EXECUTABLE_PATH`. No separate
+Playwright browser or Google Chrome install is needed.
+
 Adapted from the official [Microsoft Playwright CLI skill](https://github.com/microsoft/playwright-cli)
 
 ### repo-audit - whole-repo improvement audit

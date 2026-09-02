@@ -17,8 +17,11 @@ Use the single named session `browser` for every command. Do not create a
 custom profile directory. `--persistent` lets Playwright manage the profile in
 its operating-system cache and preserves browser authentication across restarts
 
-Set `PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright"` when opening the
-browser so generated snapshots and other output never enter the current project
+Set `PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium` when opening the browser
+to use Omarchy's system Chromium instead of installing a separate Playwright
+browser or Google Chrome. Set
+`PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright"` so generated snapshots
+and other output never enter the current project
 
 ## Rules
 
@@ -54,6 +57,7 @@ Open the managed persistent browser without showing a window
 
 ```bash
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
+  PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium \
   playwright-cli -s=browser open "https://example.com" --persistent
 ```
 
@@ -105,6 +109,7 @@ playwright-cli -s=browser close
 
 ```bash
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
+  PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium \
   playwright-cli -s=browser open "https://example.com/login" --persistent --headed
 ```
 
@@ -116,6 +121,7 @@ PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
 ```bash
 playwright-cli -s=browser close
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
+  PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium \
   playwright-cli -s=browser open "https://example.com" --persistent
 ```
 

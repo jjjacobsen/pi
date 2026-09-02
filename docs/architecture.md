@@ -149,9 +149,11 @@ adapted from Microsoft's official Playwright CLI skill, but narrows the workflow
 to one named `browser` session, compact accessibility snapshots, and element
 refs
 
-The browser runs headless by default with Playwright's `--persistent` managed
-profile. Playwright stores that profile in its operating-system cache, so the
-repo and pi agent directory hold no browser profile. The profile includes
+The browser runs Omarchy's system Chromium at `/usr/bin/chromium` headless by
+default through `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, so it needs no separate
+Playwright browser or Google Chrome install. It uses Playwright's `--persistent`
+managed profile. Playwright stores that profile in its operating-system cache,
+so the repo and pi agent directory hold no browser profile. The profile includes
 cookies and browser storage and can preserve authentication after the browser
 closes. The skill sets `PLAYWRIGHT_MCP_OUTPUT_DIR` when it opens a browser, so
 snapshots and other generated output go to `~/.pi/agent/playwright/` instead of
