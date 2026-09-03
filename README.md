@@ -13,7 +13,6 @@ people and organizations I trust
 4. `mise use -g npm:@playwright/cli@0.1.18` to install Playwright CLI for the browser skill
 5. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
-   - `pi install git:git@github.com:earendil-works/pi-transcribe`
    - `pi install npm:@ff-labs/pi-fff`
 6. Export `EXA_API_KEY` before starting pi (the search extension needs it)
 
