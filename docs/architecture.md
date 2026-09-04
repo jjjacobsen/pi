@@ -34,6 +34,17 @@ machines
 on annotations. `hk.pkl` runs `tsc --noEmit -p tsconfig.json`, and `mise.toml`
 pins the TypeScript version. `mise x -- hk check --all` must stay green
 
+# Bar cursor extension (`extensions/bar-cursor.ts`)
+
+The extension replaces the main input editor with a minimal `CustomEditor`
+subclass. Its renderer removes only the inverse-video sequence that pi uses for
+the software block cursor and keeps the cursor marker at the same cell. It
+enables pi's hardware cursor and sends the standard DECSCUSR steady-bar
+sequence to the terminal
+
+On session shutdown, including `/reload`, it resets the terminal cursor shape
+and restores pi's previous hardware-cursor setting. Non-TUI modes do nothing
+
 # Commit extension (`extensions/commit.ts`)
 
 ## Goal
