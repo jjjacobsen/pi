@@ -133,6 +133,13 @@ the plan was already fully approved in conversation
 
 ## Skills
 
+### anki - add source notes to the memory repository
+
+Turns requests such as "add that keybinding to Anki" into a well-formed note
+under `~/Projects/memory`. It infers the existing note type and subject deck
+from the current context, checks the note schema and nearby notes, and writes
+only the source line. It does not import, sync, push, or commit
+
 ### browser - deterministic browser automation
 
 Controls a Playwright-managed browser through compact accessibility snapshots

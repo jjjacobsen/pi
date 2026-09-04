@@ -151,6 +151,20 @@ signal sends `SIGTERM` to neovim, and there is no fixed run timeout
 The Unix-only, late-spawn blink, background agent-loop, and hard-process-death
 limits are the same as lazygit
 
+# Anki skill (`skills/anki/SKILL.md`)
+
+## Goal and design
+
+The `anki` skill turns short, context-dependent requests into source notes in
+`~/Projects/memory`. It reads that repository's instructions and the selected
+note type's field and card documentation before it writes anything
+
+The skill selects the narrowest existing note type, uses `basic` for general
+knowledge, and chooses a subject deck rather than a project-specific deck. It
+checks for existing knowledge, writes one atomic pipe-delimited source line,
+and stops. It never invokes the Anki import, preview, sync, or push workflow and
+never commits the memory repository
+
 # Browser skill (`skills/browser/SKILL.md`)
 
 ## Goal and design
