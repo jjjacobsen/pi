@@ -153,6 +153,13 @@ Playwright browser or Google Chrome install is needed.
 
 Adapted from the official [Microsoft Playwright CLI skill](https://github.com/microsoft/playwright-cli)
 
+### pi-upgrade - review and synchronize pi upgrades
+
+Compares the installed pi release with this repository's development version,
+reads every intervening changelog section, and checks affected extensions and
+skills. It adapts relevant code, synchronizes the three pi development
+packages, updates documentation, and runs all repository checks
+
 ### repo-audit - whole-repo improvement audit
 
 Scans the whole repo for over-engineering, dead code, duplication, and

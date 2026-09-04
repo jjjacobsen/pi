@@ -118,3 +118,7 @@
   0.84.4 development types. Passing the new runtime option failed `tsc` until
   the options object was cast to `any`. Remove the cast when the development
   dependencies move to 0.85.0 or newer.
+- The mise pi installation is a compiled binary distribution without the
+  TypeScript source tree. Trying to inspect the launcher with `head` printed
+  binary data. Fetch source files from the matching `v<version>` tag in the
+  official repository instead.

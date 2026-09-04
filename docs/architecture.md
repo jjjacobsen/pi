@@ -196,6 +196,24 @@ raw DOM evaluation are not the normal control path. Consequential final actions
 require confirmation, and the browser closes after the task without deleting
 the persistent profile
 
+# Pi upgrade skill (`skills/pi-upgrade/SKILL.md`)
+
+## Goal and design
+
+The `pi-upgrade` skill treats the exact pi development dependency version as
+the last reviewed release. It compares that version with `pi --version`, reads
+every intervening release section from the installed changelog, follows
+relevant documentation, and maps affected APIs back to this repository's
+extensions and skills
+
+The review covers extension lifecycle, TUI and editor behavior, tools,
+providers, sessions, skills, settings, environment variables, and keybindings.
+It reports relevant findings before editing, adapts code and documentation,
+then updates `pi-ai`, `pi-coding-agent`, and `pi-tui` together to the installed
+version with exact npm versions. It removes obsolete compatibility workarounds
+and runs the full repository checks. It never updates the installed pi program,
+downgrades dependencies, or commits
+
 # Repo audit skill (`skills/repo-audit/SKILL.md`)
 
 ## Goal and design
