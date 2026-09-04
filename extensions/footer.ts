@@ -2,7 +2,7 @@
  * /footer - custom status footer (opencode-style, minimal)
  *
  * Replaces pi's built-in footer with a cleaner two-line layout:
- *   line 1:  π  ~/Projects/pi  main *1 ?2 +1  󰖟 1    (workspace, git and Playwright status)
+ *   line 1:  π  ~/Projects/pi  main ↑1 *1 ?2 +1  󰖟 1    (workspace, git and Playwright status)
  *   line 2:  ↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   ...   deepseek-v4-flash • max
  *
  * vs the built-in footer this drops the R (cache read), W (cache write),
@@ -91,6 +91,8 @@ interface StreamState {
 }
 
 interface GitStatus {
+	ahead: number; // commits ahead of the upstream branch (↑N)
+	behind: number; // commits behind the upstream branch (↓N)
 	changed: number; // files with unstaged working-tree changes (*N)
 	untracked: number; // untracked files (?N)
 	staged: number; // files staged for commit (+N)
@@ -151,11 +153,17 @@ function refreshGitStatus(ctx: ExtensionContext): void {
 				// Not a repo, git missing, or cwd gone: nothing to show
 				gitStatus = null;
 			} else {
+				let ahead = 0;
+				let behind = 0;
 				let changed = 0;
 				let untracked = 0;
 				let staged = 0;
 				for (const line of stdout.split("\n")) {
-					if (line.startsWith("##")) continue; // branch header line
+					if (line.startsWith("##")) {
+						ahead = Number(line.match(/\bahead (\d+)/)?.[1] ?? 0);
+						behind = Number(line.match(/\bbehind (\d+)/)?.[1] ?? 0);
+						continue;
+					}
 					if (line.length < 2) continue;
 					const [x, y] = [line[0]!, line[1]!];
 					if (x === "?") untracked++;
@@ -164,7 +172,7 @@ function refreshGitStatus(ctx: ExtensionContext): void {
 						if (y !== " " && y !== "?") changed++;
 					}
 				}
-				gitStatus = { changed, untracked, staged };
+				gitStatus = { ahead, behind, changed, untracked, staged };
 			}
 			if (footerTui) footerTui.requestRender();
 		},
@@ -193,10 +201,12 @@ function refreshPlaywrightStatus(): void {
 	);
 }
 
-// omp-style status suffix appended to the branch: " *1 ?2 +3" (order: changed,
-// untracked, staged), empty string when the working tree is clean
+// Starship-style upstream status followed by the omp-style worktree status:
+// " ↑1 ↓2 *1 ?2 +3", empty when the branch is synchronized and clean
 function gitStatusSuffix(status: GitStatus): string {
 	const parts: string[] = [];
+	if (status.ahead > 0) parts.push(`↑${status.ahead}`);
+	if (status.behind > 0) parts.push(`↓${status.behind}`);
 	if (status.changed > 0) parts.push(`*${status.changed}`);
 	if (status.untracked > 0) parts.push(`?${status.untracked}`);
 	if (status.staged > 0) parts.push(`+${status.staged}`);

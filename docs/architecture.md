@@ -435,7 +435,7 @@ The custom footer replaces pi's built-in footer with two main lines and an
 optional extension-status line
 
 ```text
-π  ~/Projects/pi  main *1 ?2 +1
+π  ~/Projects/pi  main ↑1 ↓2 *1 ?2 +1
 ↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   deepseek-v4-flash • max
 ```
 
@@ -456,10 +456,13 @@ Context color uses absolute thresholds of 100,000 tokens for warning and
 
 Pi supplies the branch, provider count, and extension statuses. The extension
 runs `git --no-optional-locks status --porcelain -b` when enabled, on branch
-changes, and every 5 seconds. Only one status process runs at a time, and each
-has a 4-second timeout. It counts files with unstaged work as `*N`, untracked
-files as `?N`, and staged files as `+N`. The interval and branch listener are
-removed when the footer is disposed or disabled
+changes, and every 3 seconds. Only one status process runs at a time, and each
+has a 2-second timeout. It reads the branch header to show commits ahead of the
+upstream as `↑N` and commits behind it as `↓N`, matching the configured Starship
+symbols. It then counts files with unstaged work as `*N`, untracked files as
+`?N`, and staged files as `+N`. Both upstream counters are shown for a diverged
+branch. The interval and branch listener are removed when the footer is disposed
+or disabled
 
 Throughput estimates one token per four streamed text or thinking characters.
 Other assistant stream events do not add samples. It uses a rolling 15-second
