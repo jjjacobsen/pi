@@ -62,7 +62,7 @@ const ERROR_CTX_FRACTION = 0.9;
 
 // How often to re-run `git status --porcelain` so the changed-file counters
 // stay fresh while the footer is showing (~10-40ms per spawn on a normal repo).
-const GIT_STATUS_POLL_MS = 5000;
+const GIT_STATUS_POLL_MS = 3000;
 // `playwright-cli list` starts Node, so poll less often than git while still
 // making forgotten headless browsers visible quickly.
 const PLAYWRIGHT_STATUS_POLL_MS = 10000;
