@@ -31,8 +31,8 @@ Technical details for every extension live in [docs/architecture.md](docs/archit
 ### bar cursor - terminal bar cursor in the editor
 
 Replaces pi's inverted software block with a steady hardware bar cursor while
-the input editor is active. The terminal must support the standard DECSCUSR
-cursor-shape sequence
+the input editor is active. It keeps pi's working indicator in the editor
+border. The terminal must support the standard DECSCUSR cursor-shape sequence
 
 ### commit - AI commit messages
 

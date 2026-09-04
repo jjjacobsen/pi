@@ -111,3 +111,10 @@
   `/usr/bin/chromium`. Setting
   `PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium` on `open` uses the system
   browser successfully and avoids a separate browser download.
+
+## 2026-09-04
+
+- pi 0.85.0 added `EditorOptions.embedWorkingStatus`, but this repo still uses
+  0.84.4 development types. Passing the new runtime option failed `tsc` until
+  the options object was cast to `any`. Remove the cast when the development
+  dependencies move to 0.85.0 or newer.

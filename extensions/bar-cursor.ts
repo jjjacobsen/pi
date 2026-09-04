@@ -23,7 +23,7 @@ export default function (pi: ExtensionAPI) {
 			showHardwareCursor = tui.getShowHardwareCursor();
 			tui.setShowHardwareCursor(true);
 			tui.terminal.write(STEADY_BAR_CURSOR);
-			return new BarCursorEditor(tui, theme, keybindings);
+			return new BarCursorEditor(tui, theme, keybindings, { embedWorkingStatus: true } as any);
 		});
 	});
 
