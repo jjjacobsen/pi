@@ -13,11 +13,10 @@
 //   tool calls from one assistant turn concurrently, so firing several
 //   subagent calls in one turn runs several subagents in parallel.
 // - The subagent gets the built-in tools (read, bash, edit, write) plus the
-//   allowlisted extensions (search.ts -> web_search, vision.ts ->
-//   describe_image). The resource loader filters every other extension out:
-//   the subagent tool cannot recurse into itself, and the system prompt stays
-//   small. The tools allowlist is the second guard: even if a filter leak
-//   slips an extension in, only the six names are callable.
+//   allowlisted search extension. The resource loader filters every other
+//   extension out, so the subagent tool cannot recurse into itself and the
+//   system prompt stays small. The tools allowlist is the second guard: even
+//   if a filter leak slips an extension in, only the five names are callable.
 // - Model and thinking level inherit from the caller by default. Optional
 //   per-call overrides select an exact model and/or reasoning level.
 // - The transcript is persisted under <agent_dir>/subagents/<ts>_<id>.jsonl
@@ -47,13 +46,11 @@ const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "m
 
 // Extensions whose factories may run inside a sub-session. Exact paths avoid
 // admitting an unrelated extension with the same filename.
-const SUBAGENT_EXTENSIONS = new Set(
-  ["search.ts", "vision.ts"].map((name) => fileURLToPath(new URL(name, import.meta.url))),
-);
+const SUBAGENT_EXTENSIONS = new Set([fileURLToPath(new URL("search.ts", import.meta.url))]);
 
-// The exact tools a subagent can call. The first four are built-ins, the
-// last two come from the allowlisted extensions above.
-const SUBAGENT_TOOLS = ["read", "bash", "edit", "write", "web_search", "describe_image"];
+// The exact tools a subagent can call. The first four are built-ins, and the
+// last one comes from the allowlisted extension above.
+const SUBAGENT_TOOLS = ["read", "bash", "edit", "write", "web_search"];
 
 // Live stream display keeps only the trailing chars, so the TUI tool row
 // stays cheap on long runs.
@@ -150,7 +147,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: TOOL_NAME,
     label: "Subagent",
     description:
-      "Delegate a self-contained task to an isolated subagent and get back only its final summary. The subagent runs with its own fresh context in the current project directory, with read, bash, edit, write, web_search, and describe_image. It does not see this conversation. Model and reasoning overrides are optional; omit them to inherit the parent session. Use this for meaty but well-scoped work where you only need the outcome, not the intermediate steps: research, isolated refactors, digging through logs, writing reports. Call subagent once per independent task and several calls in parallel when tasks do not depend on each other. Do not delegate tiny tasks you can do yourself, and do not delegate tasks where you need to inspect the full intermediate output.",
+      "Delegate a self-contained task to an isolated subagent and get back only its final summary. The subagent runs with its own fresh context in the current project directory, with read, bash, edit, write, and web_search. It does not see this conversation. Model and reasoning overrides are optional; omit them to inherit the parent session. Use this for meaty but well-scoped work where you only need the outcome, not the intermediate steps: research, isolated refactors, digging through logs, writing reports. Call subagent once per independent task and several calls in parallel when tasks do not depend on each other. Do not delegate tiny tasks you can do yourself, and do not delegate tasks where you need to inspect the full intermediate output.",
     promptSnippet: "Delegate a self-contained task to an isolated subagent that returns only a summary",
     promptGuidelines: [
       "Use subagent when a task is meaty but self-contained and the caller only needs the outcome: research, isolated refactors, log digging, report writing. The subagent returns only its final message, so the caller's context stays small.",

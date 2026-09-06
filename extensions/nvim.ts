@@ -9,6 +9,5 @@ export default function (pi: ExtensionAPI) {
     command: "nvim",
     description: "Open neovim full-screen over the pi TUI (:q to quit and return)",
     statusText: "nvim (:q to quit)",
-    installCommand: "brew install neovim",
   });
 }

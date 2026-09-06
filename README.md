@@ -57,8 +57,7 @@ background, so you can browse commits and stage diffs
 Plays Warcraft 3 orc peon and human peasant voice lines when things
 happen, like session start or task complete. `/peon` opens the settings
 panel to adjust volume and which events make noise. Audio plays through
-`afplay` on macOS or PipeWire's `pw-play` on Linux/Omarchy. Adapted from the
-third-party `pi-peon-ping` extension
+PipeWire's `pw-play`. Adapted from the third-party `pi-peon-ping` extension
 
 ### status - provider limits via /status
 
@@ -77,12 +76,6 @@ switches between it and the built-in footer.
 The design takes inspiration from opencode and omp
 (can1357/oh-my-pi)
 
-### vision - image analysis via a vision model
-
-`describe_image` lets a text-only model see images by handing them to a
-configured vision model. `/vision show` and `/vision model <provider/model>`
-pick the model. Adapted from `@getpipher/vision`
-
 ### search - web search via the Exa API
 
 `web_search` queries Exa with your `EXA_API_KEY` and hands back numbered
@@ -94,7 +87,7 @@ Codex-backed search
 `subagent` hands a meaty, self-contained task to an isolated sub-session
 in the same process and returns only its final summary, so the caller's
 context window stays low. The subagent gets `read`/`bash`/`edit`/`write`
-plus `web_search` and `describe_image`, and can be called several times in
+plus `web_search` and can be called several times in
 one turn to run tasks in parallel. Model and reasoning inherit independently
 from the caller unless a call sets either optional override. Tasks are passed
 literally, and failed or empty final responses fail the tool with the transcript

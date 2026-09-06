@@ -58,8 +58,8 @@ function notify(ctx, label, text, level = "info") {
   }
 }
 
-function spawnError(command, installCommand, error) {
-  if (error?.code === "ENOENT") return `${command} not found in PATH (install with: ${installCommand})`;
+function spawnError(command, error) {
+  if (error?.code === "ENOENT") return `${command} not found in PATH`;
   if (error?.code === "EACCES") return `${command} is not executable`;
   return error?.message ?? String(error);
 }
@@ -76,7 +76,7 @@ export function registerTerminalCommand(pi, options) {
           await capture(options.command, ["--version"], { signal: ctx.signal });
         } catch (error) {
           if (ctx.signal?.aborted) throw new Error(`${options.command} validation aborted`);
-          throw new Error(spawnError(options.command, options.installCommand, error));
+          throw new Error(spawnError(options.command, error));
         }
         const cwd = options.prepare ? await options.prepare(target, ctx.signal) : target;
         await ctx.ui.custom((tui, theme, _keybindings, done) => {
@@ -86,7 +86,7 @@ export function registerTerminalCommand(pi, options) {
               tui.stop();
               outcome = { text: await runOnTerminal(options.command, cwd, ctx.signal) };
             } catch (error) {
-              outcome = { error: spawnError(options.command, options.installCommand, error) };
+              outcome = { error: spawnError(options.command, error) };
             } finally {
               tui.start();
               tui.requestRender(true);

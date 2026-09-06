@@ -1,21 +1,5 @@
 # Papercuts
 
-## 2026-08-13
-
-- The pi vision tool (describe_image) returned "Vision model returned no
-  content" for a Ghostty TUI screenshot; OCR'd it with a one-off Swift
-  script using the Vision framework (`VNRecognizeTextRequest`, accurate
-  level) instead. Useful technique for TUI/terminal screenshots.
-- sips defaults its OUTPUT format to the INPUT format, and its WebP writer is
-  broken ("Can't write format: org.webmproject.webp"). Resizing a WebP
-  without an explicit `-s format` fails, so the `-s format` flag must always
-  be passed (jpeg/png/gif). Also: an alpha WebP comes back as PNG, so the
-  data-URL mime must follow what sips produced, not the input mime.
-- VP8X chunk layout: flags at chunk+8, canvas width at chunk+12, height at
-  chunk+15 (the header is 8 bytes, the payload 10). Reading them 12 bytes too
-  far reaches the next chunk and produces garbage dimensions and a wrong
-  alpha flag for extended WebP files; only a real-file test caught it.
-
 ## 2026-08-15 (extension glue gotchas)
 
 - pi's `getArgumentCompletions` must return `AutocompleteItem[]`
@@ -23,9 +7,6 @@
   TUI with an uncaught `TypeError: Cannot read properties of undefined
   (reading 'length')` in pi-tui's select-list `visibleWidth`. The docs
   example shows the shape but the crash message gives no hint.
-- GNU `timeout` is not on macOS. Shell tests that rely on it fail with
-  `command not found`; use a background process + `sleep` + `ps` + `kill`
-  instead.
 
 ## 2026-08-15
 
@@ -76,8 +57,6 @@
   batch, a command changed to `/tmp` and subsequent relative-path
   invocations failed with "No such file or directory". Use absolute paths
   (or `pushd`/`popd`) in multi-step test commands.
-- macOS has no GNU `timeout` (`timeout: command not found`). To bound a
-  blocking command, run it in the background, `sleep`, `kill`, then `wait`.
 - Smoke-testing commands with a pipe to `head` reports `head`'s exit code,
   not the command's: a failing operation can look like exit 0. Redirect to a
   file (or use `${PIPESTATUS[0]}`) when the exit code matters.

@@ -20,7 +20,6 @@ export default function (pi: ExtensionAPI) {
     command: "lazygit",
     description: "Open lazygit full-screen over the pi TUI (esc to quit and return)",
     statusText: "lazygit (esc to quit)",
-    installCommand: "brew install lazygit",
     prepare,
   });
 }

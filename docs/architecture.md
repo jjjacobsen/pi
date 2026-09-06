@@ -246,9 +246,8 @@ categories from pi-peon-ping
 
 ## Assets, config, and state
 
-The 33 WAV files live in `assets/peon/` and are played directly with macOS
-`afplay` on Darwin or PipeWire's `pw-play` on Linux (including Omarchy). The
-sound packs are Orc Peon by tonyyont and Human Peasant by
+The 33 WAV files live in `assets/peon/` and are played directly with PipeWire's
+`pw-play`. The sound packs are Orc Peon by tonyyont and Human Peasant by
 thomasKn from OpenPeon CESP, licensed CC-BY-NC-4.0
 
 Config is `<agent_dir>/peon.json`
@@ -292,10 +291,10 @@ is kept only in process memory, so Peon never signals a PID restored from disk
   start the debounce window
 
 Paused or disabled categories do not play. Before a new sound starts, the
-extension sends `SIGTERM` to the recorded player PID. It starts `afplay` on
-macOS or `pw-play` on Linux, passing the configured 0–1 volume to either player.
-The player is detached with ignored standard streams, `unref` is called, and the
-new PID is recorded so voice lines do not overlap. Unsupported platforms and
+extension sends `SIGTERM` to the recorded player PID. It starts `pw-play`,
+passing the configured 0–1 volume to the player. The player is detached with
+ignored standard streams, `unref` is called, and the new PID is recorded so
+voice lines do not overlap. Unsupported platforms and
 spawn failures log one line and do not break pi
 
 Lifecycle sounds run only in sessions with a UI
@@ -322,69 +321,6 @@ are capped at 1 MiB before JSON parsing. The panel shows account information,
 used bars, free percentages, reset times, status colors, extra Codex feature
 limits, and saved reset credits. `[r]` refreshes, `[q]` or Esc closes, duplicate
 refreshes are ignored, and results that arrive after close are discarded
-
-# Vision extension (`extensions/vision.ts`)
-
-## Goal
-
-`describe_image` lets a text-only primary model delegate image analysis to a
-configured image-capable model. For an image-capable primary, the tool is
-hidden and pi sends images to the model natively
-
-## Tool visibility and config
-
-Tool visibility is synchronized on session start and model selection. When an
-image is attached to a text-only primary, the input hook adds a short hint so
-the model knows to call `describe_image`. The hint reports when no vision model
-is configured
-
-Config is `<agent_dir>/vision.json` with `provider`, `model`, `maxDimension`,
-and `jpegQuality`. Defaults are 1568 pixels and quality 85. Dimensions must be
-integers from 1 through 16,384 and quality must be an integer from 1 through
-100. Unknown old keys are ignored. A missing file uses defaults, while invalid
-or unreadable config also uses defaults and logs the error. `/vision show` displays the selection,
-`/vision model` opens a picker of image-capable registry models, and
-`/vision model <provider/model>` validates and saves an exact choice
-
-At each call, the extension resolves the selected model and its credentials
-through pi's model registry. It sends the request through pi-ai's
-provider-neutral `completeSimple` dispatch, preserving provider headers,
-provider API behavior, and an authentication-specific base URL
-
-## Image processing
-
-Paths can be absolute or relative to the current working directory. Source
-files are capped at 64 MiB. Format and dimensions are detected from header
-bytes for PNG, JPEG, GIF, and WebP
-
-An image at or below the configured dimensions and below 10 MiB is sent
-byte-for-byte. Larger images use macOS `sips -Z`
-
-- Opaque input becomes JPEG at the configured quality
-- GIF with transparency stays GIF
-- Transparent PNG and WebP become PNG because `sips` cannot write WebP
-- Temporary output is removed in a `finally` block and is also capped at
-  64 MiB
-
-The provider-neutral request contains a base64 image block and the user prompt,
-with 4,096 maximum output tokens and temperature 0. Normal text is returned,
-or thinking text when the provider returns no normal text
-
-## Timeout, retry, cancellation, and usage
-
-The full tool execution has a 60-second abort controller. It combines config,
-auth resolution, image work, the request, retry delay, and response reading.
-The caller's cancellation aborts the same controller, including `fetch`, file
-reads, and `sips`
-
-Provider adapters can retry once. Other failures return the provider's error
-through the tool result
-
-The delegated response already contains pi-native usage and calculated cost,
-so image analysis appears in session totals without a conversion layer
-
-The compression path requires macOS `sips`. Supported images that do not need
-compression do not call it
 
 # Search extension (`extensions/search.ts`)
 
@@ -499,8 +435,8 @@ report, and usage instead of the full work transcript
 
 Each call creates one session in the current project directory. Sibling tool
 calls can run concurrently with no shared session state. The subagent gets
-`read`, `bash`, `edit`, and `write`, plus `web_search` and `describe_image`
-from an extension filter. The exact tool allowlist is a second control that
+`read`, `bash`, `edit`, and `write`, plus `web_search` from an extension filter.
+The exact tool allowlist is a second control that
 also prevents recursive subagent calls. Skills and project instruction files
 still load
 
