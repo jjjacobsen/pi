@@ -17,9 +17,9 @@ Use the single named session `browser` for every command. Do not create a
 custom profile directory. `--persistent` lets Playwright manage the profile in
 its operating-system cache and preserves browser authentication across restarts
 
-Set `PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium` when opening the browser
-to use Omarchy's system Chromium instead of installing a separate Playwright
-browser or Google Chrome. Set
+Use Omarchy's system Chromium at `/usr/bin/chromium` whenever it is available.
+Before each `open`, set `PLAYWRIGHT_MCP_EXECUTABLE_PATH` only when that executable
+exists so the same command also works on macOS. Set
 `PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright"` so generated snapshots
 and other output never enter the current project
 
@@ -56,8 +56,12 @@ and other output never enter the current project
 Open the managed persistent browser without showing a window
 
 ```bash
+if [ -x /usr/bin/chromium ]; then
+  export PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium
+else
+  unset PLAYWRIGHT_MCP_EXECUTABLE_PATH
+fi
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
-  PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium \
   playwright-cli -s=browser open "https://example.com" --persistent
 ```
 
@@ -108,8 +112,12 @@ playwright-cli -s=browser close
 2. Open the sign-in page in a visible browser
 
 ```bash
+if [ -x /usr/bin/chromium ]; then
+  export PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium
+else
+  unset PLAYWRIGHT_MCP_EXECUTABLE_PATH
+fi
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
-  PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium \
   playwright-cli -s=browser open "https://example.com/login" --persistent --headed
 ```
 
@@ -120,8 +128,12 @@ PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
 
 ```bash
 playwright-cli -s=browser close
+if [ -x /usr/bin/chromium ]; then
+  export PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium
+else
+  unset PLAYWRIGHT_MCP_EXECUTABLE_PATH
+fi
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
-  PLAYWRIGHT_MCP_EXECUTABLE_PATH=/usr/bin/chromium \
   playwright-cli -s=browser open "https://example.com" --persistent
 ```
 

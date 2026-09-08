@@ -174,15 +174,17 @@ adapted from Microsoft's official Playwright CLI skill, but narrows the workflow
 to one named `browser` session, compact accessibility snapshots, and element
 refs
 
-The browser runs Omarchy's system Chromium at `/usr/bin/chromium` headless by
-default through `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, so it needs no separate
-Playwright browser or Google Chrome install. It uses Playwright's `--persistent`
-managed profile. Playwright stores that profile in its operating-system cache,
-so the repo and pi agent directory hold no browser profile. The profile includes
-cookies and browser storage and can preserve authentication after the browser
-closes. The skill sets `PLAYWRIGHT_MCP_OUTPUT_DIR` when it opens a browser, so
-snapshots and other generated output go to `~/.pi/agent/playwright/` instead of
-the current project
+Before opening the browser, the skill checks for `/usr/bin/chromium`. When it
+exists, `PLAYWRIGHT_MCP_EXECUTABLE_PATH` selects that system Chromium, so
+Omarchy needs no separate browser install. Otherwise, the variable is unset and
+Playwright uses its managed Chromium. On macOS, install that browser once with
+`playwright-cli install-browser chromium`. The browser runs headless by default
+and uses Playwright's `--persistent` managed profile. Playwright stores that
+profile in its operating-system cache, so the repo and pi agent directory hold
+no browser profile. The profile includes cookies and browser storage and can
+preserve authentication after the browser closes. The skill sets
+`PLAYWRIGHT_MCP_OUTPUT_DIR` when it opens a browser, so snapshots and other
+generated output go to `~/.pi/agent/playwright/` instead of the current project
 
 When authentication is missing, the agent closes the headless browser and
 opens the same persistent session with `--headed`. Jonah enters credentials,

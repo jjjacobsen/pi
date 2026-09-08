@@ -141,9 +141,10 @@ and element references. It runs headless with one persistent managed profile by
 default, writes generated output under `~/.pi/agent/playwright/`, and uses a
 visible browser only for a manual authentication handoff.
 
-On Omarchy, the skill uses the installed system Chromium at
-`/usr/bin/chromium` through `PLAYWRIGHT_MCP_EXECUTABLE_PATH`. No separate
-Playwright browser or Google Chrome install is needed.
+When `/usr/bin/chromium` exists, the skill uses that system Chromium through
+`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, so Omarchy needs no separate browser install.
+On macOS, Playwright uses its managed Chromium, installed once with
+`playwright-cli install-browser chromium`.
 
 Adapted from the official [Microsoft Playwright CLI skill](https://github.com/microsoft/playwright-cli)
 
