@@ -101,3 +101,7 @@
   TypeScript source tree. Trying to inspect the launcher with `head` printed
   binary data. Fetch source files from the matching `v<version>` tag in the
   official repository instead.
+- Playwright CLI `open` has no direct launch-arguments option. Use a JSON
+  configuration with `browser.launchOptions.args` and pass its absolute path
+  through `--config`. The mise npm package sources are under the hidden
+  `node_modules/.mise/` directory, not `lib/node_modules`

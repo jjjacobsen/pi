@@ -23,6 +23,13 @@ exists so the same command also works on macOS. Set
 `PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright"` so generated snapshots
 and other output never enter the current project
 
+Pass `--config "<skill-dir>/cli.config.json"` on every `open`. Replace
+`<skill-dir>` in the commands below with the absolute directory containing this
+`SKILL.md`. The configuration adds `--test-type` and
+`--hide-crash-restore-bubble` to hide unsupported-flag warnings and the crash
+restore prompt. These flags apply only to the skill browser. `--test-type` also
+skips some quit checks, so unfinished form input can be lost when it closes
+
 ## Rules
 
 - Run headless by default. Do not pass `--headed` unless Jonah explicitly needs
@@ -62,7 +69,8 @@ else
   unset PLAYWRIGHT_MCP_EXECUTABLE_PATH
 fi
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
-  playwright-cli -s=browser open "https://example.com" --persistent
+  playwright-cli -s=browser open "https://example.com" --persistent \
+    --config "<skill-dir>/cli.config.json"
 ```
 
 Use the snapshot path returned by each command, or request a focused view
@@ -118,7 +126,8 @@ else
   unset PLAYWRIGHT_MCP_EXECUTABLE_PATH
 fi
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
-  playwright-cli -s=browser open "https://example.com/login" --persistent --headed
+  playwright-cli -s=browser open "https://example.com/login" --persistent --headed \
+    --config "<skill-dir>/cli.config.json"
 ```
 
 3. Stop and ask Jonah to complete sign-in in the browser window. Do not operate
@@ -134,7 +143,8 @@ else
   unset PLAYWRIGHT_MCP_EXECUTABLE_PATH
 fi
 PLAYWRIGHT_MCP_OUTPUT_DIR="$HOME/.pi/agent/playwright" \
-  playwright-cli -s=browser open "https://example.com" --persistent
+  playwright-cli -s=browser open "https://example.com" --persistent \
+    --config "<skill-dir>/cli.config.json"
 ```
 
 5. Confirm authentication from the accessibility snapshot, then continue

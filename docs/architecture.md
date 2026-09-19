@@ -186,6 +186,11 @@ preserve authentication after the browser closes. The skill sets
 `PLAYWRIGHT_MCP_OUTPUT_DIR` when it opens a browser, so snapshots and other
 generated output go to `~/.pi/agent/playwright/` instead of the current project
 
+Every `open` loads `skills/browser/cli.config.json` through an absolute
+`--config` path. Its launch arguments `--test-type` and
+`--hide-crash-restore-bubble` hide unsupported-flag warnings and the crash
+restore prompt in the skill browser without changing the normal browser
+
 When authentication is missing, the agent closes the headless browser and
 opens the same persistent session with `--headed`. Jonah enters credentials,
 passkeys, and MFA directly in that window. After confirmation, the agent closes

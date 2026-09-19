@@ -139,7 +139,9 @@ only the source line. It does not import, sync, push, or commit
 Controls a Playwright-managed browser through compact accessibility snapshots
 and element references. It runs headless with one persistent managed profile by
 default, writes generated output under `~/.pi/agent/playwright/`, and uses a
-visible browser only for a manual authentication handoff.
+visible browser only for a manual authentication handoff. Its launch configuration
+adds `--test-type` and `--hide-crash-restore-bubble` to hide unsupported-flag
+warnings and the crash restore prompt without changing the normal browser
 
 When `/usr/bin/chromium` exists, the skill uses that system Chromium through
 `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, so Omarchy needs no separate browser install.

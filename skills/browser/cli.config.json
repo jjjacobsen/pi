@@ -1,0 +1,10 @@
+{
+  "browser": {
+    "launchOptions": {
+      "args": [
+        "--test-type",
+        "--hide-crash-restore-bubble"
+      ]
+    }
+  }
+}
