@@ -21,7 +21,7 @@
 //   per-call overrides select an exact model and/or reasoning level.
 // - The transcript is persisted under <agent_dir>/subagents/<ts>_<id>.jsonl
 //   so any run can be resumed (SessionManager.open) or inspected.
-// - The subagent's combined LLM usage rides back on the tool result's usage
+// - The subagent's complete session usage rides back on the tool result's usage
 //   field, so pi includes the spend in the caller's session totals.
 // - Esc aborts the sub-session (signal -> session.abort()); progress
 //   streams to the TUI via onUpdate.
@@ -98,13 +98,17 @@ function findExactModel(modelRuntime, reference) {
   return idMatches.length === 1 ? idMatches[0] : undefined;
 }
 
-// Sum the sub-session's per-assistant-message usage into the shape pi
-// expects on tool results.
+// Sum persisted usage, including tools, compaction, and cache warming.
 function sumUsage(session) {
   let total;
-  for (const message of session.messages) {
-    if (message.role !== "assistant" || !message.usage) continue;
-    const u = message.usage;
+  for (const entry of session.sessionManager.getEntries()) {
+    let u;
+    if (entry.type === "message") {
+      if (entry.message.role === "assistant" || entry.message.role === "toolResult") u = entry.message.usage;
+    } else if (entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary") {
+      u = entry.usage;
+    }
+    if (!u) continue;
     total ??= {
       input: 0,
       output: 0,
@@ -118,6 +122,8 @@ function sumUsage(session) {
     total.cacheRead += u.cacheRead;
     total.cacheWrite += u.cacheWrite;
     total.totalTokens += u.totalTokens;
+    if (u.reasoning !== undefined) total.reasoning = (total.reasoning ?? 0) + u.reasoning;
+    if (u.cacheWrite1h !== undefined) total.cacheWrite1h = (total.cacheWrite1h ?? 0) + u.cacheWrite1h;
     total.cost.input += u.cost.input;
     total.cost.output += u.cost.output;
     total.cost.cacheRead += u.cost.cacheRead;
@@ -234,6 +240,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       else signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
+        signal?.throwIfAborted();
         await session.prompt(params.task, { expandPromptTemplates: false, source: "extension" });
 
         const transcript = session.sessionFile;

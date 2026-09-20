@@ -39,8 +39,9 @@ pins the TypeScript version. `mise x -- hk check --all` must stay green
 The extension replaces the main input editor with a minimal `CustomEditor`
 subclass. Its renderer removes only the inverse-video sequence that pi uses for
 the software block cursor and keeps the cursor marker at the same cell. It
-enables pi's hardware cursor, embeds pi's working indicator in the editor
-border, and sends the standard DECSCUSR steady-bar sequence to the terminal
+enables pi's hardware cursor, embeds pi's working, compaction, summary, and
+retry indicators in the editor border through `embedWorkingStatus`, and sends
+the standard DECSCUSR steady-bar sequence to the terminal
 
 On session shutdown, including `/reload`, it resets the terminal cursor shape
 and restores pi's previous hardware-cursor setting. Non-TUI modes do nothing
@@ -388,7 +389,8 @@ uses the active theme
 ## Data and lifecycle
 
 Session input, output, and cost totals include assistant messages, tool
-results, compactions, and branch summaries. The footer scans restored history
+results, compactions, branch summaries, and standalone usage entries such as
+cache warming. The footer scans restored history
 once, then adds usage only from new entries instead of rescanning on each
 stream update. Context use comes from `ctx.getContextUsage()`. It shows
 `?/window` immediately after compaction until
@@ -464,8 +466,9 @@ or opened later with pi's session manager
 
 Text deltas stream to the tool update display. The rolling display keeps at
 most the trailing 4,000 characters after its buffer grows past 8,000. The
-caller's abort signal calls `session.abort()`, including when it was already
-aborted before session startup. A partial transcript remains on disk, and the
+caller's abort signal calls `session.abort()` during execution. Cancellation
+is checked again after session startup, before sending the prompt. A partial
+transcript remains on disk after an active run is cancelled, and the
 tool reports cancellation after the session stops. Listener removal and
 session disposal use one cleanup path
 
@@ -477,8 +480,10 @@ path. A length stop returns its partial report with an incomplete warning
 The final assistant text is truncated with pi's standard tool-result limit.
 When truncation occurs, the result includes counts and the transcript path.
 Every result also includes the effective model, reasoning level, and
-transcript path. Assistant-message usage across the child session is summed
-and returned so pi includes subagent cost in the parent totals
+transcript path. Usage is summed from persisted assistant messages, tool
+results, compactions, branch summaries, and standalone usage entries, including
+cache warming. This retains usage from before compaction and includes search
+charges in the parent totals
 
 Concurrency is not limited in code. Provider rate limits are the practical
 limit

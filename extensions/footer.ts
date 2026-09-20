@@ -218,7 +218,7 @@ function addEntryUsage(totals, entry): void {
 	if (entry.type === "message") {
 		if (entry.message.role === "assistant") usage = entry.message.usage;
 		else if (entry.message.role === "toolResult") usage = entry.message.usage;
-	} else if (entry.type === "branch_summary" || entry.type === "compaction") {
+	} else if (entry.type === "branch_summary" || entry.type === "compaction" || entry.type === "usage") {
 		usage = entry.usage;
 	}
 	if (!usage) return;

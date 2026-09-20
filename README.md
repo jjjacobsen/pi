@@ -31,8 +31,9 @@ Technical details for every extension live in [docs/architecture.md](docs/archit
 ### bar cursor - terminal bar cursor in the editor
 
 Replaces pi's inverted software block with a steady hardware bar cursor while
-the input editor is active. It keeps pi's working indicator in the editor
-border. The terminal must support the standard DECSCUSR cursor-shape sequence
+the input editor is active. It keeps pi's working, compaction, summary, and
+retry indicators in the editor border. The terminal must support the standard
+DECSCUSR cursor-shape sequence
 
 ### commit - AI commit messages
 
@@ -71,7 +72,8 @@ The custom footer shows your workspace, git branch and status (`↑N ↓N` upstr
 ahead / behind commits and `*N ?N +N` worktree-changed / untracked / staged
 counters, polled from `git status`), an icon and count when Playwright CLI
 browsers are open, token and cost stats, and
-a context color set on absolute tokens (warning ~100k, error ~200k). `/footer`
+a context color set on absolute tokens (warning ~100k, error ~200k). Totals
+include cache-warming usage. `/footer`
 switches between it and the built-in footer.
 The design takes inspiration from opencode and omp
 (can1357/oh-my-pi)
@@ -92,9 +94,9 @@ one turn to run tasks in parallel. Model and reasoning inherit independently
 from the caller unless a call sets either optional override. Tasks are passed
 literally, and failed or empty final responses fail the tool with the transcript
 path. Its full transcript is saved under the agent dir
-(`~/.pi/agent/subagents/`), is resumable, and its usage counts toward pi's
-session totals. See [docs/architecture.md](docs/architecture.md) for the
-implementation details
+(`~/.pi/agent/subagents/`), is resumable, and its complete usage, including
+tools, compaction, and cache warming, counts toward pi's session totals. See
+[docs/architecture.md](docs/architecture.md) for the implementation details
 
 ## Adding a new extension
 

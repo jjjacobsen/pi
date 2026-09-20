@@ -105,3 +105,10 @@
   configuration with `browser.launchOptions.args` and pass its absolute path
   through `--config`. The mise npm package sources are under the hidden
   `node_modules/.mise/` directory, not `lib/node_modules`
+
+## 2026-09-20 — pi 0.86.0 dependency scripts
+
+- The exact npm upgrade reported unapproved install scripts for `@google/genai`,
+  `protobufjs`, and `esbuild`. Installation completed without approving them.
+  Script approvals stayed unchanged. The SDK import and full repository
+  checks passed without those scripts

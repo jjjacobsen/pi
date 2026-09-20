@@ -103,6 +103,7 @@ async function askModel(model, prompt, cwd, signal) {
   const onAbort = () => void session.abort();
   signal?.addEventListener("abort", onAbort);
   try {
+    signal?.throwIfAborted();
     const pending = session.prompt(prompt);
     if (signal?.aborted) onAbort();
     await pending;
@@ -481,10 +482,11 @@ function sessionTail(ctx) {
   try {
     const entries = ctx.sessionManager?.getEntries?.() ?? [];
     const lines = [];
-    for (const entry of entries.slice(-12)) {
-      if (entry?.type !== "message") continue;
-      const role = entry.message?.role;
-      if (role !== "user" && role !== "assistant") continue;
+    const messages = entries.filter((entry) =>
+      entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"),
+    );
+    for (const entry of messages.slice(-12)) {
+      const role = entry.message.role;
       const content = entry.message?.content;
       let text = "";
       if (typeof content === "string") text = content;
