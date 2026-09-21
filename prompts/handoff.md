@@ -1,6 +1,9 @@
 ---
 description: Write the current session context to handoff.md
+argument-hint: "[additional instructions]"
 ---
+$@
+
 Write a concise but complete handoff document to `handoff.md` in the project root so a new session can continue the work without relying on this conversation
 
 Include:

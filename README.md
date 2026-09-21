@@ -109,7 +109,9 @@ tools, compaction, and cache warming, counts toward pi's session totals. See
 ### handoff - save session context
 
 `/handoff` writes the current goal, state, decisions, validation, blockers, and
-next steps to `handoff.md` so a new session can continue the work
+next steps to `handoff.md` so a new session can continue the work. Any text
+following `/handoff` appears first, followed by a blank line and the handoff
+instructions, the same as `/q`
 
 ### q - question only
 
