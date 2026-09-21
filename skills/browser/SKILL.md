@@ -20,11 +20,25 @@ Select its fast model with `/browser-model` and its thinking level with
 observable success conditions. The worker sees no session
 history. Check its returned status and evidence, not just whether the tool ran
 
+`/browser-mode jev` enables experimental bounded action selection and requires
+`TYPESAFE_API_KEY`. `/browser-mode fast` restores the default fast-worker-only
+mode. The tool's `mode` parameter overrides the saved mode for a comparison.
+Supply known, nonsecret form values in the tool's `inputs` object, keyed by
+field meaning. Strings are copied exactly and booleans describe checkbox states.
+Never put credentials in `inputs`. Jev selects fields and values from current
+snapshot candidates without a generative call. The fast model supplies missing
+text, handles uncertain decisions, and produces final reports. High-confidence
+completion switches to read-only verification. Confidence is not proof of
+safety. In Jev mode, page data and supplied inputs also go to TypeSafe
+
 Use this skill's direct commands for manual login, user-approved final actions,
 and interactions the worker does not support. The worker closes its browser
 before returning, including when it needs login or approval. Never run direct
 commands while the worker is active. After a login handoff, close the browser
-before delegating again. Do not automatically retry a failed or uncertain
+before delegating again by default. If Jonah requests a visible session, use
+`visible: true` to leave it open and, after his explicit login handoff, add
+`reuseSession: true`. Do not run direct commands during that worker task.
+Do not automatically retry a failed or uncertain
 consequential action
 
 ## Rules
@@ -73,7 +87,9 @@ a fixed executable path or silently fall back to a bundled browser
 Replace `<skill-dir>` with this skill's absolute directory. Use the same headed
 setting on **every** command, including `close`. Changing or omitting launch
 settings can restart the browser and lose the page. The helper supplies those
-settings consistently without relying on shell exports from earlier calls
+settings consistently without relying on shell exports from earlier calls.
+It suppresses Chromium's extra startup New Tab page and retains additional
+`AGENT_BROWSER_ARGS`
 
 ```bash
 agent-browser session list --json

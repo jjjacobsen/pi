@@ -206,7 +206,9 @@ session. Model changes clamp the saved thinking level to the model's support.
 Without a saved thinking selection, the lowest supported level is used
 
 Requests use the extension context's model registry, including its provider
-authentication and the selected thinking level
+authentication and the selected thinking level. Each worker supplies its tool-call
+ID as `sessionId`, which lets the provider attach required session headers,
+including OpenCode Go's `x-opencode-session`
 
 The worker has an isolated in-memory conversation and two tools: one bounded
 browser action and a structured finish report. It has no coding tools, shell,
@@ -214,16 +216,31 @@ eval, screenshots, coordinates, or WebMCP invocation. Code validates each tool
 call and maps it to positional CLI arguments through `skills/browser/browser.sh`.
 Only HTTP(S) navigation, snapshot/read, ref-based interactions, limited keyboard
 keys, scrolling, and text waits are available. Navigation and page-changing
-actions return the current URL and a fresh snapshot. Interactive-only snapshots
-help with large pages. Each browser response is capped at 12 KB or 200 lines
+actions return the current URL and a fresh full snapshot with link destinations.
+The host sends an action and its snapshot through one CLI `batch --bail` call,
+using JSON stdin to preserve exact argument strings, including empty values.
+The snapshot's `origin` supplies the full current URL, avoiding `get url` calls.
+JSON is parsed before limiting model-visible output to 12 KB or 200 lines.
+Interactive-only snapshots remain available for large pages
 
-One response may contain exactly one tool call. The default limit is 20 model
-turns, configurable up to 40 per task. A five-minute work deadline and 45-second
+Batch errors stop the task. Earlier actions may have run and are not rolled
+back. The CLI can retry transport failures, so batch does not guarantee
+exactly-once execution. Do not blindly repeat uncertain actions
+
+One response may contain exactly one tool call. The default limit is 20 decision
+steps, configurable up to 40 per task. A five-minute work deadline and 45-second
 CLI timeouts bound execution. An independent cleanup attempt closes the browser
 after completion, failure, or cancellation. Cleanup failures are reported, not
 hidden. A process-local busy flag rejects concurrent worker calls. The worker
 also refuses an existing `browser` session rather than taking it over. This is
 not a cross-process lock. Browser tasks remain serial by local workflow policy
+
+An explicit `visible: true` request uses headed Chromium and leaves the browser
+open, including after failure, for user viewing or login. `reuseSession: true`
+requires visible mode and an explicit user handoff of the existing session.
+The worker refuses reuse if that session is absent. Default calls still reject
+existing sessions and close their own browser. These options do not permit
+concurrent workers or direct skill commands during a worker task
 
 The worker returns `complete`, `blocked`, `needs_login`, or `needs_approval`.
 Execution failures return explicit `failed` or `cancelled` reports with any
@@ -234,18 +251,68 @@ boundary or independent verification. Instructions require stopping before
 consequential final actions and treating page content as untrusted
 
 For login, use the browser skill's visible handoff and then delegate again with
-the same persistent profile. The worker never opens a login window or collects
-credentials itself. The main agent handles user approval and unsupported steps
+the same persistent profile. The worker never collects credentials itself. The main agent handles user approval and unsupported steps
+
+## Experimental Jev selection
+
+`/browser-mode fast|jev` saves the mode beside the model and thinking settings.
+The tool's optional `mode` overrides it for one task. The default is `fast`.
+Jev mode requires `TYPESAFE_API_KEY` and sends task, URL, snapshot, candidates,
+supplied values, and recent action history to TypeSafe's `/v1/systemone` endpoint
+
+`extensions/lib/browser-jev.ts` builds at most 255 choices from snapshot refs:
+click, checkbox toggle, fill target/value, select option, body read, scroll down,
+and delegate. Snapshot attribute order does not affect ref detection.
+Disabled elements are excluded. The pinned `jev-1.13.0` model selects a choice.
+Selections below an experimental 0.9 confidence cutoff, or explicit delegation,
+go to the fast model. Unsupported controls remain available through that model
+
+The optional `inputs` object maps field meanings to exact nonsecret strings or
+checkbox booleans. Code pairs supplied strings with candidate fields for Jev
+to select, and offers visible select options. Jev never generates text. If no
+concrete fill candidate fits, the fast model gets only `fill_value` and `finish`,
+so it cannot change the selected target. Normal delegation restores `act` and
+`finish`. Direct actions and observations are also added to its conversation.
+The last six actions go to Jev, with past observations limited to 3,000 characters
+
+The same TypeSafe request asks whether the current evidence meets the goal.
+A completion probability of at least 0.9 switches the remaining work to
+read/snapshot and finish only. The fast model cannot perform another mutation
+in that phase. If evidence is insufficient, it must report blocked
+
+Before a Jev-selected action, a fresh snapshot must show the same URL and the
+same selected ref subtree, including its state and link destination. Unrelated
+changes such as a clock do not reject the action. A changed or missing target
+skips the action and delegates the next step. Read/scroll checks only the URL.
+This is not an atomic page lock
+
+TypeSafe requests have a 30-second timeout within the task deadline. API or
+response-validation errors fail the task explicitly rather than silently
+switch modes. The confidence cutoff is not calibrated for this browser workflow
+and is not a security boundary. Login, approval, and completion still depend on
+model judgment. All normal final reports come from the fast model
 
 ## Measurement
 
-Tool results include elapsed time through cleanup, model request time, browser
-command time, attempted action count, model-turn count, and combined model
-usage. Startup inspection and other overhead account for any difference between
-elapsed time and the two component times. Startup, snapshots, and cleanup count
+Tool results include elapsed time through cleanup, fast-model and Jev request
+time, browser command time, attempted action count, decision steps, model-turn
+count, and combined usage. Jev details include model version, selected action,
+confidence, completion probability, accepted selections, fill-generation calls,
+delegated steps, skipped stale actions, and estimated Jev cost.
+
+`firstSnapshotMs` and `lastObservationMs` locate browser observations.
+`completionDetectedMs` records Jev's preliminary completion judgment, not proven
+success. `completionObservationMs` is the last observation before a final
+`complete` report and is null for other outcomes. `reportMs` covers the read-only
+verification phase, or the final model call when no separate phase was entered.
+`cleanupMs` is separate from reporting. All offsets start at worker execution
+and include browser startup. For benchmarks, record the actual goal state from
+the fixture or application independently of these model-based timings Startup inspection and other overhead
+account for any difference between elapsed time and the component times. Startup, snapshots, and cleanup count
 in browser time but not worker action count. Nested usage feeds pi's normal
-session totals. Costs are catalog estimates and are not actual subscription
-charges. There is no separate trace archive or metrics database
+session totals. Fast-model costs are catalog estimates. Jev cost uses the
+published input price of $0.042 per million tokens, with free output. These are
+estimates, not billed charges. There is no separate trace archive or metrics database
 
 Use identical tasks and observable completion criteria when comparing models.
 Check page outcomes separately from the worker's completion claim. Include
@@ -254,7 +321,10 @@ reasoning. Simple local pages measure overhead, not general website reliability
 
 This loop uses pi's extension SDK directly. The delegation pattern follows this
 repository's subagent extension, with agent-browser as the execution backend.
-Jev selection remains a later step
+Jev selection is adapted from
+[TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling).
+Supplied inputs and parallel completion judgment follow
+[OpenCode's Jev loop](https://github.com/anomalyco/opencode/blob/021f8b3202a8027b684e43a2e673c269becaf156/packages/plugin-browser/src/use.ts)
 
 # Browser skill (`skills/browser/SKILL.md`)
 
@@ -264,7 +334,9 @@ The `browser` skill controls agent-browser through Bash, adapted from
 [Vercel's core skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core).
 Its `browser.sh` helper uses the named session `browser`, resolves
 system Chromium through PATH or `AGENT_BROWSER_EXECUTABLE_PATH`, and repeats the
-same launch settings on every command. Omitting settings between commands can
+same launch settings on every command. `--no-startup-window` prevents Chromium's
+extra New Tab page, leaving agent-browser to create the task tab. Additional
+`AGENT_BROWSER_ARGS` are retained. Omitting settings between commands can
 restart the browser. There is no fixed executable path or bundled browser
 fallback. Compact accessibility snapshots and element refs drive interaction
 

@@ -43,16 +43,33 @@ selects it directly. `/browser-thinking` selects a supported thinking level, or
 use `/browser-thinking low` directly. Neither changes the main session settings.
 The `browser` tool takes a starting URL and a
 self-contained task, then runs a bounded headless worker with the existing
-persistent automation profile
+persistent automation profile. Startup opens only the task tab, without an extra
+New Tab page. For a user-requested viewing session, pass
+`visible: true` to show and leave the browser open. After an explicit login
+handoff, also pass `reuseSession: true` to reuse that visible session
 
 The worker uses text and accessibility refs only. It has no shell, eval,
 screenshots, or coordinate controls. It stops for login, approval, or unsupported
 steps. Use the browser skill for those handoffs. Do not run browser tasks in parallel
 
-Each result includes status, page evidence, total/model/browser time, action and
-model-turn counts, tokens, and estimated model cost. Usage counts toward pi's
-session totals. Cost is a catalog estimate, not a subscription bill. Page data
-is sent to the selected model provider. No Jev integration is included yet
+`/browser-mode jev` enables experimental bounded action selection with Jev
+and requires `TYPESAFE_API_KEY`. `/browser-mode fast` uses the fast worker alone
+and is the default. The tool's `mode` parameter can override this for comparison.
+Jev selects current-page actions at a 0.9 confidence cutoff. Supply exact,
+nonsecret form values through `inputs`, keyed by field meaning, such as
+`{"Full name": "Morgan Example", "Online attendance": true}`. Jev can use these
+values without a text-generation call. The fast model handles missing values,
+uncertainty, and final reports. High-confidence completion switches to read-only
+verification. The cutoff and approval instructions are not a security guarantee
+
+Each result includes status, page evidence, total/model/browser/Jev time,
+completion detection, report and cleanup timing, action and decision counts,
+tokens, and estimated cost. Completion timing is a model judgment, not an
+independent success check. Usage counts toward
+pi's session totals. Cost is an estimate, not a bill. Page data goes to the
+selected model provider and, in Jev mode, TypeSafe. The Jev pattern is adapted
+from [TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling)
+and [OpenCode's Jev loop](https://github.com/anomalyco/opencode/blob/021f8b3202a8027b684e43a2e673c269becaf156/packages/plugin-browser/src/use.ts)
 
 ### commit - AI commit messages
 
