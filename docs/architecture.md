@@ -222,13 +222,16 @@ The host sends an action and its snapshot through one CLI `batch --bail` call,
 using JSON stdin to preserve exact argument strings, including empty values.
 The snapshot's `origin` supplies the full current URL, avoiding `get url` calls.
 JSON is parsed before limiting model-visible output to 12 KB or 200 lines.
-Interactive-only snapshots remain available for large pages
+Model-visible observations focus on relevant controls and evidence while the
+host keeps the full tree for target checks
 
 Batch errors stop the task. Earlier actions may have run and are not rolled
 back. The CLI can retry transport failures, so batch does not guarantee
 exactly-once execution. Do not blindly repeat uncertain actions
 
-One response may contain exactly one tool call. The default limit is 20 decision
+The helper must return exactly one valid tool call. A response with the wrong
+call count or invalid arguments gets one repair before execution only. This never retries an
+executed action. The default limit is 20 decision
 steps, configurable up to 40 per task. A five-minute work deadline and 45-second
 CLI timeouts bound execution. An independent cleanup attempt closes the browser
 after completion, failure, or cancellation. Cleanup failures are reported, not
@@ -256,13 +259,14 @@ the same persistent profile. The worker never collects credentials itself. The m
 
 ## WebMCP with DOM fallback
 
-WebMCP is automatic in both modes, using agent-browser's experimental native
+WebMCP is automatic, using agent-browser's experimental native
 support. `extensions/lib/browser-webmcp.ts` reads discovery updates from every
 batch entry, including `open`, not only the final snapshot. Summaries carry
 names, descriptions, origins, and frame IDs. No update preserves the existing
-catalog. A changed URL or a discovery update invalidates inspected metadata
+catalog. An unchanged URL and catalog preserve inspected metadata. A changed
+URL or catalog invalidates it
 
-The fast model prefers suitable page tools and uses `webmcp_inspect` to fetch a
+The helper prefers suitable page tools and uses `webmcp_inspect` to fetch a
 selected tool's full schema. Inspection caches only complete, bounded metadata.
 `webmcp_invoke` requires that inspection, a fresh page observation, and a fresh
 matching tool record identified by name and frame ID. Parameters are checked
@@ -270,8 +274,8 @@ with the SDK validator. Unrecognized schema keywords, missing tools, or stale
 metadata cannot be invoked and explicitly direct the worker back to DOM or
 inspection. No arbitrary tool name or schema becomes a worker tool definition
 
-In Jev mode, a WebMCP candidate delegates tool inspection and argument selection
-to the fast model. DOM candidates remain available. Invocations use a 15-second
+A Jev WebMCP choice sends tool inspection and argument selection
+to the helper. DOM candidates remain available. Invocations use a 15-second
 wait limit within the normal task deadline and return a fresh snapshot. The
 worker records invocation identity and status in `webmcpInvocations`
 
@@ -289,76 +293,82 @@ are not atomic and do not prove the implementation behind a tool is safe
 
 Uses [agent-browser's native WebMCP interface](https://agent-browser.dev/webmcp)
 
-## Experimental Jev selection
+## Experimental Jev-first selection
 
-`/browser-mode fast|jev` saves the mode beside the model and thinking settings.
-The tool's optional `mode` overrides it for one task. The default is `fast`.
-Jev mode requires `TYPESAFE_API_KEY` and sends task, URL, snapshot, candidates,
-supplied values, and recent action history to TypeSafe's `/v1/systemone` endpoint
+Every worker requires `TYPESAFE_API_KEY`. `extensions/lib/browser-jev.ts` sends
+the task, URL, focused snapshot, candidates, supplied inputs, and recent history
+to TypeSafe's `/v1/systemone` endpoint with `jev-1.13.0`. One request asks
+speculative questions for operation, target, and value selection, plus completion
+and separate per-candidate relevance and handoff judgments
 
-`extensions/lib/browser-jev.ts` builds at most 255 choices from snapshot refs:
-click, checkbox toggle, fill target/value, select option, body read, scroll down,
-and delegate. Snapshot attribute order does not affect ref detection.
-Disabled elements are excluded. The pinned `jev-1.13.0` model selects a choice.
-Selections below an experimental 0.9 confidence cutoff, or explicit delegation,
-go to the fast model. Unsupported controls remain available through that model
+There is no operation or target-confidence floor. Several next actions can be valid.
+For a DOM action, relevance must be at least 0.8 and handoff probability at most
+0.1. Fill-value confidence must be at least 0.8. These experimental routing
+thresholds are not a safety guarantee or authorization boundary. Uncertain
+choices go to the helper. API and response-validation errors fail the task.
+TypeSafe requests have a 30-second timeout within the task deadline
 
-The optional `inputs` object maps field meanings to exact nonsecret strings or
-checkbox booleans. Code pairs supplied strings with candidate fields for Jev
-to select, and offers visible select options. Jev never generates text. If no
-concrete fill candidate fits, the fast model gets only `fill_value` and `finish`,
-so it cannot change the selected target. Normal delegation restores `act` and
-`finish`. Direct actions and observations are also added to its conversation.
-The last six actions go to Jev, with past observations limited to 3,000 characters
+DOM candidates are capped at 48, with omissions reported. Candidates include
+ref-based interactions, exact-ref inspection, reads, scrolling, and short waits
+after interaction. Query controls can use Enter after exact-ref focus. WebMCP
+and delegation remain available. Disabled and known protected fields are excluded.
+Read-only text fields are not filled, but can still open a picker. For unfamiliar comboboxes and
+contenteditable regions, inspect attributes on the exact ref before filling.
+Do not infer editability from a role or join controls by their labels. Native
+dropdown options use select. Custom listbox options use click
 
-The same TypeSafe request asks whether the current evidence meets the goal.
-A completion probability of at least 0.9 switches the remaining work to
-read/snapshot and finish only. The fast model cannot perform another mutation
-in that phase. If evidence is insufficient, it must report blocked
+`inputs` maps field meanings to exact nonsecret strings or desired toggle
+booleans. Jev selects supplied strings and visible options without generating,
+changing, or combining text. If text is missing for a selected field, the helper
+gets only `fill_value` and `finish`, with a small field context. It cannot change
+the target. Normal delegation allows a bounded action or finish. Both models
+receive a compact action history and the last six observations, each capped at
+1,500 characters. The field helper gets shorter action history and recent read
+evidence. After two identical actions with no observed change, the helper must
+choose a different action or stop. The host rejects a third identical action
+against that unchanged page state
 
-Before a Jev-selected action, a fresh snapshot must show the same URL and the
-same selected ref subtree, including its state and link destination. Unrelated
-changes such as a clock do not reject the action. A changed or missing target
-skips the action and delegates the next step. Read/scroll checks only the URL.
-This is not an atomic page lock
+Focused observations retain useful controls, evidence, and ancestors without
+changing native refs. The host retains the full tree for identity checks.
+Before any ref action, including a helper action, a fresh snapshot must have the
+same URL and target signature. Signatures include target state, ancestors,
+nearby heading, and row or list-item record context. Ambiguous refs are skipped,
+as are missing or changed targets. These checks are not an atomic page lock
 
-TypeSafe requests have a 30-second timeout within the task deadline. API or
-response-validation errors fail the task explicitly rather than silently
-switch modes. The confidence cutoff is not calibrated for this browser workflow
-and is not a security boundary. Login, approval, and completion still depend on
-model judgment. All normal final reports come from the fast model
+A completion probability of at least 0.9 starts final read-only review. The
+helper uses the fresh observation and may make at most two extra read or snapshot
+calls before finishing. No mutations or WebMCP invocations are available in this
+phase. Insufficient evidence requires a blocked report. All normal final reports
+come from the helper, not the completion detector
 
 ## Measurement
 
-Tool results include elapsed time through cleanup, fast-model and Jev request
-time, browser command time, attempted action count, decision steps, model-turn
-count, and combined usage. Jev details include model version, selected action,
-confidence, completion probability, accepted selections, fill-generation calls,
-delegated steps, skipped stale actions, and estimated Jev cost.
+Results include elapsed, helper, Jev, and browser time, browser call and snapshot
+counts, attempted actions, decision steps, model turns, protocol repairs, and
+combined usage. Structured decisions record the route and reason, operation,
+target and value confidence, relevance, handoff and completion probabilities,
+accepted selections, question counts, request size, and candidate omissions.
+The thresholds above explain these routing decisions. Fill-generation calls,
+delegated steps, stale and repeat skips, and WebMCP invocation identity and status are also
+recorded
 
-`firstSnapshotMs` and `lastObservationMs` locate browser observations.
-`completionDetectedMs` records Jev's preliminary completion judgment, not proven
-success. `completionObservationMs` is the last observation before a final
-`complete` report and is null for other outcomes. `reportMs` covers the read-only
-verification phase, or the final model call when no separate phase was entered.
-`cleanupMs` is separate from reporting. All offsets start at worker execution
-and include browser startup. For benchmarks, record the actual goal state from
-the fixture or application independently of these model-based timings Startup inspection and other overhead
-account for any difference between elapsed time and the component times. Startup, snapshots, and cleanup count
-in browser time but not worker action count. Nested usage feeds pi's normal
-session totals. Fast-model costs are catalog estimates. Jev cost uses the
-published input price of $0.042 per million tokens, with free output. These are
-estimates, not billed charges. There is no separate trace archive or metrics database
+`firstSnapshotMs` and `lastObservationMs` locate observations.
+`completionDetectedMs` marks Jev's preliminary judgment, not proven success.
+`completionObservationMs` is the last observation before a final `complete`
+report and is null otherwise. `reportMs` covers read-only review or the final
+helper call. `cleanupMs` is separate. Offsets include startup. Browser time
+includes startup, snapshots, and cleanup, not just worker actions. Check actual
+page outcomes separately from model judgments
 
-Use identical tasks and observable completion criteria when comparing models.
-Check page outcomes separately from the worker's completion claim. Include
-failed runs and report reasoning levels, since some models cannot disable
-reasoning. Simple local pages measure overhead, not general website reliability
+Usage feeds pi's session totals. Helper costs use the model catalog. Jev uses
+the published input price of $0.042 per million tokens, with free output.
+These are estimates, not billed charges. There is no separate trace archive or
+metrics database
 
-This loop uses pi's extension SDK directly. The delegation pattern follows this
-repository's subagent extension, with agent-browser as the execution backend.
-Jev selection is adapted from
-[TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling).
+The worker uses pi's extension SDK and agent-browser. Delegation follows this
+repository's subagent extension. Speculative routing draws from
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast/tree/1231850a0bf1a0c0341fe408ef1668dbbfdfac46)
+and [TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling).
 Supplied inputs and parallel completion judgment follow
 [OpenCode's Jev loop](https://github.com/anomalyco/opencode/blob/021f8b3202a8027b684e43a2e673c269becaf156/packages/plugin-browser/src/use.ts)
 

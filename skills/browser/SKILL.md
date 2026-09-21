@@ -15,21 +15,19 @@ Use agent-browser through `browser.sh` beside this file. Adapted from
 ## Delegation
 
 When the `browser` tool is available, prefer it for self-contained website tasks.
-Select its fast model with `/browser-model` and its thinking level with
+Select its helper model with `/browser-model` and its thinking level with
 `/browser-thinking`, then supply the starting URL, full goal, constraints, and
 observable success conditions. The worker sees no session
 history. Check its returned status and evidence, not just whether the tool ran
 
-`/browser-mode jev` enables experimental bounded action selection and requires
-`TYPESAFE_API_KEY`. `/browser-mode fast` restores the default fast-worker-only
-mode. The tool's `mode` parameter overrides the saved mode for a comparison.
-Supply known, nonsecret form values in the tool's `inputs` object, keyed by
-field meaning. Strings are copied exactly and booleans describe checkbox states.
-Never put credentials in `inputs`. Jev selects fields and values from current
-snapshot candidates without a generative call. The fast model supplies missing
-text, handles uncertain decisions, and produces final reports. High-confidence
-completion switches to read-only verification. Confidence is not proof of
-safety. In Jev mode, page data and supplied inputs also go to TypeSafe
+Every worker uses Jev first and requires `TYPESAFE_API_KEY`. Supply known,
+nonsecret form values in `inputs`, keyed by field meaning. Strings are copied
+exactly and booleans describe desired checkbox states. Never include credentials.
+Jev selects operations, targets, and supplied values without generating text.
+The helper supplies missing text for a fixed field, handles uncertain decisions,
+and gives the final report. Completion detection starts read-only verification
+with at most two extra evidence reads. Routing is experimental, not a safety
+guarantee. Page data and supplied inputs go to TypeSafe and the helper provider
 
 Use this skill's direct commands for manual login, user-approved final actions,
 and interactions the worker does not support. The worker closes its browser
@@ -43,10 +41,11 @@ consequential action
 
 ## WebMCP
 
-The delegated worker automatically prefers suitable discovered WebMCP tools in
-both modes, with DOM interaction elsewhere. It inspects the full schema and
-checks fresh metadata before invoking. Jev delegates page-tool arguments to
-the fast model. No extra setup is needed with the current managed Chromium
+The delegated worker prefers suitable discovered WebMCP tools, with DOM
+interaction elsewhere. Jev sends tool inspection and argument selection to the
+helper. It inspects the full schema and checks fresh metadata before invocation.
+An unchanged URL and catalog preserve inspection, but do not remove the fresh
+metadata check. No extra setup is needed with the current managed Chromium
 
 For direct skill work, inspect a discovered tool before invocation:
 

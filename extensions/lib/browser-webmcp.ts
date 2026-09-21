@@ -59,8 +59,9 @@ export function createBrowserWebMCP(execute: (command: string[]) => Promise<Entr
     for (const entry of entries) {
       const discovery = entry.result?.webmcp;
       if (!discovery) continue;
-      inspected.clear();
-      catalog = discovery.status === "ready" && Array.isArray(discovery.tools) ? discovery.tools.slice(0, 16) : [];
+      const next = discovery.status === "ready" && Array.isArray(discovery.tools) ? discovery.tools.slice(0, 16) : [];
+      if (JSON.stringify(next) !== JSON.stringify(catalog)) inspected.clear();
+      catalog = next;
       discoveryStatus = discovery.status === "ready" ? "Native discovery" : "WebMCP unavailable. Use DOM";
     }
   }
@@ -116,7 +117,7 @@ export function createBrowserWebMCP(execute: (command: string[]) => Promise<Entr
       const stale = (text = "WebMCP metadata is stale or not inspected. Inspect again or use DOM") => ({ executed: false, text });
       if (!cached || cached.url !== url) return stale();
       const fresh = await list(name, frameId);
-      if (!fresh.tool || cached.url !== url || JSON.stringify(fresh.tool) !== cached.serialized) {
+      if (!fresh.tool || inspected.get(key) !== cached || cached.url !== url || JSON.stringify(fresh.tool) !== cached.serialized) {
         inspected.delete(key);
         return stale(fresh.tool ? undefined : fresh.text);
       }

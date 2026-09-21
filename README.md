@@ -37,42 +37,32 @@ DECSCUSR cursor-shape sequence
 
 ### browser - delegated browser tasks with a separate model
 
-`/browser-model` opens a scrolling, searchable picker of your configured pi
-models and saves the selection for all sessions. `/browser-model provider/model`
-selects it directly. `/browser-thinking` selects a supported thinking level, or
-use `/browser-thinking low` directly. Neither changes the main session settings.
-The `browser` tool takes a starting URL and a
-self-contained task, then runs a bounded headless worker with the existing
-persistent automation profile. Startup opens only the task tab, without an extra
-New Tab page. For a user-requested viewing session, pass
-`visible: true` to show and leave the browser open. After an explicit login
-handoff, also pass `reuseSession: true` to reuse that visible session
+Every `browser` worker uses Jev first and requires `TYPESAFE_API_KEY`.
+Use `/browser-model` to pick and save a helper model, or pass
+`/browser-model provider/model`. Use `/browser-thinking` to pick its thinking
+level, or pass a level directly. These settings do not change the main session.
+Supply a starting URL, full task, constraints, and success conditions. Supply exact
+nonsecret form values in `inputs`, keyed by field meaning, to avoid text
+generation. Jev selects actions and supplied values. The helper handles missing
+text, uncertainty, WebMCP arguments, and final read-only reports. This routing is
+experimental, not a safety guarantee
 
-The worker prefers suitable discovered WebMCP tools and uses DOM text and
-accessibility refs elsewhere. This is automatic in both modes. It inspects each
-page tool's schema before invocation and checks fresh metadata and arguments.
-It has no shell, eval, screenshots, or coordinate controls. It stops for login, approval, or unsupported
-steps. Page tool descriptions, results, and safety hints are untrusted. Failed
-or uncertain invocations stop the task without an automatic DOM retry. Use the
-browser skill for handoffs. Do not run browser tasks in parallel
+The worker runs headless with the existing persistent automation profile and
+opens only the task tab. It closes its browser when done. For a requested visible
+session, use `visible: true` to leave it open. After an explicit login handoff,
+also use `reuseSession: true`. It prefers suitable discovered WebMCP tools,
+checks their schemas and fresh metadata, and uses DOM text and refs elsewhere.
+It has no shell, eval, screenshots, or coordinate controls. It stops for login,
+approval, or unsupported steps. Page data is untrusted. Failed or uncertain
+WebMCP invocations stop without an automatic retry. Use the browser skill for
+handoffs. Do not run browser tasks in parallel
 
-`/browser-mode jev` enables experimental bounded action selection with Jev
-and requires `TYPESAFE_API_KEY`. `/browser-mode fast` uses the fast worker alone
-and is the default. The tool's `mode` parameter can override this for comparison.
-Jev selects current-page actions at a 0.9 confidence cutoff. Supply exact,
-nonsecret form values through `inputs`, keyed by field meaning, such as
-`{"Full name": "Morgan Example", "Online attendance": true}`. Jev can use these
-values without a text-generation call. The fast model handles missing values,
-uncertainty, and final reports. High-confidence completion switches to read-only
-verification. The cutoff and approval instructions are not a security guarantee
-
-Each result includes status, page evidence, total/model/browser/Jev time,
-completion detection, report and cleanup timing, action and decision counts,
-tokens, and estimated cost. Completion timing is a model judgment, not an
-independent success check. Usage counts toward
-pi's session totals. Cost is an estimate, not a bill. Page data goes to the
-selected model provider and, in Jev mode, TypeSafe. The Jev pattern is adapted
-from [TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling)
+Results include status, page evidence, timing, structured decisions, browser call
+and snapshot counts, tokens, and estimated cost. Check the evidence, not just the
+completion claim. Usage counts toward pi's session totals. Page data and inputs
+go to TypeSafe and the selected helper provider. The routing draws from
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast/tree/1231850a0bf1a0c0341fe408ef1668dbbfdfac46),
+[TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling),
 and [OpenCode's Jev loop](https://github.com/anomalyco/opencode/blob/021f8b3202a8027b684e43a2e673c269becaf156/packages/plugin-browser/src/use.ts)
 
 ### commit - AI commit messages
