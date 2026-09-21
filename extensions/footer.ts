@@ -2,7 +2,7 @@
  * /footer - custom status footer (opencode-style, minimal)
  *
  * Replaces pi's built-in footer with a cleaner two-line layout:
- *   line 1:  π  ~/Projects/pi  main ↑1 *1 ?2 +1  󰖟 1    (workspace, git and Playwright status)
+ *   line 1:  π  ~/Projects/pi  main ↑1 *1 ?2 +1  󰖟 1    (workspace, git and browser status)
  *   line 2:  ↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   ...   deepseek-v4-flash • max
  *
  * vs the built-in footer this drops the R (cache read), W (cache write),
@@ -63,9 +63,9 @@ const ERROR_CTX_FRACTION = 0.9;
 // How often to re-run `git status --porcelain` so the changed-file counters
 // stay fresh while the footer is showing (~10-40ms per spawn on a normal repo).
 const GIT_STATUS_POLL_MS = 3000;
-// `playwright-cli list` starts Node, so poll less often than git while still
-// making forgotten headless browsers visible quickly.
-const PLAYWRIGHT_STATUS_POLL_MS = 10000;
+// List active agent-browser daemon sessions without starting a browser.
+// Poll less often than git while keeping forgotten browsers visible.
+const BROWSER_STATUS_POLL_MS = 10000;
 
 // Rough chars-per-token for the live tok/s estimate
 const CHARS_PER_TOKEN = 4;
@@ -101,9 +101,10 @@ interface GitStatus {
 let gitStatus: GitStatus | null = null; // null = not in a repo / unknown
 let gitStatusTimer: ReturnType<typeof setInterval> | null = null;
 let gitStatusInFlight = false;
-let playwrightBrowserCount = 0;
-let playwrightStatusTimer: ReturnType<typeof setInterval> | null = null;
-let playwrightStatusInFlight = false;
+let browserCount = 0;
+let browserStatusUnknown = true;
+let browserStatusTimer: ReturnType<typeof setInterval> | null = null;
+let browserStatusInFlight = false;
 
 let footerEnabled = true;
 let footerTui: TUI | null = null;
@@ -179,22 +180,30 @@ function refreshGitStatus(ctx: ExtensionContext): void {
 	);
 }
 
-function refreshPlaywrightStatus(): void {
-	if (playwrightStatusInFlight) return;
-	playwrightStatusInFlight = true;
+function refreshBrowserStatus(): void {
+	if (browserStatusInFlight) return;
+	browserStatusInFlight = true;
 	execFile(
-		"playwright-cli",
-		["list", "--all", "--json"],
-		{ encoding: "utf8", timeout: PLAYWRIGHT_STATUS_POLL_MS - 1000, maxBuffer: 4 * 1024 * 1024 },
+		"agent-browser",
+		["session", "list", "--json"],
+		{ encoding: "utf8", timeout: BROWSER_STATUS_POLL_MS - 1000, maxBuffer: 4 * 1024 * 1024 },
 		(error, stdout) => {
-			playwrightStatusInFlight = false;
-			if (!error) {
-				try {
-					const result = JSON.parse(stdout);
-					playwrightBrowserCount = result.browsers.filter((browser) => browser.status === "open").length;
-				} catch (parseError) {
-					console.error("footer: invalid playwright-cli list output", parseError);
+			browserStatusInFlight = false;
+			try {
+				if (error) throw error;
+				const result = JSON.parse(stdout);
+				if (
+					result.success !== true ||
+					!Array.isArray(result.data?.sessions) ||
+					!result.data.sessions.every((session) => typeof session === "string")
+				) {
+					throw new Error("Invalid agent-browser session list output");
 				}
+				browserCount = result.data.sessions.length;
+				browserStatusUnknown = false;
+			} catch {
+				// Keep the last count, but show unknown instead of a stale value.
+				browserStatusUnknown = true;
 			}
 			if (footerTui) footerTui.requestRender();
 		},
@@ -326,8 +335,8 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	if (branch) {
 		segments.push(theme.fg("success", `${ICONS.git} ${branch}${gitStatus ? gitStatusSuffix(gitStatus) : ""}`));
 	}
-	if (playwrightBrowserCount > 0) {
-		segments.push(theme.fg("warning", `${ICONS.browser} ${playwrightBrowserCount}`));
+	if (browserStatusUnknown || browserCount > 0) {
+		segments.push(theme.fg("warning", `${ICONS.browser} ${browserStatusUnknown ? "?" : browserCount}`));
 	}
 	const sessionName = ctx.sessionManager.getSessionName();
 	if (sessionName) segments.push(theme.fg("dim", `• ${sessionName}`));
@@ -385,14 +394,14 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 
 function enableFooter(ctx: ExtensionContext): void {
 	gitStatus = null; // clear any stale status from a previous session/cwd
-	playwrightBrowserCount = 0;
+	browserStatusUnknown = true;
 	if (gitStatusTimer) {
 		clearInterval(gitStatusTimer);
 		gitStatusTimer = null;
 	}
-	if (playwrightStatusTimer) {
-		clearInterval(playwrightStatusTimer);
-		playwrightStatusTimer = null;
+	if (browserStatusTimer) {
+		clearInterval(browserStatusTimer);
+		browserStatusTimer = null;
 	}
 	ctx.ui.setFooter((tui, theme, footerData) => {
 		footerTui = tui;
@@ -401,9 +410,9 @@ function enableFooter(ctx: ExtensionContext): void {
 			tui.requestRender();
 		});
 		refreshGitStatus(ctx); // paint the git status as soon as it resolves
-		refreshPlaywrightStatus();
+		refreshBrowserStatus();
 		gitStatusTimer = setInterval(() => refreshGitStatus(ctx), GIT_STATUS_POLL_MS);
-		playwrightStatusTimer = setInterval(refreshPlaywrightStatus, PLAYWRIGHT_STATUS_POLL_MS);
+		browserStatusTimer = setInterval(refreshBrowserStatus, BROWSER_STATUS_POLL_MS);
 		return {
 			dispose: () => {
 				if (footerTui === tui) footerTui = null;
@@ -411,9 +420,9 @@ function enableFooter(ctx: ExtensionContext): void {
 					clearInterval(gitStatusTimer);
 					gitStatusTimer = null;
 				}
-				if (playwrightStatusTimer) {
-					clearInterval(playwrightStatusTimer);
-					playwrightStatusTimer = null;
+				if (browserStatusTimer) {
+					clearInterval(browserStatusTimer);
+					browserStatusTimer = null;
 				}
 				unsubscribe();
 			},
@@ -489,9 +498,9 @@ export default function (pi: ExtensionAPI) {
 					clearInterval(gitStatusTimer);
 					gitStatusTimer = null;
 				}
-				if (playwrightStatusTimer) {
-					clearInterval(playwrightStatusTimer);
-					playwrightStatusTimer = null;
+				if (browserStatusTimer) {
+					clearInterval(browserStatusTimer);
+					browserStatusTimer = null;
 				}
 			}
 			ctx.ui.notify(footerEnabled ? "Custom footer enabled" : "Default footer restored", "info");

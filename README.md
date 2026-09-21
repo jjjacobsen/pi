@@ -10,7 +10,7 @@ people and organizations I trust
 1. `git clone git@github.com:jjjacobsen/pi.git` and `cd` in
 2. `mise trust` then `mise install` to pull the pinned development tools
 3. `mise use -g pi@latest` to install pi
-4. `mise use -g npm:@playwright/cli@0.1.18` to install Playwright CLI for the browser skill
+4. `mise use -g npm:agent-browser@0.38.1` to install agent-browser for the browser skill. Install system Chromium separately, available on PATH or through `AGENT_BROWSER_EXECUTABLE_PATH`
 5. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
    - `pi install npm:@ff-labs/pi-fff`
@@ -81,8 +81,8 @@ collect session usage or write a cache. The view is adapted from omp
 
 The custom footer shows your workspace, git branch and status (`↑N ↓N` upstream
 ahead / behind commits and `*N ?N +N` worktree-changed / untracked / staged
-counters, polled from `git status`), an icon and count when Playwright CLI
-browsers are open, token and cost stats, and
+counters, polled from `git status`), an icon and count for active agent-browser
+sessions, token and cost stats, and
 a context color set on absolute tokens (warning ~100k, error ~200k). Totals
 include cache-warming usage. `/footer`
 switches between it and the built-in footer.
@@ -151,19 +151,21 @@ only the source line. It does not import, sync, push, or commit
 
 ### browser - deterministic browser automation
 
-Controls a Playwright-managed browser through compact accessibility snapshots
-and element references. It runs headless with one persistent managed profile by
-default, writes generated output under `~/.pi/agent/playwright/`, and uses a
-visible browser only for a manual authentication handoff. Its launch configuration
-adds `--test-type` and `--hide-crash-restore-bubble` to hide unsupported-flag
-warnings and the crash restore prompt without changing the normal browser
+Uses agent-browser with system Chromium resolved through PATH or
+`AGENT_BROWSER_EXECUTABLE_PATH`. Runs headless by default with a separate
+persistent profile at `~/.pi/agent/browser/profile`. Login state survives browser
+restarts. The daily browser profile is never used
 
-When `/usr/bin/chromium` exists, the skill uses that system Chromium through
-`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, so Omarchy needs no separate browser install.
-On macOS, Playwright uses its managed Chromium, installed once with
-`playwright-cli install-browser chromium`.
+Uses compact accessibility snapshots and element references, never screenshot
+navigation or coordinate clicks. Visible operation supports manual login and
+headless troubleshooting. After manual login, the browser can restart headless
+with the same profile. No changes to the normal browser's remote debugging are needed
 
-Adapted from the official [Microsoft Playwright CLI skill](https://github.com/microsoft/playwright-cli)
+Browser tasks run one at a time through the named `browser` session. The footer
+counts active agent-browser sessions. Tasks close the browser when done, with a 10-minute
+idle timeout as a backstop. Explicit output files go under `~/.pi/agent/browser/`
+
+Adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
 
 ### pi-upgrade - review and synchronize pi upgrades
 

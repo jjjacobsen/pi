@@ -195,39 +195,39 @@ never commits the memory repository
 
 ## Goal and design
 
-The `browser` skill controls the installed Playwright CLI through Bash. It is
-adapted from Microsoft's official Playwright CLI skill, but narrows the workflow
-to one named `browser` session, compact accessibility snapshots, and element
-refs
+The `browser` skill controls agent-browser through Bash, adapted from
+[Vercel's core skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core).
+Its `browser.sh` helper uses the named session `browser`, resolves
+system Chromium through PATH or `AGENT_BROWSER_EXECUTABLE_PATH`, and repeats the
+same launch settings on every command. Omitting settings between commands can
+restart the browser. There is no fixed executable path or bundled browser
+fallback. Compact accessibility snapshots and element refs drive interaction
 
-Before opening the browser, the skill checks for `/usr/bin/chromium`. When it
-exists, `PLAYWRIGHT_MCP_EXECUTABLE_PATH` selects that system Chromium, so
-Omarchy needs no separate browser install. Otherwise, the variable is unset and
-Playwright uses its managed Chromium. On macOS, install that browser once with
-`playwright-cli install-browser chromium`. The browser runs headless by default
-and uses Playwright's `--persistent` managed profile. Playwright stores that
-profile in its operating-system cache, so the repo and pi agent directory hold
-no browser profile. The profile includes cookies and browser storage and can
-preserve authentication after the browser closes. The skill sets
-`PLAYWRIGHT_MCP_OUTPUT_DIR` when it opens a browser, so snapshots and other
-generated output go to `~/.pi/agent/playwright/` instead of the current project
+The helper passes `~/.pi/agent/browser/profile` as an absolute profile path.
+This separate persistent profile retains login state across browser restarts.
+The daily browser profile is never used or copied, and live attachment is not
+part of this workflow. Browser tasks run one at a time through the same named
+session. A task checks for an existing session before opening the browser and
+must not take over another task's active session
 
-Every `open` loads `skills/browser/cli.config.json` through an absolute
-`--config` path. Its launch arguments `--test-type` and
-`--hide-crash-restore-bubble` hide unsupported-flag warnings and the crash
-restore prompt in the skill browser without changing the normal browser
+Headless operation is the default. If authentication is missing, the agent
+closes its headless browser and reopens the sign-in page with
+`AGENT_BROWSER_HEADED=true`. Jonah signs in directly in that window. After he
+confirms completion, the agent closes the visible browser and reopens the target
+headless with the same profile. Every command in the visible session, including
+close, uses the headed setting. The skill forbids credential collection and
+authentication-state inspection or export. agent-browser configures debugging
+for its own browser, so no normal-browser remote-debugging setup is needed
 
-When authentication is missing, the agent closes the headless browser and
-opens the same persistent session with `--headed`. Jonah enters credentials,
-passkeys, and MFA directly in that window. After confirmation, the agent closes
-it and reopens the target headless with the same profile. The skill forbids
-credential collection and authentication-state inspection by default
+Screenshots and coordinates are forbidden for navigation and validation.
+Screenshots are permitted only as explicitly requested image deliverables.
+Fresh snapshots, focused text reads, and page-specific waits drive interaction.
+Consequential final actions require confirmation. These are skill instructions,
+not a tool-level security boundary
 
-The skill uses snapshots, focused snapshot searches, and fresh element refs
-after page changes. Screenshots, coordinates, normal Chrome attachment, and
-raw DOM evaluation are not the normal control path. Consequential final actions
-require confirmation, and the browser closes after the task without deleting
-the persistent profile
+Tasks close the browser even after failure, without deleting the persistent
+profile. A 10-minute idle timeout is a backstop for forgotten managed browsers.
+Explicit output files belong under `~/.pi/agent/browser/`
 
 # Pi upgrade skill (`skills/pi-upgrade/SKILL.md`)
 
@@ -446,15 +446,17 @@ more than one provider is available. Extension statuses use a third line
 
 The footer starts automatically for TUI sessions. `/footer` switches between
 it and the built-in footer. Message, model, thinking, session-info, compaction,
-branch, git-status, and Playwright-status changes request a render
+branch, git-status, and browser-status changes request a render
 
-The footer runs `playwright-cli list --all --json` immediately and every 10
-seconds. It counts open browser sessions across all Playwright CLI workspaces.
-When the count is positive, a yellow web icon and count appear as a first-line
-segment directly after git status with the same two-space gap. Zero renders
-nothing. A failed command or invalid response retains the last known count, and
-invalid JSON is logged. Only one Playwright status process runs at a time, and
-each has a 9-second timeout and 4 MiB output cap. The timer stops when the
+The footer runs `agent-browser session list --json` immediately and every 10
+seconds. It counts active daemon sessions in the current namespace without
+launching a browser. This includes headless, headed, and attached sessions, not
+all Chromium processes on the machine. The skill uses the default namespace
+
+When the count is positive, a yellow web icon and count appear directly after
+git status. Zero renders nothing. A failed command or invalid response retains
+the last count but shows the icon with `?` until polling succeeds. Only one
+status process runs at a time, with a 9-second timeout and 4 MiB output cap. The timer stops when the
 custom footer is disposed or disabled
 
 # Subagent extension (`extensions/subagent.ts`)

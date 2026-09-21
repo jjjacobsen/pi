@@ -131,3 +131,10 @@
   the list. A widget-level check confirmed searching for `gpt-image-2.5` works
 - `jiti` is not installed as a standalone dependency here. For a local extension
   smoke check, use pi's existing extension loader rather than adding a package
+
+## 2026-09-21 — agent-browser launch settings
+
+- agent-browser 0.38.1 can restart a session when later commands omit the launch
+  options used by `open`. A successful navigation was followed by an empty page
+  on `snapshot`. Use `skills/browser/browser.sh` to repeat the executable,
+  profile, headed mode, and timeout on every command, including `close`
