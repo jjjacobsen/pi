@@ -35,6 +35,25 @@ the input editor is active. It keeps pi's working, compaction, summary, and
 retry indicators in the editor border. The terminal must support the standard
 DECSCUSR cursor-shape sequence
 
+### browser - delegated browser tasks with a separate model
+
+`/browser-model` opens a scrolling, searchable picker of your configured pi
+models and saves the selection for all sessions. `/browser-model provider/model`
+selects it directly. `/browser-thinking` selects a supported thinking level, or
+use `/browser-thinking low` directly. Neither changes the main session settings.
+The `browser` tool takes a starting URL and a
+self-contained task, then runs a bounded headless worker with the existing
+persistent automation profile
+
+The worker uses text and accessibility refs only. It has no shell, eval,
+screenshots, or coordinate controls. It stops for login, approval, or unsupported
+steps. Use the browser skill for those handoffs. Do not run browser tasks in parallel
+
+Each result includes status, page evidence, total/model/browser time, action and
+model-turn counts, tokens, and estimated model cost. Usage counts toward pi's
+session totals. Cost is a catalog estimate, not a subscription bill. Page data
+is sent to the selected model provider. No Jev integration is included yet
+
 ### commit - AI commit messages
 
 `/commit` stages everything and writes a conventional commit message in

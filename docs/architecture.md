@@ -191,6 +191,71 @@ checks for existing knowledge, writes one atomic pipe-delimited source line,
 and stops. It never invokes the Anki import, preview, sync, or push workflow and
 never commits the memory repository
 
+# Browser extension (`extensions/browser.ts`)
+
+## Goal and operation
+
+The `browser` tool delegates a self-contained website task to a separately
+selected model without changing the main session model. `/browser-model` uses
+pi's configured model catalog and saves an exact provider/model reference in
+`~/.pi/agent/browser-model.json`. Its picker supports fuzzy filtering, scrolling,
+and terminal resizing. The command also accepts an exact reference as an
+argument. `/browser-thinking` uses the same picker for supported thinking levels,
+or accepts a level directly. Both selections persist independently of the main
+session. Model changes clamp the saved thinking level to the model's support.
+Without a saved thinking selection, the lowest supported level is used
+
+Requests use the extension context's model registry, including its provider
+authentication and the selected thinking level
+
+The worker has an isolated in-memory conversation and two tools: one bounded
+browser action and a structured finish report. It has no coding tools, shell,
+eval, screenshots, coordinates, or WebMCP invocation. Code validates each tool
+call and maps it to positional CLI arguments through `skills/browser/browser.sh`.
+Only HTTP(S) navigation, snapshot/read, ref-based interactions, limited keyboard
+keys, scrolling, and text waits are available. Navigation and page-changing
+actions return the current URL and a fresh snapshot. Interactive-only snapshots
+help with large pages. Each browser response is capped at 12 KB or 200 lines
+
+One response may contain exactly one tool call. The default limit is 20 model
+turns, configurable up to 40 per task. A five-minute work deadline and 45-second
+CLI timeouts bound execution. An independent cleanup attempt closes the browser
+after completion, failure, or cancellation. Cleanup failures are reported, not
+hidden. A process-local busy flag rejects concurrent worker calls. The worker
+also refuses an existing `browser` session rather than taking it over. This is
+not a cross-process lock. Browser tasks remain serial by local workflow policy
+
+The worker returns `complete`, `blocked`, `needs_login`, or `needs_approval`.
+Execution failures return explicit `failed` or `cancelled` reports with any
+recorded usage. The outer tool successfully reports these outcomes, so callers
+must inspect the status rather than assume tool completion means task success.
+Completion and approval classification are model judgments, not a security
+boundary or independent verification. Instructions require stopping before
+consequential final actions and treating page content as untrusted
+
+For login, use the browser skill's visible handoff and then delegate again with
+the same persistent profile. The worker never opens a login window or collects
+credentials itself. The main agent handles user approval and unsupported steps
+
+## Measurement
+
+Tool results include elapsed time through cleanup, model request time, browser
+command time, attempted action count, model-turn count, and combined model
+usage. Startup inspection and other overhead account for any difference between
+elapsed time and the two component times. Startup, snapshots, and cleanup count
+in browser time but not worker action count. Nested usage feeds pi's normal
+session totals. Costs are catalog estimates and are not actual subscription
+charges. There is no separate trace archive or metrics database
+
+Use identical tasks and observable completion criteria when comparing models.
+Check page outcomes separately from the worker's completion claim. Include
+failed runs and report reasoning levels, since some models cannot disable
+reasoning. Simple local pages measure overhead, not general website reliability
+
+This loop uses pi's extension SDK directly. The delegation pattern follows this
+repository's subagent extension, with agent-browser as the execution backend.
+Jev selection remains a later step
+
 # Browser skill (`skills/browser/SKILL.md`)
 
 ## Goal and design

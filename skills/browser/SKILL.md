@@ -12,6 +12,21 @@ metadata:
 Use agent-browser through `browser.sh` beside this file. Adapted from
 [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
 
+## Delegation
+
+When the `browser` tool is available, prefer it for self-contained website tasks.
+Select its fast model with `/browser-model` and its thinking level with
+`/browser-thinking`, then supply the starting URL, full goal, constraints, and
+observable success conditions. The worker sees no session
+history. Check its returned status and evidence, not just whether the tool ran
+
+Use this skill's direct commands for manual login, user-approved final actions,
+and interactions the worker does not support. The worker closes its browser
+before returning, including when it needs login or approval. Never run direct
+commands while the worker is active. After a login handoff, close the browser
+before delegating again. Do not automatically retry a failed or uncertain
+consequential action
+
 ## Rules
 
 - Run headless by default. Open a visible window only for manual login, when
