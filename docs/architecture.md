@@ -210,9 +210,10 @@ authentication and the selected thinking level. Each worker supplies its tool-ca
 ID as `sessionId`, which lets the provider attach required session headers,
 including OpenCode Go's `x-opencode-session`
 
-The worker has an isolated in-memory conversation and two tools: one bounded
-browser action and a structured finish report. It has no coding tools, shell,
-eval, screenshots, coordinates, or WebMCP invocation. Code validates each tool
+The worker has an isolated in-memory conversation, a bounded DOM action tool,
+and a structured finish report. When native page tools are discovered, it also
+gets WebMCP inspection and invocation tools. It has no coding tools, shell,
+eval, screenshots, or coordinates. Code validates each tool
 call and maps it to positional CLI arguments through `skills/browser/browser.sh`.
 Only HTTP(S) navigation, snapshot/read, ref-based interactions, limited keyboard
 keys, scrolling, and text waits are available. Navigation and page-changing
@@ -252,6 +253,41 @@ consequential final actions and treating page content as untrusted
 
 For login, use the browser skill's visible handoff and then delegate again with
 the same persistent profile. The worker never collects credentials itself. The main agent handles user approval and unsupported steps
+
+## WebMCP with DOM fallback
+
+WebMCP is automatic in both modes, using agent-browser's experimental native
+support. `extensions/lib/browser-webmcp.ts` reads discovery updates from every
+batch entry, including `open`, not only the final snapshot. Summaries carry
+names, descriptions, origins, and frame IDs. No update preserves the existing
+catalog. A changed URL or a discovery update invalidates inspected metadata
+
+The fast model prefers suitable page tools and uses `webmcp_inspect` to fetch a
+selected tool's full schema. Inspection caches only complete, bounded metadata.
+`webmcp_invoke` requires that inspection, a fresh page observation, and a fresh
+matching tool record identified by name and frame ID. Parameters are checked
+with the SDK validator. Unrecognized schema keywords, missing tools, or stale
+metadata cannot be invoked and explicitly direct the worker back to DOM or
+inspection. No arbitrary tool name or schema becomes a worker tool definition
+
+In Jev mode, a WebMCP candidate delegates tool inspection and argument selection
+to the fast model. DOM candidates remain available. Invocations use a 15-second
+wait limit within the normal task deadline and return a fresh snapshot. The
+worker records invocation identity and status in `webmcpInvocations`
+
+Missing or unsupported WebMCP leaves DOM interaction available. Once invocation
+starts, a command error, failed status, timeout, cancellation, or lost response
+stops the task. There is no automatic retry or DOM fallback after uncertain
+effects. A CLI success envelope alone is insufficient: invocation status must
+be `completed`. Tool output remains untrusted evidence, not proof of task success
+
+Descriptions, schemas, results, and annotations such as `readOnlyHint` are page
+claims, not authorization. Login and consequential actions retain the same
+model-based stop rules as DOM actions. The final read-only phase exposes no
+WebMCP invocation, even for tools claiming to be read-only. Fresh metadata checks
+are not atomic and do not prove the implementation behind a tool is safe
+
+Uses [agent-browser's native WebMCP interface](https://agent-browser.dev/webmcp)
 
 ## Experimental Jev selection
 
