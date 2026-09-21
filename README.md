@@ -43,6 +43,17 @@ session for context. It stops before staging while `goal.md` or `handoff.md`
 exists in the repository root, and it refuses to commit if the staged snapshot
 changes while it writes the message
 
+### imagegen - image generation with a separate model
+
+`/image-model` opens a searchable picker of live image-output models from your
+configured OpenRouter and Vercel AI Gateway providers. The selection is saved
+for all sessions and does not change your coding model. `imagegen` generates
+images or edits local references, saves original files, and returns a preview
+
+It uses existing pi credentials and the selected provider's billing, not Codex
+subscription usage. OpenCode Go is not offered because image output is not
+documented. See [docs/imagegen.md](docs/imagegen.md) for setup and limits
+
 ### lazygit - full-screen git TUI via /lg
 
 `/lg` hands the whole terminal to lazygit while pi keeps running in the

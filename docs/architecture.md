@@ -101,6 +101,31 @@ There is no fallback message and no confirmation prompt. A second invalid
 message reports the validation problems and the last attempt. One invocation
 creates one commit, and inferred intent can still be wrong
 
+# Image generation extension (`extensions/imagegen.ts`)
+
+`/image-model` discovers image-output models from configured OpenRouter and
+Vercel AI Gateway providers and opens a searchable pi `Input` / `SelectList`
+picker. The choice is stored in `<agent_dir>/imagegen.json`, separate from the
+main coding model and shared across sessions
+
+The `imagegen` tool reads that choice for each call, sends the prompt and any
+local reference images, saves original image files without overwriting existing
+files, and returns a resized preview of the first image. Writes use pi's file
+mutation queue. Provider-reported cost is included in tool usage when available
+
+`extensions/lib/image-providers.ts` owns discovery and provider-specific HTTP
+requests. It resolves credentials and base URLs through pi's model registry.
+Image models are not registered as coding models. OpenRouter uses its dedicated
+Images API. Vercel uses Images endpoints for image-only models and Chat
+Completions for multimodal language models
+
+Discovery is on demand, with a 30-second network deadline per provider and
+visible partial failures. Generation has a five-minute deadline, shares the
+agent abort signal, and never retries automatically. No dependencies are added
+
+See [imagegen.md](imagegen.md) for the tool contract, endpoint references,
+billing details, and provider limits
+
 # Lazygit extension (`extensions/lazygit.ts`)
 
 ## Goal

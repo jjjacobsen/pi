@@ -112,3 +112,22 @@
   `protobufjs`, and `esbuild`. Installation completed without approving them.
   Script approvals stayed unchanged. The SDK import and full repository
   checks passed without those scripts
+
+## 2026-09-21 — image generation documentation lookup
+
+- Exa returned HTTP 503 twice during image generation research. Fetching the
+  official OpenAI documentation directly with curl worked. Append `.md` to
+  documentation URLs to get readable Markdown
+- The installed pi extension guide shows image content with a nested `source`,
+  but both the 0.86.0 development types and the official 0.86.1 source use flat
+  `data` and `mimeType` fields. Use the actual `ImageContent` type for tool
+  previews. Local helper imports also need to omit `.ts` under this repo's
+  TypeScript configuration
+- Vercel's pi provider base URL has no `/v1` suffix, while OpenRouter's already
+  includes `/api/v1`. Normalize only the Vercel image endpoint prefix before
+  adding protocol paths
+- Pi's `SelectList.setFilter()` matches only prefixes, so a full provider/model
+  label cannot be searched by model name that way. Use `fuzzyFilter` and rebuild
+  the list. A widget-level check confirmed searching for `gpt-image-2.5` works
+- `jiti` is not installed as a standalone dependency here. For a local extension
+  smoke check, use pi's existing extension loader rather than adding a package
