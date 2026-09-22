@@ -34,6 +34,14 @@ machines
 on annotations. `hk.pkl` runs `tsc --noEmit -p tsconfig.json`, and `mise.toml`
 pins the TypeScript version. `mise x -- hk check --all` must stay green
 
+# Prompt input extension (`extensions/prompt-input.ts`)
+
+An `input` hook quotes the raw text after `/goal`, `/handoff`, `/implement`,
+and `/q` as one argument before pi expands the template. This preserves
+newlines, indentation, and quotes with the existing `$@` placeholders and
+`/goal` default. Command source paths restrict this behavior to this package's
+prompt files. Extension-injected messages and other commands are unchanged
+
 # Bar cursor extension (`extensions/bar-cursor.ts`)
 
 The extension replaces the main input editor with a minimal `CustomEditor`

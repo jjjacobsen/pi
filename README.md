@@ -237,6 +237,10 @@ tools, compaction, and cache warming, counts toward pi's session totals. See
 
 ## Prompts
 
+The `prompt-input` extension preserves newlines, indentation, and literal quotes
+in input to this package's four templates. No special quoting is needed. Template
+commands must still be at the start of the prompt
+
 ### handoff - save session context
 
 `/handoff` writes the current goal, state, decisions, validation, blockers, and
