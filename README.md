@@ -119,6 +119,10 @@ session for context. It stops before staging while `goal.md` or `handoff.md`
 exists in the repository root, and it refuses to commit if the staged snapshot
 changes while it writes the message
 
+Use `/commit-model` and `/commit-thinking` to select separate settings, saved
+for all sessions. Select a model first, then try `/commit-thinking off` for
+speed. Without saved settings, commit uses the session model with low thinking
+
 ### imagegen - image generation with a separate model
 
 `/image-model` opens a searchable picker of live image-output models from your

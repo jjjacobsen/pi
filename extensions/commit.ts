@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import { modelKey, registerWorkerModel } from "./lib/worker-model";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_WIDGET = "commit";
@@ -36,7 +38,6 @@ function hideSpinner(ctx) {
   }
 }
 
-const THINKING_LEVEL = "low";
 const MAX_SESSION_TAIL = 4000;
 const MAX_INTENT = 2 * 1024;
 const TIMEOUT_MS = 60000;
@@ -77,13 +78,13 @@ function resourceLoader() {
   };
 }
 
-async function askModel(model, prompt, cwd, signal) {
+async function askModel(model, thinkingLevel, prompt, cwd, signal) {
   let session;
   try {
     ({ session } = await createAgentSession({
       cwd,
       model,
-      thinkingLevel: THINKING_LEVEL,
+      thinkingLevel,
       resourceLoader: resourceLoader(),
       sessionManager: SessionManager.inMemory(cwd),
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
@@ -514,20 +515,24 @@ export default function (pi: ExtensionAPI) {
       const cwd = ctx.cwd;
       showSpinner(ctx, "analyzing changes");
       try {
+        const config = await readConfig();
+        const model = config
+          ? ctx.modelRegistry.getAvailable().find((candidate) => modelKey(candidate) === config.model)
+          : ctx.model;
+        if (!model) throw new Error(config ? `Commit model unavailable: ${config.model}. Run /commit-model` : "no model available");
+        const thinkingLevel = clampThinkingLevel(model, config?.thinking ?? "low");
+
         const analysis = await analyze(pi, cwd, ctx.signal);
         if (!analysis) return notify(ctx, "nothing to commit", "info");
-
-        const model = ctx.model;
-        if (!model) return notify(ctx, "no model available", "error");
         const prompt = buildPrompt(analysis.context, (args ?? "").trim(), sessionTail(ctx));
 
         showSpinner(ctx, "writing commit message");
-        let message = stripFences(await askModel(model, prompt, cwd, ctx.signal));
+        let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, ctx.signal));
         let problems = validate(message);
         if (problems) {
           const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
           const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
-          const retry = stripFences(await askModel(model, retryPrompt, cwd, ctx.signal));
+          const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, ctx.signal));
           problems = validate(retry);
           if (problems) return notify(ctx, `message rejected after retry:\n${problems}Last attempt:\n${retry}`, "error");
           message = retry;
@@ -542,4 +547,6 @@ export default function (pi: ExtensionAPI) {
       }
     },
   });
+
+  const readConfig = registerWorkerModel(pi, "commit", "Commit");
 }

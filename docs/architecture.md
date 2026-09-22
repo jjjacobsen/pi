@@ -50,9 +50,16 @@ and restores pi's previous hardware-cursor setting. Non-TUI modes do nothing
 
 ## Goal
 
-`/commit` stages all changes, asks the current model for a Conventional Commit
-message, validates it, and creates the commit. It has no config file or
-automatic trigger. It is inspired by tmonk/pi-committer
+`/commit` stages all changes, asks the selected model for a Conventional Commit
+message, validates it, and creates the commit. It has no automatic trigger.
+It is inspired by tmonk/pi-committer
+
+`/commit-model` and `/commit-thinking` use the shared worker settings helper
+and save settings in `~/.pi/agent/commit-model.json` for all sessions. Selecting
+a model starts with thinking off, adjusted to its supported levels. Without
+saved settings, commit uses the session model with low thinking. Saved models
+must be available or the command stops before staging. Both message attempts
+use the same model and supported thinking level
 
 ## Flow and behavior
 
@@ -64,7 +71,7 @@ automatic trigger. It is inspired by tmonk/pi-committer
    commit subjects, and commit-related guidance from root `AGENTS.md` or
    `CLAUDE.md`
 4. Ask an isolated in-memory agent session to write one message with the
-   current model, low thinking, no tools, and compaction disabled
+   selected model and thinking level, no tools, and compaction disabled
 5. Validate the message. On failure, append the exact problems and ask once
    more
 6. Recheck that staged changes exist and that `git write-tree` still matches
@@ -81,7 +88,7 @@ digest with at most 8 hunks and 14 selected lines per file. The digest is
 capped at 12 KiB. Git stdout is normally capped at 32 MiB, stderr at 16 KiB,
 and smaller metadata calls use lower caps. Commit guidance is capped at 2 KiB
 
-The isolated session receives the complete active model definition so custom
+The isolated session receives the complete selected model definition so custom
 headers, compatibility settings, and sampling parameters stay intact
 
 Validation requires an allowed Conventional Commit type, an optional valid
