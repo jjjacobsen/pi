@@ -700,6 +700,16 @@ the last count but shows the icon with `?` until polling succeeds. Only one
 status process runs at a time, with a 9-second timeout and 4 MiB output cap. The timer stops when the
 custom footer is disposed or disabled
 
+# Model settings extension (`extensions/model-settings.ts`)
+
+`/model-settings` reads the subagent, browser, and commit settings through
+`readWorkerModel` in `extensions/lib/worker-model.ts` on each invocation.
+It shows a notification table without model calls or configuration writes.
+Unset subagent settings inherit the session values. Unset commit settings use
+the session model and low thinking. Browser requires a saved model. The table
+marks each value's source, unavailable models, and thinking clamped to model
+support. It shows worker defaults, not subagent per-call overrides
+
 # Subagent extension (`extensions/subagent.ts`)
 
 ## Goal

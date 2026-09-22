@@ -167,6 +167,13 @@ documented. See [docs/imagegen.md](docs/imagegen.md) for setup and limits
 `/lg` hands the whole terminal to lazygit while pi keeps running in the
 background, so you can browse commits and stage diffs
 
+### model-settings - worker model overview
+
+`/model-settings` shows the model and thinking level for subagent, browser,
+and commit. It marks saved, inherited, and default values, unavailable models,
+and thinking levels adjusted to model support. Subagent per-call overrides
+are not included
+
 ### nvim - full-screen neovim via /nvim
 
 `/nvim` hands the whole terminal to neovim in the session cwd (`/nvim

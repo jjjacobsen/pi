@@ -7,9 +7,16 @@ import { workerPicker } from "./worker-picker";
 
 export const modelKey = (model) => `${model.provider}/${model.id}`;
 
+const workerConfigPath = (name: string) => join(getAgentDir(), `${name}-model.json`);
+
+export async function readWorkerModel(name: string) {
+  const path = workerConfigPath(name);
+  return existsSync(path) ? JSON.parse(await readFile(path, "utf8")) : undefined;
+}
+
 export function registerWorkerModel(pi: ExtensionAPI, name: string, label: string) {
-  const configPath = () => join(getAgentDir(), `${name}-model.json`);
-  const readConfig = async () => existsSync(configPath()) ? JSON.parse(await readFile(configPath(), "utf8")) : undefined;
+  const configPath = () => workerConfigPath(name);
+  const readConfig = () => readWorkerModel(name);
   const writeConfig = async (config) => {
     await mkdir(getAgentDir(), { recursive: true });
     await writeFile(configPath(), `${JSON.stringify(config, null, 2)}\n`);
