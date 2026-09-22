@@ -92,6 +92,19 @@ export function createBrowserWebMCP(execute: (command: string[]) => Promise<Entr
     get available() { return catalog.length > 0; },
     get summaries() { return quote({ status: discoveryStatus, tools: catalog }); },
     get invocations() { return invocations.map((entry) => ({ ...entry })); },
+    async discover() {
+      const entry = await execute(["webmcp", "list"]);
+      inspected.clear();
+      if (!entry.success) {
+        if (entry.code !== "webmcp_unsupported") throw new Error(`WebMCP discovery failed. ${quote({ code: entry.code, error: entry.error })}`);
+        catalog = [];
+        discoveryStatus = "WebMCP unsupported in this browser. Use DOM";
+        return;
+      }
+      if (!Array.isArray(entry.result?.tools)) throw new Error("Malformed WebMCP discovery response");
+      catalog = entry.result.tools.slice(0, 16).map(({ name, frameId, origin, description }) => ({ name, frameId, origin, description }));
+      discoveryStatus = "Native discovery";
+    },
     async inspect(name: string, frameId: string) {
       const key = identity(name, frameId);
       inspected.delete(key);

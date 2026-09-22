@@ -136,5 +136,5 @@
 
 - agent-browser 0.38.1 can restart a session when later commands omit the launch
   options used by `open`. A successful navigation was followed by an empty page
-  on `snapshot`. Use `skills/browser/browser.sh` to repeat the executable,
+  on `snapshot`. Use `extensions/lib/browser.sh` to repeat the executable,
   profile, headed mode, and timeout on every command, including `close`

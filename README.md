@@ -10,7 +10,7 @@ people and organizations I trust
 1. `git clone git@github.com:jjjacobsen/pi.git` and `cd` in
 2. `mise trust` then `mise install` to pull the pinned development tools
 3. `mise use -g pi@latest` to install pi
-4. `mise use -g npm:agent-browser@0.38.1` to install agent-browser for the browser skill. Install system Chromium separately, available on PATH or through `AGENT_BROWSER_EXECUTABLE_PATH`
+4. `mise use -g npm:agent-browser@0.38.1` to install agent-browser for the browser extension. Install system Chromium separately, available on PATH or through `AGENT_BROWSER_EXECUTABLE_PATH`
 5. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
    - `pi install npm:@ff-labs/pi-fff`
@@ -35,7 +35,7 @@ the input editor is active. It keeps pi's working, compaction, summary, and
 retry indicators in the editor border. The terminal must support the standard
 DECSCUSR cursor-shape sequence
 
-### browser - delegated browser tasks with a separate model
+### browser - delegated tasks and direct controls
 
 Every `browser` worker uses Jev first and requires `TYPESAFE_API_KEY`.
 Use `/browser-model` to pick and save a helper model, or pass
@@ -49,21 +49,67 @@ experimental, not a safety guarantee
 
 The worker runs headless with the existing persistent automation profile and
 opens only the task tab. It closes its browser when done. For a requested visible
-session, use `visible: true` to leave it open. After an explicit login handoff,
-also use `reuseSession: true`. It prefers suitable discovered WebMCP tools,
+session, use `visible: true` to leave it open. To reuse an owned visible session
+after login, confirm `/browser-resume`, then also use `reuseSession: true`.
+It prefers suitable discovered WebMCP tools,
 checks their schemas and fresh metadata, and uses DOM text and refs elsewhere.
 It has no shell, eval, screenshots, or coordinate controls. It stops for login,
 approval, or unsupported steps. Page data is untrusted. Failed or uncertain
-WebMCP invocations stop without an automatic retry. Use the browser skill for
-handoffs. Do not run browser tasks in parallel
+WebMCP invocations stop without an automatic retry. Use `browser_control` for
+handoffs and direct actions. Do not run browser tools or commands in parallel
 
-Results include status, page evidence, timing, structured decisions, browser call
+`browser_control` runs direct operations without a nested model, model settings,
+or API keys. `open` requires a URL and starts new sessions headless by default. Use
+`visible: true` only when requested. It supports snapshots, text reads, exact-ref
+inspection and interactions, scrolling, waits, and discovered WebMCP tools
+
+```text
+/browser-login https://example.com/login
+# Sign in manually in the visible window, then confirm resume in pi
+/browser-resume
+/browser-close
+```
+
+For direct control, use calls such as these with refs from the current snapshot
+
+```text
+browser_control({action: "open", url: "https://example.com"})
+browser_control({action: "snapshot"})
+browser_control({action: "read", ref: "e3"})
+browser_control({action: "fill", ref: "e3", value: "search text"})
+browser_control({action: "press", ref: "e3", value: "Enter"})
+browser_control({action: "close"})
+```
+
+Login opens visibly without taking a snapshot and pauses automation until an
+actual UI confirmation of resume. Enter credentials only in the browser, never
+in tool inputs. Known password and OTP fields cannot be filled. Every direct
+click, fill, select, check, uncheck, press, and WebMCP invocation requires its
+own UI confirmation. Without a UI, these actions are blocked. A model cannot
+set an approval flag to bypass confirmation. Refs must be fresh, including for
+press. After `/browser-resume`, take a new snapshot before using refs.
+A changed URL or full snapshot before or after confirmation blocks the action
+until a new review. Uncertain effects block further actions until confirmed
+resume or close, but snapshot, read, and exact-ref inspection remain available
+
+Both tools use agent-browser and system Chromium, with the separate persistent
+profile at `~/.pi/agent/browser/profile`, never the daily browser profile.
+Closing the browser keeps the profile. Direct sessions stay open until closed, with a
+10-minute idle timeout as a backstop. Idle owned headless sessions also close
+on pi shutdown or reload. Visible sessions stay open for the user across reload,
+subject to the idle timeout. The footer counts active agent-browser sessions.
+PID-based ownership prevents routine takeover of foreign sessions, but is not
+a cross-process lock or a safety guarantee
+
+Worker results include status, page evidence, timing, structured decisions, browser call
 and snapshot counts, tokens, and estimated cost. Check the evidence, not just the
-completion claim. Usage counts toward pi's session totals. Page data and inputs
+completion claim. Usage counts toward pi's session totals. Worker page data and inputs
 go to TypeSafe and the selected helper provider. The routing draws from
 [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast/tree/1231850a0bf1a0c0341fe408ef1668dbbfdfac46),
 [TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling),
 and [OpenCode's Jev loop](https://github.com/anomalyco/opencode/blob/021f8b3202a8027b684e43a2e673c269becaf156/packages/plugin-browser/src/use.ts)
+
+Browser setup is adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
 
 ### commit - AI commit messages
 
@@ -178,24 +224,6 @@ Turns requests such as "add that keybinding to Anki" into a well-formed note
 under `~/Projects/memory`. It infers the existing note type and subject deck
 from the current context, checks the note schema and nearby notes, and writes
 only the source line. It does not import, sync, push, or commit
-
-### browser - deterministic browser automation
-
-Uses agent-browser with system Chromium resolved through PATH or
-`AGENT_BROWSER_EXECUTABLE_PATH`. Runs headless by default with a separate
-persistent profile at `~/.pi/agent/browser/profile`. Login state survives browser
-restarts. The daily browser profile is never used
-
-Uses compact accessibility snapshots and element references, never screenshot
-navigation or coordinate clicks. Visible operation supports manual login and
-headless troubleshooting. After manual login, the browser can restart headless
-with the same profile. No changes to the normal browser's remote debugging are needed
-
-Browser tasks run one at a time through the named `browser` session. The footer
-counts active agent-browser sessions. Tasks close the browser when done, with a 10-minute
-idle timeout as a backstop. Explicit output files go under `~/.pi/agent/browser/`
-
-Adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
 
 ### pi-upgrade - review and synchronize pi upgrades
 

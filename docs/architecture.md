@@ -214,7 +214,7 @@ The worker has an isolated in-memory conversation, a bounded DOM action tool,
 and a structured finish report. When native page tools are discovered, it also
 gets WebMCP inspection and invocation tools. It has no coding tools, shell,
 eval, screenshots, or coordinates. Code validates each tool
-call and maps it to positional CLI arguments through `skills/browser/browser.sh`.
+call and maps it to positional CLI arguments through `extensions/lib/browser.sh`.
 Only HTTP(S) navigation, snapshot/read, ref-based interactions, limited keyboard
 keys, scrolling, and text waits are available. Navigation and page-changing
 actions return the current URL and a fresh full snapshot with link destinations.
@@ -233,18 +233,19 @@ The helper must return exactly one valid tool call. A response with the wrong
 call count or invalid arguments gets one repair before execution only. This never retries an
 executed action. The default limit is 20 decision
 steps, configurable up to 40 per task. A five-minute work deadline and 45-second
-CLI timeouts bound execution. An independent cleanup attempt closes the browser
-after completion, failure, or cancellation. Cleanup failures are reported, not
-hidden. A process-local busy flag rejects concurrent worker calls. The worker
-also refuses an existing `browser` session rather than taking it over. This is
-not a cross-process lock. Browser tasks remain serial by local workflow policy
+CLI timeouts bound execution. An independent cleanup attempt closes the default
+headless browser after completion, failure, or cancellation. Cleanup failures are reported, not
+hidden. A shared process-local busy flag rejects overlapping
+worker, direct-control, and command calls. This is not a cross-process lock.
+Browser tasks remain serial
 
 An explicit `visible: true` request uses headed Chromium and leaves the browser
 open, including after failure, for user viewing or login. `reuseSession: true`
-requires visible mode and an explicit user handoff of the existing session.
-The worker refuses reuse if that session is absent. Default calls still reject
-existing sessions and close their own browser. These options do not permit
-concurrent workers or direct skill commands during a worker task
+requires an owned visible session with no login pause or uncertain effects.
+Use confirmed resume after a login or uncertain outcome before reuse. Foreign
+sessions are never adopted. Default calls reject existing sessions and close
+their own browser. At exit, a visible worker session passes to direct control,
+paused for `needs_login` or marked uncertain for `failed` and `cancelled`
 
 The worker returns `complete`, `blocked`, `needs_login`, or `needs_approval`.
 Execution failures return explicit `failed` or `cancelled` reports with any
@@ -254,17 +255,79 @@ Completion and approval classification are model judgments, not a security
 boundary or independent verification. Instructions require stopping before
 consequential final actions and treating page content as untrusted
 
-For login, use the browser skill's visible handoff and then delegate again with
-the same persistent profile. The worker never collects credentials itself. The main agent handles user approval and unsupported steps
+For login, use `/browser-login URL`, sign in manually, and confirm
+`/browser-resume`. Then reuse the owned visible session or close it before a
+new headless task. The persistent profile keeps login state. The worker never
+collects credentials. Direct control handles reviewed actions separately
+
+## Direct control and login
+
+`extensions/lib/browser-control.ts` registers `browser_control` with no nested
+model calls or API-key requirement. Worker model and thinking settings do not
+apply to direct control. `open` requires an HTTP(S) `url` and defaults to
+headless for a new session. `visible` is an open-only option, used only when
+requested. Read-only operations include snapshot, text read, exact-ref attribute
+inspection, and WebMCP inspection. Interactions use native snapshot refs, not
+selectors. Direct `press` also requires a ref and focuses that control first
+
+`/browser-login URL`, `/browser-resume`, and `/browser-close` wrap the same
+control operations. Login opens a visible browser without a snapshot and pauses
+all automation until resume receives actual UI confirmation. After the resume
+command, take a new snapshot before using refs. The user enters
+credentials in the browser's native UI. Do not collect credentials, cookies,
+tokens, or browser storage. Direct fill blocks known password and OTP fields,
+along with file and hidden inputs. This detection is not a complete secrets filter
+
+Every direct click, fill, select, check, uncheck, press, and WebMCP invocation
+requires immediate UI confirmation of the exact action and parameters. No UI
+means blocked, and there is no model-supplied approval flag. Before ref use, a
+fresh snapshot must match the previous URL and exact target signature. For
+interactions, the full snapshot must match before and after confirmation.
+Changes block execution and require a new review. WebMCP also requires current
+inspected metadata and schema-valid arguments. These checks are not atomic
+and do not guarantee safe effects or task completion
+
+Uncertain interaction results stop further actions without automatic retry.
+The uncertain state persists until confirmed resume or close. Snapshot, read,
+and exact-ref inspection remain available for review unless login is paused.
+Close affects only the owned browser and preserves the profile
+
+Ownership records use pi custom entries named `browser-owner`, with the daemon
+PID, visible mode, login pause, and uncertain state. Session start restores a
+record only when its PID matches the live named session. Snapshots and WebMCP
+inspection caches are not persisted, so take a new snapshot before using refs
+after reload. PID matching is not a cross-process lock. Direct sessions remain
+open between calls. On `session_shutdown`, idle owned headless sessions close,
+while visible sessions remain open for the user, including across reload
+
+## Shared browser runtime
+
+`extensions/lib/browser-runtime.ts` supplies URL and action validation, bounded
+output, CLI batches, and session diagnostics to both tools. The internal helper
+`extensions/lib/browser.sh` uses the named `browser` session in the default
+namespace. It resolves system Chromium through PATH or
+`AGENT_BROWSER_EXECUTABLE_PATH`, with no bundled-browser fallback. Every command,
+including close, repeats the same executable, absolute profile, visible mode,
+and timeout settings to avoid unintended browser restarts
+
+The separate persistent profile at `~/.pi/agent/browser/profile` keeps browser
+data across restarts. The daily browser profile is never used, copied, or
+attached. No normal-browser remote-debugging setup is needed.
+`--no-startup-window` prevents an extra New Tab page, and additional
+`AGENT_BROWSER_ARGS` are retained. The footer counts active agent-browser
+sessions. A 10-minute idle timeout is a backstop, including for visible sessions.
+Neither tool exposes arbitrary shell, eval, screenshots, or coordinate controls
 
 ## WebMCP with DOM fallback
 
 WebMCP is automatic, using agent-browser's experimental native
 support. `extensions/lib/browser-webmcp.ts` reads discovery updates from every
 batch entry, including `open`, not only the final snapshot. Summaries carry
-names, descriptions, origins, and frame IDs. No update preserves the existing
-catalog. An unchanged URL and catalog preserve inspected metadata. A changed
-URL or catalog invalidates it
+names, descriptions, origins, and frame IDs. When no update arrives, the existing
+catalog stays in use. An unchanged URL and catalog preserve inspected metadata.
+A changed URL or catalog invalidates it. Direct controls list native tools on
+their first observation if no discovery update arrives, including after a
+handoff or reload
 
 The helper prefers suitable page tools and uses `webmcp_inspect` to fetch a
 selected tool's full schema. Inspection caches only complete, bounded metadata.
@@ -286,8 +349,8 @@ effects. A CLI success envelope alone is insufficient: invocation status must
 be `completed`. Tool output remains untrusted evidence, not proof of task success
 
 Descriptions, schemas, results, and annotations such as `readOnlyHint` are page
-claims, not authorization. Login and consequential actions retain the same
-model-based stop rules as DOM actions. The final read-only phase exposes no
+claims, not authorization. The worker's login and consequential actions retain
+the same model-based stop rules as DOM actions. The final read-only phase exposes no
 WebMCP invocation, even for tools claiming to be read-only. Fresh metadata checks
 are not atomic and do not prove the implementation behind a tool is safe
 
@@ -372,45 +435,7 @@ and [TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/fu
 Supplied inputs and parallel completion judgment follow
 [OpenCode's Jev loop](https://github.com/anomalyco/opencode/blob/021f8b3202a8027b684e43a2e673c269becaf156/packages/plugin-browser/src/use.ts)
 
-# Browser skill (`skills/browser/SKILL.md`)
-
-## Goal and design
-
-The `browser` skill controls agent-browser through Bash, adapted from
-[Vercel's core skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core).
-Its `browser.sh` helper uses the named session `browser`, resolves
-system Chromium through PATH or `AGENT_BROWSER_EXECUTABLE_PATH`, and repeats the
-same launch settings on every command. `--no-startup-window` prevents Chromium's
-extra New Tab page, leaving agent-browser to create the task tab. Additional
-`AGENT_BROWSER_ARGS` are retained. Omitting settings between commands can
-restart the browser. There is no fixed executable path or bundled browser
-fallback. Compact accessibility snapshots and element refs drive interaction
-
-The helper passes `~/.pi/agent/browser/profile` as an absolute profile path.
-This separate persistent profile retains login state across browser restarts.
-The daily browser profile is never used or copied, and live attachment is not
-part of this workflow. Browser tasks run one at a time through the same named
-session. A task checks for an existing session before opening the browser and
-must not take over another task's active session
-
-Headless operation is the default. If authentication is missing, the agent
-closes its headless browser and reopens the sign-in page with
-`AGENT_BROWSER_HEADED=true`. Jonah signs in directly in that window. After he
-confirms completion, the agent closes the visible browser and reopens the target
-headless with the same profile. Every command in the visible session, including
-close, uses the headed setting. The skill forbids credential collection and
-authentication-state inspection or export. agent-browser configures debugging
-for its own browser, so no normal-browser remote-debugging setup is needed
-
-Screenshots and coordinates are forbidden for navigation and validation.
-Screenshots are permitted only as explicitly requested image deliverables.
-Fresh snapshots, focused text reads, and page-specific waits drive interaction.
-Consequential final actions require confirmation. These are skill instructions,
-not a tool-level security boundary
-
-Tasks close the browser even after failure, without deleting the persistent
-profile. A 10-minute idle timeout is a backstop for forgotten managed browsers.
-Explicit output files belong under `~/.pi/agent/browser/`
+Browser setup is adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
 
 # Pi upgrade skill (`skills/pi-upgrade/SKILL.md`)
 
@@ -634,7 +659,8 @@ branch, git-status, and browser-status changes request a render
 The footer runs `agent-browser session list --json` immediately and every 10
 seconds. It counts active daemon sessions in the current namespace without
 launching a browser. This includes headless, headed, and attached sessions, not
-all Chromium processes on the machine. The skill uses the default namespace
+all Chromium processes on the machine. The browser extension uses the default
+namespace
 
 When the count is positive, a yellow web icon and count appear directly after
 git status. Zero renders nothing. A failed command or invalid response retains

@@ -1,18 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, truncateHead, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum, validateToolCall, type Tool } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { browserPicker } from "./lib/browser-picker";
 import { createBrowserWebMCP } from "./lib/browser-webmcp";
 import { buildCandidates, chooseBrowserAction, focusSnapshot, snapshotTargetSignature } from "./lib/browser-jev";
 
-const helper = fileURLToPath(new URL("../skills/browser/browser.sh", import.meta.url));
+import { actionArgs, bounded, createBrowserClient, webUrl } from "./lib/browser-runtime";
+import { registerBrowserControl } from "./lib/browser-control";
 const configPath = () => join(getAgentDir(), "browser-model.json");
 const modelKey = (model) => `${model.provider}/${model.id}`;
 
@@ -97,44 +97,8 @@ const instructions = `You are the browser helper inside pi's Jev-first worker. C
 - Verify the requested result from the page before claiming complete. Return relevant facts, URLs, and limitations concisely. Do not claim that a successful click proves completion.
 - Do not reveal passwords, cookies, tokens, or unrelated private page content. Your report goes to the main agent, which has not seen your intermediate steps.`;
 
-function webUrl(value) {
-  const url = new URL(value);
-  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Browser URLs must use HTTP or HTTPS");
-  if (url.username || url.password) throw new Error("Browser URLs must not contain credentials");
-  return url.href;
-}
-
-function actionArgs(args) {
-  const { action, value } = args;
-  const ref = args.ref && (args.ref.startsWith("@") ? args.ref : `@${args.ref}`);
-  if (["click", "fill", "select", "check", "uncheck"].includes(action) && !ref) throw new Error(`${action} requires a ref`);
-  if (["open", "fill", "select", "press", "scroll", "wait"].includes(action) && value === undefined) throw new Error(`${action} requires a value`);
-  // Values are positional CLI arguments, never global launch options.
-  if (value?.startsWith("-")) throw new Error("Browser values must not start with a CLI option prefix");
-  switch (action) {
-    case "open": return ["open", webUrl(value)];
-    case "snapshot": return ["snapshot", "--urls"];
-    case "read": return ["get", "text", ref ?? "body"];
-    case "click": case "check": case "uncheck": return [action, ref];
-    case "fill": case "select": return [action, ref, value];
-    case "press":
-      if (!["Enter", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(value)) throw new Error("Unsupported browser key");
-      return ["press", value];
-    case "scroll":
-      if (!["up", "down"].includes(value)) throw new Error("Scroll must be up or down");
-      return ["scroll", value, "500"];
-    case "wait": return value === "" ? ["wait", "150"] : ["wait", "--text", value, "--timeout", "2000"];
-    default: throw new Error(`Unsupported browser action: ${action}`);
-  }
-}
-
-function bounded(text) {
-  const result = truncateHead(text, { maxBytes: 12000, maxLines: 200 });
-  return result.content + (result.truncated ? "\n[Truncated. Read a relevant element instead of the whole page.]" : "");
-}
-
 export default function browserExtension(pi: ExtensionAPI) {
-  let busy = false;
+  const control = registerBrowserControl(pi);
 
   pi.registerCommand("browser-model", {
     description: "Select the browser helper model, separate from the main session model",
@@ -192,22 +156,21 @@ export default function browserExtension(pi: ExtensionAPI) {
     promptSnippet: "Delegate a bounded browser task to Jev with a separately selected helper model",
     promptGuidelines: [
       "Prefer browser for self-contained browser tasks. Supply the full goal, constraints, and success conditions because browser does not see the conversation.",
-      "Do not run browser calls in parallel or use the browser skill while the worker runs. Use the browser skill for login, manual handoff, and unsupported interactions.",
+      "Do not run browser and browser_control in parallel. Use browser_control for manual login, direct inspection, approved final actions, and closing a browser left open by the worker. Do not use shell commands to bypass these controls.",
       "Treat browser reports as worker judgments backed by page evidence, not independent verification. Stop for user confirmation before consequential final actions.",
     ],
     parameters: Type.Object({
       url: Type.String({ description: "Starting HTTP or HTTPS URL" }),
       task: Type.String({ minLength: 1, description: "Complete task, constraints, and observable success conditions" }),
       visible: Type.Optional(Type.Boolean({ description: "Open a visible browser and leave it open for the user after this task, including on failure. Use only when requested" })),
-      reuseSession: Type.Optional(Type.Boolean({ description: "Reuse the existing browser session after an explicit login or viewing handoff. Requires visible=true and user approval. Never take over another active task" })),
+      reuseSession: Type.Optional(Type.Boolean({ description: "Reuse this extension's owned visible browser after a confirmed browser_control resume when needed. Requires visible=true. Never take over another task" })),
       inputs: Type.Optional(Type.Record(Type.String(), Type.Union([Type.String(), Type.Boolean()]), { description: "Exact nonsecret form values keyed by field meaning. Supply known text upfront so Jev can fill without a generative call. Booleans describe desired checkbox states. Never include credentials" })),
       maxSteps: Type.Optional(Type.Integer({ minimum: 1, maximum: 40, description: "Maximum decision steps, default 20" })),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
       signal?.throwIfAborted();
-      if (busy) throw new Error("Browser worker is already running");
+      if (control.busy) throw new Error("A browser operation is already running");
       if (params.reuseSession && !params.visible) throw new Error("Session reuse requires visible mode and an explicit user handoff");
-      const headed = params.visible ? "true" : "false";
       const url = webUrl(params.url);
       if (!existsSync(configPath())) throw new Error("Select a browser worker with /browser-model first");
       const config = JSON.parse(await readFile(configPath(), "utf8"));
@@ -215,8 +178,8 @@ export default function browserExtension(pi: ExtensionAPI) {
       if (!model) throw new Error(`Browser model unavailable: ${config.model}. Run /browser-model`);
       if (!process.env.TYPESAFE_API_KEY) throw new Error("Set TYPESAFE_API_KEY before using the browser worker");
       // Recheck after async config loading before claiming this process's worker.
-      if (busy) throw new Error("Browser worker is already running");
-      busy = true;
+      if (control.busy) throw new Error("A browser operation is already running");
+      control.busy = true;
       const started = performance.now();
       const deadline = AbortSignal.any([AbortSignal.timeout(300_000), ...(signal ? [signal] : [])]);
       const metrics = { steps: 0, turns: 0, actions: 0, modelMs: 0, browserMs: 0, browserCalls: 0, snapshots: 0, elapsedMs: 0, jevCalls: 0, jevMs: 0, jevActions: 0, argumentCalls: 0, delegatedSteps: 0, staleSkips: 0, repeatSkips: 0, jevCost: 0, protocolRepairs: 0 };
@@ -238,38 +201,13 @@ export default function browserExtension(pi: ExtensionAPI) {
       let modelStarted;
       let report = { status: "blocked", summary: "Browser worker reached its step limit", evidence: "The task was not verified as complete" };
       const reasoning = clampThinkingLevel(model, config.thinking ?? "off");
-      const run = async (args, cleanup = false) => {
-        const start = performance.now();
+      const recordBrowser = (ms: number, snapshots: number) => {
+        metrics.browserMs += ms;
         metrics.browserCalls++;
-        try {
-          const result = await pi.exec("env", [`AGENT_BROWSER_HEADED=${headed}`, "bash", helper, ...args], {
-            cwd: ctx.cwd, timeout: 45000,
-            signal: cleanup ? undefined : deadline,
-          });
-          if (result.killed || result.code !== 0) throw new Error(bounded(result.stderr || result.stdout || "Browser command interrupted"));
-          return bounded(result.stdout);
-        } finally {
-          metrics.browserMs += performance.now() - start;
-        }
+        metrics.snapshots += snapshots;
       };
-      const batch = async (commands, allowFailure = false) => {
-        const start = performance.now();
-        metrics.browserCalls++;
-        metrics.snapshots += commands.filter((command) => command[0] === "snapshot").length;
-        let result;
-        try {
-          // JSON stdin avoids the CLI command-string parser, which loses empty values.
-          // Only host-validated positional commands enter this fixed shell pipeline.
-          result = await pi.exec("bash", ["-c", 'set -o pipefail; printf "%s" "$1" | env AGENT_BROWSER_HEADED="$3" bash "$2" --json batch --bail', "browser-batch", JSON.stringify(commands), helper, headed], { cwd: ctx.cwd, timeout: 45000, signal: deadline });
-        } finally {
-          metrics.browserMs += performance.now() - start;
-        }
-        if (result.killed) throw new Error(`Browser batch interrupted; earlier actions may have run. Do not retry blindly. ${bounded(result.stderr + result.stdout)}`);
-        // Parse complete JSON before limiting the text sent to either model.
-        const entries = JSON.parse(result.stdout);
-        if (!allowFailure && (result.code !== 0 || entries.some((entry) => !entry.success))) throw new Error(`Browser batch failed; earlier actions may have run. Do not retry blindly. ${bounded(result.stderr + result.stdout)}`);
-        return entries;
-      };
+      const client = createBrowserClient(pi, ctx.cwd, Boolean(params.visible), deadline, recordBrowser);
+      const { run, batch } = client;
       const webmcp = createBrowserWebMCP(async (command) => (await batch([command], true))[0], bounded);
       const observationOutput = (entries, command?) => {
         const observation = entries.at(-1).result;
@@ -287,13 +225,12 @@ export default function browserExtension(pi: ExtensionAPI) {
       const observe = async (command?) => observationOutput(await batch(command?.[0] === "snapshot" ? [command] : [...(command ? [command] : []), ["snapshot", "--urls"]]), command);
       const currentControls = () => Object.fromEntries([...controlHints].filter(([ref, hint]) => hint.url === currentUrl && hint.signature === snapshotTargetSignature(currentSnapshot, ref)).map(([ref, hint]) => [ref, hint.attributes]));
       try {
-        metrics.browserCalls++;
-        const inventory = await pi.exec("agent-browser", ["session", "list", "--json"], { signal: deadline, timeout: 9000 });
-        if (inventory.killed || inventory.code !== 0) throw new Error(inventory.stderr || "Cannot inspect browser sessions");
-        const listed = JSON.parse(inventory.stdout);
-        if (!listed.success) throw new Error("Cannot inspect browser sessions");
-        if (listed.data.sessions.includes("browser") && !params.reuseSession) throw new Error("The browser session is already active. Finish that task or explicitly hand it off before delegation");
-        if (params.reuseSession && !listed.data.sessions.includes("browser")) throw new Error("The handed-off browser session is no longer active");
+        const info = await client.info();
+        if (info.active && !params.reuseSession) throw new Error("The browser session is already active. Close it with browser_control or explicitly hand it off before delegation");
+        if (params.reuseSession) {
+          control.assertOwned(info);
+          if (!control.session.visible || control.session.paused || control.session.uncertain) throw new Error("Use browser_control resume to finish the visible handoff before delegation");
+        } else control.forget();
         deadline.throwIfAborted();
         owned = true;
         onUpdate?.({ content: [{ type: "text", text: `Browser worker: Jev + ${config.model}` }], details: {} });
@@ -457,11 +394,19 @@ export default function browserExtension(pi: ExtensionAPI) {
         if (reportStarted !== undefined && timing.reportMs === 0) timing.reportMs = performance.now() - reportStarted;
         const cleanupStarted = performance.now();
         try {
-          if (owned && !params.visible) await run(["close"], true);
+          if (owned) {
+            if (params.visible) {
+              const info = await createBrowserClient(pi, ctx.cwd, true, AbortSignal.timeout(45000), recordBrowser).info();
+              control.remember(info, true, report.status === "needs_login", ["failed", "cancelled"].includes(report.status));
+            } else {
+              await run(["close"], true);
+              control.forget();
+            }
+          }
         } catch (error) {
           report = { status: "failed", summary: `${report.summary}\nBrowser cleanup failed: ${error}`, evidence: report.evidence };
         } finally {
-          busy = false;
+          control.busy = false;
           metrics.elapsedMs = performance.now() - started;
           timing.cleanupMs = performance.now() - cleanupStarted;
         }
@@ -472,7 +417,7 @@ export default function browserExtension(pi: ExtensionAPI) {
       const stats = `Jev + ${config.model} · ${metrics.jevCalls} Jev calls / ${(metrics.jevMs / 1000).toFixed(1)}s · ${(metrics.elapsedMs / 1000).toFixed(1)}s total · ${(metrics.modelMs / 1000).toFixed(1)}s model · ${(metrics.browserMs / 1000).toFixed(1)}s browser · ${(timing.reportMs / 1000).toFixed(1)}s report · ${metrics.actions} actions · ${webmcp.invocations.length} WebMCP calls · ${metrics.turns} turns · ${usage.totalTokens} tokens · $${usage.cost.total.toFixed(5)} estimated`;
       return {
         content: [{ type: "text", text: `${bounded(summary)}\n\n${stats}` }],
-        details: { ...report, url: currentUrl, model: config.model, reasoning, jevModel, browserLeftOpen: owned && Boolean(params.visible), ...metrics, ...timing, decisions, webmcpInvocations: webmcp.invocations },
+        details: { ...report, url: currentUrl, model: config.model, reasoning, jevModel, browserLeftOpen: owned && Boolean(params.visible) && Boolean(control.session), ...metrics, ...timing, decisions, webmcpInvocations: webmcp.invocations },
         usage,
       };
     },
