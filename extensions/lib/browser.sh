@@ -7,7 +7,7 @@ browser="${AGENT_BROWSER_EXECUTABLE_PATH:-$(command -v chromium || command -v ch
 agent-browser --session browser \
   --executable-path "$browser" --profile "$HOME/.pi/agent/browser/profile" \
   --headed "${AGENT_BROWSER_HEADED:-false}" --idle-timeout 10m \
-  --args "--no-startup-window${AGENT_BROWSER_ARGS:+,$AGENT_BROWSER_ARGS}" "$@"
+  --args "--no-startup-window${AGENT_BROWSER_ARGS:+,$AGENT_BROWSER_ARGS},--class=pi-browser" "$@"
 
 if [[ "${1:-}" == close ]]; then
   for attempt in {1..50}; do

@@ -321,7 +321,26 @@ The separate persistent profile at `~/.pi/agent/browser/profile` keeps browser
 data across restarts. The daily browser profile is never used, copied, or
 attached. No normal-browser remote-debugging setup is needed.
 `--no-startup-window` prevents an extra New Tab page, and additional
-`AGENT_BROWSER_ARGS` are retained. The footer counts active agent-browser
+`AGENT_BROWSER_ARGS` are retained. `--class=pi-browser` gives automation windows
+an identity separate from the daily browser. Hyprland can match this class to
+block initial focus, activation requests, and focus-follows-mouse without
+blocking clicks or keyboard window selection.
+The matching focus rule is user configuration, not installed by the extension.
+
+For new visible windows on Hyprland, `extensions/lib/browser-hyprland.ts`
+identifies the calling terminal through a temporary title marker with title
+push/pop. It also saves the original window titles from Hyprland and explicitly
+restores the matched terminal's title after lookup, since title pop alone did
+not restore Ghostty's displayed title. Before navigation, it updates a named Lua window rule to select that
+terminal's workspace silently. After navigation, targeted swaps place the
+browser immediately to the terminal's right in the scrolling layout. Swaps
+preserve keyboard focus, and pointer warping is disabled only during the
+synchronous Lua operation, then restored. Single-window columns and terminal
+title push/pop support are required. Placement failures are reported, not
+replaced with active-workspace placement. Existing browser windows and
+headless sessions are unchanged. Non-Hyprland sessions skip placement
+
+The footer counts active agent-browser
 sessions. A 10-minute idle timeout is a backstop, including for visible sessions.
 Neither tool exposes arbitrary shell, eval, screenshots, or coordinate controls
 

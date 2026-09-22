@@ -101,6 +101,31 @@ subject to the idle timeout. The footer counts active agent-browser sessions.
 PID-based ownership prevents routine takeover of foreign sessions, but is not
 a cross-process lock or a safety guarantee
 
+Automation windows use the `pi-browser` class. To prevent focus stealing on
+Omarchy with Lua-based Hyprland configuration, add this to
+`~/.config/hypr/hyprland.lua`, then run `hyprctl reload config-only`:
+
+```lua
+hl.window_rule({
+  match = { class = "^pi-browser$" },
+  no_initial_focus = true,
+  no_follow_mouse = true,
+  focus_on_activate = false,
+  suppress_event = "activate activatefocus",
+})
+```
+
+Click or use keyboard window selection to focus the browser for login. Mouse hover
+does not focus it. The class takes effect on the next browser launch
+
+On Hyprland, new visible browsers open on the calling terminal's workspace, in
+the column immediately to its right, without switching your workspace. This
+requires Lua-based Hyprland, the scrolling layout with single-window columns,
+and a terminal that supports title push/pop, such as Ghostty. A brief title
+marker identifies the terminal even when several windows share a process.
+The original title is saved from Hyprland and restored after the lookup.
+Existing browser windows are left in place. Headless sessions are unchanged
+
 Worker results include status, page evidence, timing, structured decisions, browser call
 and snapshot counts, tokens, and estimated cost. Check the evidence, not just the
 completion claim. Usage counts toward pi's session totals. Worker page data and inputs
