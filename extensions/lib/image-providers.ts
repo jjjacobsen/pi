@@ -1,5 +1,6 @@
 // Provider protocols: see docs/imagegen.md for the official API references
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { modelKey } from "./worker-model";
 
 export const IMAGE_PROVIDERS = ["openrouter", "vercel-ai-gateway"];
 
@@ -7,10 +8,15 @@ export type ImageModel = {
   provider: string;
   id: string;
   api: "images" | "chat";
+  thinkingLevels: string[];
 };
 
-export function modelKey(model: ImageModel) {
-  return `${model.provider}/${model.id}`;
+export function imageThinkingLevels(model: ImageModel) {
+  return ["default", ...model.thinkingLevels];
+}
+
+export function normalizeImageThinking(model: ImageModel, thinking: string) {
+  return imageThinkingLevels(model).includes(thinking) ? thinking : "default";
 }
 
 async function connection(ctx: ExtensionContext, provider: string) {
@@ -54,6 +60,9 @@ export async function discoverImageModels(ctx: ExtensionContext) {
         provider,
         id: m.id,
         api: provider === "vercel-ai-gateway" && m.type !== "image" ? "chat" : "images",
+        thinkingLevels: provider === "vercel-ai-gateway" && m.type !== "image"
+          ? (m.reasoning_options?.find((option) => option.type === "effort")?.values ?? [])
+          : [],
       } as ImageModel));
   }));
   const models: ImageModel[] = [];
@@ -75,7 +84,8 @@ export function imageFormat(bytes: Buffer) {
   throw new Error("Image API returned an unsupported image format (expected PNG, JPEG, WebP, or GIF)");
 }
 
-export async function generateImages(ctx: ExtensionContext, model: ImageModel, prompt: string, references: string[], signal: AbortSignal) {
+export async function generateImages(ctx: ExtensionContext, model: ImageModel, prompt: string, references: string[], signal: AbortSignal, thinking: string) {
+  if (!imageThinkingLevels(model).includes(thinking)) throw new Error("Unsupported image thinking level. Run /image-thinking");
   const conn = await connection(ctx, model.provider);
   let path;
   let body;
@@ -94,6 +104,7 @@ export async function generateImages(ctx: ExtensionContext, model: ImageModel, p
         ...references.map((url) => ({ type: "image_url", image_url: { url } })),
       ] }],
       modalities: ["text", "image"],
+      ...(thinking !== "default" ? { reasoning: { effort: thinking } } : {}),
       stream: false,
     };
   } else {

@@ -1,6 +1,7 @@
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { modelKey, readWorkerModel } from "./lib/worker-model";
+import { imageThinkingLevels } from "./lib/image-providers";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("model-settings", {
@@ -35,6 +36,12 @@ export default function (pi: ExtensionAPI) {
           : effective === thinking ? `${thinking} (${source})` : `${effective} (${source}: ${thinking}, clamped)`;
         rows.push([name, modelText, thinkingText]);
       }
+      const image = await readWorkerModel("image");
+      rows.push(image
+        ? ["imagegen", `${image.model} (saved)`, image.thinking === "default"
+          ? `provider default${image.thinkingLevels.length ? "" : " (no thinking control)"}`
+          : `${image.thinking} (${imageThinkingLevels(image).includes(image.thinking) ? "saved" : "unsupported"})`]
+        : ["imagegen", "not set (use /image-model)", "not set"]);
       const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => row[column].length)));
       ctx.ui.notify(rows.map((row) => row.map((cell, column) => cell.padEnd(widths[column])).join("  ").trimEnd()).join("\n"), "info");
     },

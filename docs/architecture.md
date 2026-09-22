@@ -122,9 +122,12 @@ creates one commit, and inferred intent can still be wrong
 # Image generation extension (`extensions/imagegen.ts`)
 
 `/image-model` discovers image-output models from configured OpenRouter and
-Vercel AI Gateway providers and opens a searchable pi `Input` / `SelectList`
-picker. The choice is stored in `<agent_dir>/imagegen.json`, separate from the
-main coding model and shared across sessions
+Vercel AI Gateway providers. It shares model and thinking commands, the searchable
+picker, and queued settings writes with subagent, browser, and commit through
+`worker-model.ts` and `worker-picker.ts`. Image discovery and thinking rules are
+supplied to that shared code. Settings are stored in
+`<agent_dir>/image-model.json`, separate from the main coding model and shared
+across sessions. The saved model includes its API mode and catalog effort values
 
 The `imagegen` tool reads that choice for each call, sends the prompt and any
 local reference images, saves original image files without overwriting existing
@@ -135,7 +138,10 @@ mutation queue. Provider-reported cost is included in tool usage when available
 requests. It resolves credentials and base URLs through pi's model registry.
 Image models are not registered as coding models. OpenRouter uses its dedicated
 Images API. Vercel uses Images endpoints for image-only models and Chat
-Completions for multimodal language models
+Completions for multimodal language models. `/image-thinking` offers `default`
+plus catalog effort values only for Vercel chat models. Explicit thinking maps
+to `reasoning.effort`. `default` omits it. Images endpoints receive no reasoning
+field. Unsupported choices reset to `default` when changing models
 
 Discovery is on demand, with a 30-second network deadline per provider and
 visible partial failures. Generation has a five-minute deadline, shares the
@@ -713,7 +719,7 @@ custom footer is disposed or disabled
 
 # Model settings extension (`extensions/model-settings.ts`)
 
-`/model-settings` reads the subagent, browser, and commit settings through
+`/model-settings` reads the subagent, browser, commit, and image settings through
 `readWorkerModel` in `extensions/lib/worker-model.ts` on each invocation.
 It also reads `SettingsManager.getGlobalSettings()` for the saved pi default
 model and thinking level, excluding project and session overrides. Missing
@@ -722,7 +728,10 @@ calls or configuration writes.
 Unset subagent settings inherit the session values. Unset commit settings use
 the session model and low thinking. Browser requires a saved model. The table
 marks each value's source, unavailable models, and thinking clamped to model
-support. It shows worker defaults, not subagent per-call overrides
+support. Image settings use saved catalog capabilities rather than pi's coding
+registry, without network discovery. The image row distinguishes provider default
+from explicit thinking and marks models with no thinking control.
+It shows worker defaults, not subagent per-call overrides
 
 # Subagent extension (`extensions/subagent.ts`)
 
@@ -745,8 +754,10 @@ Model and thinking resolve independently: per-call override, saved default,
 then the caller's setting. `/subagent-model` and `/subagent-thinking` save
 `model` and `thinking` in `<agent_dir>/subagent-model.json`, read on each call.
 Select a model first. Its initial thinking level is `off`. Both commands share
-`extensions/lib/worker-model.ts` and `worker-picker.ts` with the browser commands,
-including filtering, validation, and queued configuration writes
+`extensions/lib/worker-model.ts` and `worker-picker.ts` with browser, commit,
+and image commands, including filtering, validation, and queued configuration
+writes. The shared code accepts model discovery, thinking rules, and saved model
+metadata for image providers
 
 A per-call model override must be an exact `provider/model` or an unambiguous
 model ID. An explicit reasoning level must be supported by that model. Saved

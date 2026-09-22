@@ -10,7 +10,8 @@ image tool when needed
 2. Use your existing pi login for `openrouter` or `vercel-ai-gateway`. If needed,
    run `/login` and select the provider
 3. Run `/image-model`, type to filter, and press Enter to save a model
-4. Ask pi to generate an image and give it an output path
+4. Optionally run `/image-thinking` to select a supported thinking level
+5. Ask pi to generate an image and give it an output path
 
 Example request:
 
@@ -32,10 +33,23 @@ You can also select an exact model without the picker:
 /image-model openrouter/openai/gpt-image-2.5-flare
 ```
 
-Model IDs come from the provider, not a fixed list. The selected provider, model
-ID, and API mode are saved in `<agent_dir>/imagegen.json` for all sessions.
+Model IDs come from the provider, not a fixed list. Model and thinking settings
+are saved in `<agent_dir>/image-model.json` for all sessions, using the same
+commands, picker, and storage code as subagent, browser, and commit.
+Run `/image-model` again if your choice was saved in the old `imagegen.json` file.
 Changing the image model does not change pi's main model. Each tool call reads
 the saved choice, so changes in another pi session apply to future calls
+
+`/image-thinking` lists `default` plus the selected model's supported effort
+values. `default` omits the reasoning field and uses the provider default.
+Only Vercel chat image models with catalog effort options expose other values.
+OpenRouter Images and Vercel Images endpoints have no documented thinking
+control. Image quality is not a thinking level
+
+Use `/image-thinking default` to reset the choice. Changing models keeps a
+supported choice or resets it to `default`. `/model-settings` includes the image
+choice without fetching a catalog. Its capability information is from the last
+model or thinking selection
 
 ## Output and billing
 
@@ -78,6 +92,11 @@ The extension does not read or write `auth.json` itself and adds no dependencies
 - Edits use `images[].image_url` with base64 data URLs
 - Multimodal language models: `POST /v1/chat/completions` with image and text
   output enabled. Images come from `choices[].message.images`
+- Chat thinking uses `reasoning.effort`, restricted to the catalog's
+  `reasoning_options` effort values. Image-only endpoints receive no reasoning
+  field, even if the model catalog advertises effort options
+
+[Official Vercel reasoning guide](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/reasoning)
 
 [Official Vercel image API guide](https://vercel.com/docs/ai-gateway/modalities/image-generation/openai)
 
@@ -92,7 +111,7 @@ requires its discovery and image-request protocol in
 
 ## Implementation notes
 
-Catalog discovery happens only when `/image-model` runs, with a 30-second
+Catalog discovery happens only when `/image-model` or `/image-thinking` runs, with a 30-second
 network deadline per provider and no startup network request. A provider failure
 is shown while successful catalogs remain available. If none succeeds, the
 command fails without changing the saved model

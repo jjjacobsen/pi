@@ -157,7 +157,10 @@ speed. Without saved settings, commit uses the session model with low thinking
 `/image-model` opens a searchable picker of live image-output models from your
 configured OpenRouter and Vercel AI Gateway providers. The selection is saved
 for all sessions and does not change your coding model. `imagegen` generates
-images or edits local references, saves original files, and returns a preview
+images or edits local references, saves original files, and returns a preview.
+`/image-thinking` selects provider-supported effort for Vercel chat image models.
+Other image endpoints use the provider default without a thinking control.
+These commands share the subagent, browser, and commit settings code
 
 It uses existing pi credentials and the selected provider's billing, not Codex
 subscription usage. OpenCode Go is not offered because image output is not
@@ -171,7 +174,9 @@ background, so you can browse commits and stage diffs
 ### model-settings - worker model overview
 
 `/model-settings` shows the global pi default model and thinking level, plus
-settings for subagent, browser, and commit. Global defaults exclude project
+settings for subagent, browser, commit, and imagegen. The image row shows provider
+defaults or saved effort, including when thinking control is unavailable.
+Global defaults exclude project
 and current-session overrides. Unset global defaults show as `not set`. It marks saved, inherited, and default values, unavailable models,
 and thinking levels adjusted to model support. Subagent per-call overrides
 are not included
