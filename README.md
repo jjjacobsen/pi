@@ -32,8 +32,9 @@ Technical details for every extension live in [docs/architecture.md](docs/archit
 
 Replaces pi's inverted software block with a steady hardware bar cursor while
 the input editor is active. It keeps pi's working, compaction, summary, and
-retry indicators in the editor border. The terminal must support the standard
-DECSCUSR cursor-shape sequence
+retry indicators in the editor border. The cursor stays visible after `/reload`,
+and quitting restores the terminal's default cursor shape and visibility.
+The terminal must support the standard DECSCUSR cursor-shape sequence
 
 ### browser - delegated tasks and direct controls
 

@@ -7,6 +7,8 @@ const SOFTWARE_CURSOR = /\x1b\[7m(.*?)\x1b\[0m/g;
 
 class BarCursorEditor extends CustomEditor {
 	render(width: number): string[] {
+		// /reload reapplies pi's cursor setting after session_start.
+		this.tui.setShowHardwareCursor(true);
 		return super.render(width).map((line) => line.replace(SOFTWARE_CURSOR, "$1"));
 	}
 }
@@ -27,10 +29,12 @@ export default function (pi: ExtensionAPI) {
 		});
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (event) => {
 		if (!tui) return;
 		tui.terminal.write(DEFAULT_CURSOR);
 		tui.setShowHardwareCursor(showHardwareCursor);
+		// Interactive quit stops the TUI before extension cleanup runs.
+		if (event.reason === "quit") tui.terminal.showCursor();
 		tui = undefined;
 	});
 }
