@@ -78,9 +78,9 @@ use the same model and supported thinking level
    `handoff.md` exists
 2. Run `git add -A` so the staged snapshot is the change set used for message
    generation and commit
-3. Collect cached name status, stat, a rename-aware `-U3` diff, the last 25
-   commit subjects, and commit-related guidance from root `AGENTS.md` or
-   `CLAUDE.md`
+3. Collect cached name status, stat, a rename-aware `-U3` diff, the current
+   branch, and commit-related guidance from root `AGENTS.md` and `CLAUDE.md`.
+   Commit history is not used
 4. Ask an isolated in-memory agent session to write one message with the
    selected model and thinking level, no tools, and compaction disabled
 5. Validate the message. On failure, append the exact problems and ask once
@@ -94,6 +94,18 @@ last 12 user or assistant session entries, capped at 4 KiB. The complete prompt
 is capped at 24 KiB and reserves room for both forms of intent before it trims
 the diff context. The diff remains the source of truth
 
+A leading ticket ID in `/commit CAS-1234 [intent]` is a required exact prefix.
+IDs match `[A-Z][A-Z0-9]*-\d+`. Validation enforces the prefix on both attempts,
+ahead of the conventional type. Explicit prefixes take priority over repository
+guidance. Without one, the model may add a ticket only when repository guidance
+requires it and the branch or session clearly identifies the current ticket.
+Repository guidance adds rules but cannot replace the conventional format
+
+Guidance and branch context precede the diff so they survive context truncation.
+The worker has no automatic instruction-file loading, including user-level
+`AGENTS.md`. The root-file extractor includes lines containing `commit` and the
+next two nonempty lines, not the complete instruction files
+
 Small diffs up to 6 KiB are sent as-is. Larger diffs become a declaration-like
 digest with at most 8 hunks and 14 selected lines per file. The digest is
 capped at 12 KiB. Git stdout is normally capped at 32 MiB, stderr at 16 KiB,
@@ -103,7 +115,8 @@ The isolated session receives the complete selected model definition so custom
 headers, compatibility settings, and sampling parameters stay intact
 
 Validation requires an allowed Conventional Commit type, an optional valid
-scope, a specific description, a header no longer than 100 bytes, no raw diff
+scope, a specific description, a header no longer than 100 bytes including any
+ticket prefix, no raw diff
 noise, and a substantive body of at least 50 bytes. Allowed types are `feat`,
 `fix`, `docs`, `refactor`, `test`, `perf`, `ci`, `chore`, `build`, `style`, and
 `revert`

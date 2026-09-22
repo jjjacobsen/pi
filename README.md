@@ -142,11 +142,17 @@ Browser setup is adapted from [Vercel's agent-browser skill](https://github.com/
 
 ### commit - AI commit messages
 
-`/commit` stages everything and writes a conventional commit message in
-your repo's style, using your git history, AGENTS.md, and the current
-session for context. It stops before staging while `goal.md` or `handoff.md`
-exists in the repository root, and it refuses to commit if the staged snapshot
-changes while it writes the message
+`/commit` stages everything and requires a Conventional Commit message, using
+commit guidance from root `AGENTS.md` and `CLAUDE.md`, the current branch, and
+session context. It does not use commit history for style. It stops before
+staging while `goal.md` or `handoff.md` exists in the repository root, and it
+refuses to commit if the staged snapshot changes while it writes the message
+
+Use `/commit CAS-1234` to require an exact ticket prefix, for example
+`CAS-1234 fix: handle expired sessions`. You can add intent after the ticket.
+The explicit prefix takes priority over repository guidance. Without it, a
+ticket prefix is used only when repository guidance requires one and the branch
+or session identifies the current ticket. The conventional format stays required
 
 Use `/commit-model` and `/commit-thinking` to select separate settings, saved
 for all sessions. Select a model first, then try `/commit-thinking off` for

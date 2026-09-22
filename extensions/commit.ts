@@ -57,7 +57,9 @@ Rules:
 - The body is required. Explain what changed and why in concrete terms: motivation, notable decisions, tradeoffs, migration notes. Base every claim on the supplied diff and context. Never invent facts.
 - Use imperative mood: "add", "fix", "remove". Not "added", "fixes".
 - Add "BREAKING CHANGE:" as a footer, or "!" after the type, when the change breaks compatibility.
-- Match the repository's recent commit style when it is consistent.
+- Follow repository commit guidance for additional rules, but always keep the Conventional Commit format and required body.
+- An explicit required ticket prefix takes priority over repository guidance and session context. Put it before the type, separated by one space, for example "CAS-1234 fix: handle expired sessions".
+- Without an explicit prefix, add a ticket prefix only when repository guidance requires it and the current branch or session clearly identifies the current ticket. Ticket IDs use uppercase letters or digits followed by a hyphen and digits. Never invent a ticket or use an example ticket as the current ticket.
 - Output only the commit message, nothing else.`;
 
 let cachedRuntime;
@@ -296,12 +298,15 @@ async function analyze(pi, cwd, signal) {
 
   const stat = await runGit(pi, root, ["diff", "--cached", "-M", "--stat"], signal, 64 * 1024);
   const diff = await runGit(pi, root, ["diff", "--cached", "-M", "-U3"], signal);
-  const style = await runGit(pi, root, ["log", "--pretty=format:%s", "-25"], signal, 8 * 1024);
+  const branch = await runGit(pi, root, ["rev-parse", "--abbrev-ref", "HEAD"], signal, 4096);
   if (!stat.ok || !diff.ok) throw new Error("git diff failed");
   const finalTree = await runGit(pi, root, ["write-tree"], signal, 128);
   if (!finalTree.ok || trim(finalTree.stdout) !== tree) throw new Error("staged changes changed during analysis; run /commit again");
 
   let context = `## Repository\n${path.basename(root)}\n\n`;
+  if (branch.ok) context += `## Current branch\n${trim(branch.stdout)}\n\n`;
+  const guidance = commitGuidance(root);
+  if (guidance) context += `## Repository commit guidance (AGENTS.md / CLAUDE.md)\n${guidance}\n`;
   const languages = topLanguages(names);
   if (languages) context += `## Primary languages\n${languages}\n\n`;
   context += "## Changed files\n";
@@ -311,10 +316,6 @@ async function analyze(pi, cwd, signal) {
   if (stat.ok && trim(stat.stdout)) context += `\n## Diff stat\n${stat.stdout}\n`;
   const raw = diff.stdout.replace(/^\n+|\n+$/g, "");
   context += `\n## Diff\n${byteLength(raw) <= RAW_DIFF_LIMIT ? raw : buildDigest(raw)}\n`;
-  const subjects = trim(style.stdout);
-  if (style.ok && subjects) context += `\n## Recent commit style (last 25 subjects)\n${subjects}\n`;
-  const guidance = commitGuidance(root);
-  if (guidance) context += `\n## Repository commit guidance (AGENTS.md)\n${guidance}\n`;
   return { context: byteSlice(context, CONTEXT_LIMIT), tree };
 }
 
@@ -330,14 +331,19 @@ function isDiffNoiseLine(line) {
     (value.startsWith("index ") && value.includes("..")) || value.startsWith("+++ ") || value.startsWith("--- ");
 }
 
-function validate(message) {
+function validate(message, requiredPrefix) {
   const problems = [];
   const problem = (text) => problems.push(`- ${text}\n`);
   const value = trim(message);
   if (byteLength(value) < 8) problem("message is too short");
 
   const lines = value.split("\n");
-  const header = lines.shift() ?? "";
+  let header = lines.shift() ?? "";
+  if (byteLength(header) > 100) problem("header is longer than 100 characters");
+  if (requiredPrefix && !header.startsWith(`${requiredPrefix} `)) {
+    problem(`header must start with the exact ticket prefix "${requiredPrefix} "`);
+  }
+  header = header.replace(/^[A-Z][A-Z0-9]*-\d+ /, "");
   let bodyLength = 0;
   let diffNoise = false;
   const body = [];
@@ -349,7 +355,6 @@ function validate(message) {
   }
   const bodyText = trim(body.join("\n"));
 
-  if (byteLength(header) > 100) problem("header is longer than 100 characters");
   let index = 0;
   while (index < header.length && header[index] >= "a" && header[index] <= "z") index++;
   const type = header.slice(0, index);
@@ -469,9 +474,10 @@ async function commit(pi, cwd, message, signal, expectedTree) {
   return `${trim(hashResult.stdout)} ${trim(message.split("\n")[0] ?? message)}`;
 }
 
-function buildPrompt(context, intent, tail) {
+function buildPrompt(context, intent, tail, requiredPrefix) {
   const prefix = "Write ONE conventional commit message for the changes below.\n\n## Diff context\n";
   const suffix = [];
+  if (requiredPrefix) suffix.push("", `Required ticket prefix (exact, before the conventional type): ${requiredPrefix}`);
   if (intent) suffix.push("", "User intent (use only when supported by the diff):", byteSlice(intent, MAX_INTENT));
   if (tail) suffix.push("", "Recent session context (intent only; the diff stays the source of truth):", tail);
   const rest = suffix.join("\n");
@@ -510,7 +516,7 @@ function notify(ctx, text, level = "info") {
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("commit", {
-    description: "Stage all changes and commit them with an AI-generated conventional message",
+    description: "Stage all changes and write a Conventional Commit: /commit [CAS-1234] [intent]",
     handler: async (args, ctx) => {
       const cwd = ctx.cwd;
       showSpinner(ctx, "analyzing changes");
@@ -524,16 +530,19 @@ export default function (pi: ExtensionAPI) {
 
         const analysis = await analyze(pi, cwd, ctx.signal);
         if (!analysis) return notify(ctx, "nothing to commit", "info");
-        const prompt = buildPrompt(analysis.context, (args ?? "").trim(), sessionTail(ctx));
+        const input = (args ?? "").trim();
+        const requiredPrefix = input.match(/^[A-Z][A-Z0-9]*-\d+(?=\s|$)/)?.[0] ?? "";
+        const intent = input.slice(requiredPrefix.length).trim();
+        const prompt = buildPrompt(analysis.context, intent, sessionTail(ctx), requiredPrefix);
 
         showSpinner(ctx, "writing commit message");
         let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, ctx.signal));
-        let problems = validate(message);
+        let problems = validate(message, requiredPrefix);
         if (problems) {
           const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
           const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
           const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, ctx.signal));
-          problems = validate(retry);
+          problems = validate(retry, requiredPrefix);
           if (problems) return notify(ctx, `message rejected after retry:\n${problems}Last attempt:\n${retry}`, "error");
           message = retry;
         }
