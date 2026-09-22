@@ -249,6 +249,13 @@ instructions, the same as `/q`
 `/q` expands into an instruction telling the model not to change anything,
 then passes through whatever you type after it
 
+### implement - implement with subagents
+
+`/implement [additional instructions]` places your input first, followed by
+instructions to split the approved plan into tasks, delegate to subagents,
+integrate the results, and run checks. Bare `/implement` uses only the fixed
+instructions
+
 ### goal - execute the approved plan
 
 `/goal <answers>` expands your final answers, a blank line, then the
