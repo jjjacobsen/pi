@@ -1,13 +1,20 @@
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { modelKey, readWorkerModel } from "./lib/worker-model";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("model-settings", {
-    description: "Show model and thinking settings for subagent, browser, and commit",
+    description: "Show global pi defaults and model and thinking settings for workers",
     handler: async (_args, ctx) => {
       const models = ctx.modelRegistry.getAvailable();
-      const rows = [["Extension", "Model", "Thinking"]];
+      const settings = SettingsManager.create(ctx.cwd).getGlobalSettings();
+      const defaultModel = settings.defaultModel
+        ? `${settings.defaultProvider ? `${settings.defaultProvider}/` : ""}${settings.defaultModel} (saved)`
+        : "not set";
+      const rows = [
+        ["Scope", "Model", "Thinking"],
+        ["pi default", defaultModel, settings.defaultThinkingLevel ? `${settings.defaultThinkingLevel} (saved)` : "not set"],
+      ];
       for (const name of ["subagent", "browser", "commit"]) {
         const config = await readWorkerModel(name);
         if (!config && name === "browser") {

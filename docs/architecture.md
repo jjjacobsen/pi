@@ -704,7 +704,10 @@ custom footer is disposed or disabled
 
 `/model-settings` reads the subagent, browser, and commit settings through
 `readWorkerModel` in `extensions/lib/worker-model.ts` on each invocation.
-It shows a notification table without model calls or configuration writes.
+It also reads `SettingsManager.getGlobalSettings()` for the saved pi default
+model and thinking level, excluding project and session overrides. Missing
+global defaults show as `not set`. It shows a notification table without model
+calls or configuration writes.
 Unset subagent settings inherit the session values. Unset commit settings use
 the session model and low thinking. Browser requires a saved model. The table
 marks each value's source, unavailable models, and thinking clamped to model

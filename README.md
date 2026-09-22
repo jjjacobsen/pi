@@ -169,8 +169,9 @@ background, so you can browse commits and stage diffs
 
 ### model-settings - worker model overview
 
-`/model-settings` shows the model and thinking level for subagent, browser,
-and commit. It marks saved, inherited, and default values, unavailable models,
+`/model-settings` shows the global pi default model and thinking level, plus
+settings for subagent, browser, and commit. Global defaults exclude project
+and current-session overrides. Unset global defaults show as `not set`. It marks saved, inherited, and default values, unavailable models,
 and thinking levels adjusted to model support. Subagent per-call overrides
 are not included
 
