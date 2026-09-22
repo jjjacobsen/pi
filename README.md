@@ -50,11 +50,11 @@ experimental, not a safety guarantee
 The worker runs headless with the existing persistent automation profile and
 opens only the task tab. It closes its browser when done. For a requested visible
 session, use `visible: true` to leave it open. To reuse an owned visible session
-after login, confirm `/browser-resume`, then also use `reuseSession: true`.
+after login, run `/browser-resume`, then also use `reuseSession: true`.
 It prefers suitable discovered WebMCP tools,
 checks their schemas and fresh metadata, and uses DOM text and refs elsewhere.
 It has no shell, eval, screenshots, or coordinate controls. It stops for login,
-approval, or unsupported steps. Page data is untrusted. Failed or uncertain
+approval, missing task information, or unsupported steps. Page data is untrusted. Failed or uncertain
 WebMCP invocations stop without an automatic retry. Use `browser_control` for
 handoffs and direct actions. Do not run browser tools or commands in parallel
 
@@ -65,7 +65,7 @@ inspection and interactions, scrolling, waits, and discovered WebMCP tools
 
 ```text
 /browser-login https://example.com/login
-# Sign in manually in the visible window, then confirm resume in pi
+# Sign in manually in the visible window, then resume in pi
 /browser-resume
 /browser-close
 ```
@@ -81,16 +81,19 @@ browser_control({action: "press", ref: "e3", value: "Enter"})
 browser_control({action: "close"})
 ```
 
-Login opens visibly without taking a snapshot and pauses automation until an
-actual UI confirmation of resume. Enter credentials only in the browser, never
-in tool inputs. Known password and OTP fields cannot be filled. Every direct
-click, fill, select, check, uncheck, press, and WebMCP invocation requires its
-own UI confirmation. Without a UI, these actions are blocked. A model cannot
-set an approval flag to bypass confirmation. Refs must be fresh, including for
-press. After `/browser-resume`, take a new snapshot before using refs.
-A changed URL or full snapshot before or after confirmation blocks the action
-until a new review. Uncertain effects block further actions until confirmed
-resume or close, but snapshot, read, and exact-ref inspection remain available
+Neither browser tool shows Yes/No confirmation dialogs, including resume.
+Routine actions run without approval. Before a risky or consequential action,
+the agent ends its turn, explains the proposed action and risk in chat, and
+waits for your approval. It then uses direct control to execute the approved
+action without another prompt. The worker returns `needs_approval` instead of
+performing such actions. This is an agent instruction, not a runtime safety guarantee.
+Actions must stay within the user's request. Login opens visibly without taking
+a snapshot and pauses automation until resume. Enter credentials only in the
+browser, never in tool inputs. Known password and OTP fields cannot be filled.
+Refs must be fresh, including for press. After `/browser-resume`, take a new
+snapshot before using refs. A changed URL, target, or full snapshot blocks the
+action until a new review. Uncertain effects block further actions until resume
+or close, but snapshot, read, and exact-ref inspection remain available
 
 Both tools use agent-browser and system Chromium, with the separate persistent
 profile at `~/.pi/agent/browser/profile`, never the daily browser profile.

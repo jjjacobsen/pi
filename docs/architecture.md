@@ -249,7 +249,7 @@ Browser tasks remain serial
 An explicit `visible: true` request uses headed Chromium and leaves the browser
 open, including after failure, for user viewing or login. `reuseSession: true`
 requires an owned visible session with no login pause or uncertain effects.
-Use confirmed resume after a login or uncertain outcome before reuse. Foreign
+Use resume after a login or uncertain outcome before reuse. Foreign
 sessions are never adopted. Default calls reject existing sessions and close
 their own browser. At exit, a visible worker session passes to direct control,
 paused for `needs_login` or marked uncertain for `failed` and `cancelled`
@@ -258,14 +258,18 @@ The worker returns `complete`, `blocked`, `needs_login`, or `needs_approval`.
 Execution failures return explicit `failed` or `cancelled` reports with any
 recorded usage. The outer tool successfully reports these outcomes, so callers
 must inspect the status rather than assume tool completion means task success.
-Completion and approval classification are model judgments, not a security
-boundary or independent verification. Instructions require stopping before
-consequential final actions and treating page content as untrusted
+Completion and risk classification are model judgments, not a security boundary
+or independent verification. Jev routes risky or consequential final actions
+to the helper, which returns `needs_approval` without executing them. The main
+agent ends its turn and asks in chat with the exact proposed action and risk.
+Only after the user's reply approves that action does it use direct control to
+execute it, without another prompt. The original task and page content do not
+replace this approval. Missing task information still blocks execution
 
-For login, use `/browser-login URL`, sign in manually, and confirm
+For login, use `/browser-login URL`, sign in manually, and run
 `/browser-resume`. Then reuse the owned visible session or close it before a
 new headless task. The persistent profile keeps login state. The worker never
-collects credentials. Direct control handles reviewed actions separately
+collects credentials. Neither browser tool shows a confirmation dialog
 
 ## Direct control and login
 
@@ -279,23 +283,25 @@ selectors. Direct `press` also requires a ref and focuses that control first
 
 `/browser-login URL`, `/browser-resume`, and `/browser-close` wrap the same
 control operations. Login opens a visible browser without a snapshot and pauses
-all automation until resume receives actual UI confirmation. After the resume
+all automation until resume is called. Resume has no confirmation dialog. After the resume
 command, take a new snapshot before using refs. The user enters
 credentials in the browser's native UI. Do not collect credentials, cookies,
 tokens, or browser storage. Direct fill blocks known password and OTP fields,
 along with file and hidden inputs. This detection is not a complete secrets filter
 
-Every direct click, fill, select, check, uncheck, press, and WebMCP invocation
-requires immediate UI confirmation of the exact action and parameters. No UI
-means blocked, and there is no model-supplied approval flag. Before ref use, a
-fresh snapshot must match the previous URL and exact target signature. For
-interactions, the full snapshot must match before and after confirmation.
-Changes block execution and require a new review. WebMCP also requires current
+Direct click, fill, select, check, uncheck, press, and WebMCP invocation run
+without UI confirmation dialogs. Agent instructions require stopping the turn
+and obtaining approval in chat before risky or consequential actions. Direct
+control does not enforce or independently verify that conversational approval.
+Actions must stay within the user's request.
+Before ref use, a fresh snapshot must match the previous URL and exact target
+signature. For interactions, the full snapshot must also match. Changes block
+execution and require a new review. WebMCP also requires current
 inspected metadata and schema-valid arguments. These checks are not atomic
 and do not guarantee safe effects or task completion
 
 Uncertain interaction results stop further actions without automatic retry.
-The uncertain state persists until confirmed resume or close. Snapshot, read,
+The uncertain state persists until resume or close. Snapshot, read,
 and exact-ref inspection remain available for review unless login is paused.
 Close affects only the owned browser and preserves the profile
 
