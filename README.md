@@ -177,8 +177,12 @@ Codex-backed search
 in the same process and returns only its final summary, so the caller's
 context window stays low. The subagent gets `read`/`bash`/`edit`/`write`
 plus `web_search` and can be called several times in
-one turn to run tasks in parallel. Model and reasoning inherit independently
-from the caller unless a call sets either optional override. Tasks are passed
+one turn to run tasks in parallel. Use `/subagent-model` and
+`/subagent-thinking` to pick defaults, or pass `/subagent-model provider/model`
+and `/subagent-thinking high`. Select a model first. Thinking starts at `off`
+until set. Defaults are saved across sessions in `~/.pi/agent/subagent-model.json`
+without changing the main session. Per-call overrides take priority, then saved
+defaults, then the caller's settings if no defaults are saved. Tasks are passed
 literally, and failed or empty final responses fail the tool with the transcript
 path. Its full transcript is saved under the agent dir
 (`~/.pi/agent/subagents/`), is resumable, and its complete usage, including

@@ -1,7 +1,7 @@
 import { fuzzyFilter, Input, SelectList, truncateToWidth } from "@earendil-works/pi-tui";
 
 // Follows imagegen.ts and pi's TUI selection pattern
-export function browserPicker(tui, theme, keybindings, done, title, values: string[], current) {
+export function workerPicker(tui, theme, keybindings, done, title, values: string[], current) {
   const input = new Input();
   const items = values.map((value) => ({ value, label: value }));
   const listTheme = {

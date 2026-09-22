@@ -17,8 +17,8 @@
 //   extension out, so the subagent tool cannot recurse into itself and the
 //   system prompt stays small. The tools allowlist is the second guard: even
 //   if a filter leak slips an extension in, only the five names are callable.
-// - Model and thinking level inherit from the caller by default. Optional
-//   per-call overrides select an exact model and/or reasoning level.
+// - Model and thinking use saved defaults, then inherit from the caller.
+//   Optional per-call overrides take priority over those defaults.
 // - The transcript is persisted under <agent_dir>/subagents/<ts>_<id>.jsonl
 //   so any run can be resumed (SessionManager.open) or inspected.
 // - The subagent's complete session usage rides back on the tool result's usage
@@ -40,6 +40,7 @@ import { Type } from "typebox";
 import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum } from "@earendil-works/pi-ai/compat";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { registerWorkerModel } from "./lib/worker-model";
 
 const TOOL_NAME = "subagent";
 const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -149,16 +150,18 @@ function assistantText(message) {
 }
 
 export default function subagentExtension(pi: ExtensionAPI) {
+  const readConfig = registerWorkerModel(pi, "subagent", "Subagent");
+
   pi.registerTool({
     name: TOOL_NAME,
     label: "Subagent",
     description:
-      "Delegate a self-contained task to an isolated subagent and get back only its final summary. The subagent runs with its own fresh context in the current project directory, with read, bash, edit, write, and web_search. It does not see this conversation. Model and reasoning overrides are optional; omit them to inherit the parent session. Use this for meaty but well-scoped work where you only need the outcome, not the intermediate steps: research, isolated refactors, digging through logs, writing reports. Call subagent once per independent task and several calls in parallel when tasks do not depend on each other. Do not delegate tiny tasks you can do yourself, and do not delegate tasks where you need to inspect the full intermediate output.",
+      "Delegate a self-contained task to an isolated subagent and get back only its final summary. The subagent runs with its own fresh context in the current project directory, with read, bash, edit, write, and web_search. It does not see this conversation. Model and reasoning overrides are optional; omit them to use saved /subagent-model and /subagent-thinking defaults, or inherit the parent session if unset. Use this for meaty but well-scoped work where you only need the outcome, not the intermediate steps: research, isolated refactors, digging through logs, writing reports. Call subagent once per independent task and several calls in parallel when tasks do not depend on each other. Do not delegate tiny tasks you can do yourself, and do not delegate tasks where you need to inspect the full intermediate output.",
     promptSnippet: "Delegate a self-contained task to an isolated subagent that returns only a summary",
     promptGuidelines: [
       "Use subagent when a task is meaty but self-contained and the caller only needs the outcome: research, isolated refactors, log digging, report writing. The subagent returns only its final message, so the caller's context stays small.",
       "Fire several subagent calls in the same turn to run independent tasks in parallel, one call per task.",
-      "Omit model and reasoning to inherit both from the parent session. Set only the value that needs an override.",
+      "Omit subagent model and reasoning to use saved defaults, or inherit from the parent session if unset. Set only the value that needs an override.",
       "Do not delegate tiny tasks you can do yourself, and do not delegate tasks where you need to see the full intermediate output.",
     ],
     parameters: Type.Object({
@@ -168,28 +171,25 @@ export default function subagentExtension(pi: ExtensionAPI) {
       }),
       model: Type.Optional(
         Type.String({
-          description: "Exact model as provider/model, or an unambiguous bare model ID. Omit to inherit the parent model.",
+          description: "Exact model as provider/model, or an unambiguous bare model ID. Omit to use the saved subagent model, or inherit the parent model if unset.",
         }),
       ),
       reasoning: Type.Optional(
         StringEnum(REASONING_LEVELS, {
-          description: "Reasoning level for this subagent. Omit to inherit the parent reasoning level.",
+          description: "Reasoning level for this subagent. Omit to use the saved subagent thinking level, or inherit the parent reasoning level if unset.",
         }),
       ),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       signal?.throwIfAborted();
-      if (!ctx.model) {
-        throw new Error("subagent: no active model in this session");
-      }
-
+      const config = await readConfig();
       const { modelRuntime, loader } = await ensureShared(ctx.cwd);
-      let model = ctx.model;
-      if (params.model) {
-        model = findExactModel(modelRuntime, params.model);
-        if (!model) {
-          throw new Error(`subagent: model "${params.model}" was not found or is ambiguous; use an exact provider/model`);
-        }
+      const reference = params.model ?? config?.model;
+      const model = reference ? findExactModel(modelRuntime, reference) : ctx.model;
+      if (!model) {
+        throw new Error(reference
+          ? `subagent: model "${reference}" was not found or is ambiguous. Use an exact provider/model or run /subagent-model`
+          : "subagent: no active model in this session");
       }
 
       const supportedReasoning = getSupportedThinkingLevels(model);
@@ -198,7 +198,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
           `subagent: reasoning "${params.reasoning}" is not supported by ${model.provider}/${model.id} (supported: ${supportedReasoning.join(", ")})`,
         );
       }
-      const thinkingLevel = params.reasoning ?? clampThinkingLevel(model, ctx.thinkingLevel);
+      const thinkingLevel = params.reasoning ?? clampThinkingLevel(model, config?.thinking ?? ctx.thinkingLevel);
 
       const agentDir = getAgentDir();
       const parentSession = ctx.sessionManager.getSessionFile();

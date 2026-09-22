@@ -685,10 +685,17 @@ The exact tool allowlist is a second control that
 also prevents recursive subagent calls. Skills and project instruction files
 still load
 
-The model and thinking level inherit independently from the caller. A model
-override must be an exact `provider/model` or an unambiguous model ID. An
-explicit reasoning level must be supported by that model. When only the model
-changes, pi clamps the inherited level to the selected model
+Model and thinking resolve independently: per-call override, saved default,
+then the caller's setting. `/subagent-model` and `/subagent-thinking` save
+`model` and `thinking` in `<agent_dir>/subagent-model.json`, read on each call.
+Select a model first. Its initial thinking level is `off`. Both commands share
+`extensions/lib/worker-model.ts` and `worker-picker.ts` with the browser commands,
+including filtering, validation, and queued configuration writes
+
+A per-call model override must be an exact `provider/model` or an unambiguous
+model ID. An explicit reasoning level must be supported by that model. Saved
+or inherited thinking is clamped to the selected model. An unavailable saved
+model fails the call rather than silently using the caller's model
 
 The model runtime and filtered resource loader are created once per pi process
 and shared. Concurrent first calls share the same initialization promise. The
