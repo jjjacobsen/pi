@@ -24,7 +24,7 @@ people and organizations I trust
 - `docs/` - design notes, including [installed-packages.md](docs/installed-packages.md)
 - `package.json` - load this repo into pi with `pi install /path/to/this/repo`
 
-Technical details for every extension live in [docs/architecture.md](docs/architecture.md)
+Technical details for every extension live in [docs/architecture.md](./docs/architecture.md)
 
 ## Extensions
 
@@ -239,7 +239,7 @@ literally, and failed or empty final responses fail the tool with the transcript
 path. Its full transcript is saved under the agent dir
 (`~/.pi/agent/subagents/`), is resumable, and its complete usage, including
 tools, compaction, and cache warming, counts toward pi's session totals. See
-[docs/architecture.md](docs/architecture.md) for the implementation details
+[docs/architecture.md](./docs/architecture.md) for the implementation details
 
 ## Adding a new extension
 
