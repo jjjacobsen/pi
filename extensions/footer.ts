@@ -102,7 +102,7 @@ let gitStatus: GitStatus | null = null; // null = not in a repo / unknown
 let gitStatusTimer: ReturnType<typeof setInterval> | null = null;
 let gitStatusInFlight = false;
 let browserCount = 0;
-let browserStatusUnknown = true;
+let browserStatusFailed = false;
 let browserStatusTimer: ReturnType<typeof setInterval> | null = null;
 let browserStatusInFlight = false;
 
@@ -200,10 +200,10 @@ function refreshBrowserStatus(): void {
 					throw new Error("Invalid agent-browser session list output");
 				}
 				browserCount = result.data.sessions.length;
-				browserStatusUnknown = false;
+				browserStatusFailed = false;
 			} catch {
 				// Keep the last count, but show unknown instead of a stale value.
-				browserStatusUnknown = true;
+				browserStatusFailed = true;
 			}
 			if (footerTui) footerTui.requestRender();
 		},
@@ -335,8 +335,8 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	if (branch) {
 		segments.push(theme.fg("success", `${ICONS.git} ${branch}${gitStatus ? gitStatusSuffix(gitStatus) : ""}`));
 	}
-	if (browserStatusUnknown || browserCount > 0) {
-		segments.push(theme.fg("warning", `${ICONS.browser} ${browserStatusUnknown ? "?" : browserCount}`));
+	if (browserStatusFailed || browserCount > 0) {
+		segments.push(theme.fg("warning", `${ICONS.browser} ${browserStatusFailed ? "?" : browserCount}`));
 	}
 	const sessionName = ctx.sessionManager.getSessionName();
 	if (sessionName) segments.push(theme.fg("dim", `• ${sessionName}`));
@@ -394,7 +394,7 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 
 function enableFooter(ctx: ExtensionContext): void {
 	gitStatus = null; // clear any stale status from a previous session/cwd
-	browserStatusUnknown = true;
+	// Browser status is global, so keep the last result across session changes.
 	if (gitStatusTimer) {
 		clearInterval(gitStatusTimer);
 		gitStatusTimer = null;
