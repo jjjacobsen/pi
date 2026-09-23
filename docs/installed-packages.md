@@ -18,8 +18,8 @@ file whenever packages change. Additional package notes are below
 
 ### pi-transcribe
 
-- [pi-transcribe](https://github.com/earendil-works/pi-transcribe) by earendil-works, the pi maintainer
-- Install: `pi install ssh://git@github.com/earendil-works/pi-transcribe`
+- [pi-transcribe](https://github.com/earendil-works/pi-voice) by earendil-works, the pi maintainer
+- Install: `pi install npm:@earendil-works/pi-voice`
 - Command: `/transcribe`
 - Shortcut: `ctrl + alt + z`
 - Use speech-to-text for input and read the output, rather than wait for spoken responses. This is the optimal interface setup
