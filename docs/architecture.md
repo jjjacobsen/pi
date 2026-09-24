@@ -787,12 +787,20 @@ Transcripts are stored at `<agent_dir>/subagents/<timestamp>_<id>.jsonl` and
 link to the parent session when it has a session file. They can be inspected
 or opened later with pi's session manager
 
-Text deltas stream to the tool update display. The rolling display keeps at
-most the trailing 4,000 characters after its buffer grows past 8,000. The
-caller's abort signal calls `session.abort()` during execution. Cancellation
+The caller supplies a short `label` with the full `task`. Progress updates carry
+the resolved model and thinking level, status, elapsed time, and latest tool
+activity. A one-second timer updates elapsed time without streaming assistant
+text or private reasoning. `extensions/lib/subagent-render.ts` renders a compact
+header and metadata, with native expansion for the task, output, usage, and
+transcript path. Final result details preserve metadata on session restore
+
+Failed and cancelled calls return structured details. A scoped `tool_result`
+handler marks these results as errors while retaining their metadata and usage
+
+The caller's abort signal calls `session.abort()` during execution. Cancellation
 is checked again after session startup, before sending the prompt. A partial
-transcript remains on disk after an active run is cancelled, and the
-tool reports cancellation after the session stops. Listener removal and
+transcript remains on disk after an active run is cancelled, and the tool reports
+cancellation after the session stops. Timer cleanup, listener removal, and
 session disposal use one cleanup path
 
 The delegated task is sent literally without command, skill-command, or prompt

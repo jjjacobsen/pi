@@ -238,8 +238,14 @@ defaults, then the caller's settings if no defaults are saved. Tasks are passed
 literally, and failed or empty final responses fail the tool with the transcript
 path. Its full transcript is saved under the agent dir
 (`~/.pi/agent/subagents/`), is resumable, and its complete usage, including
-tools, compaction, and cache warming, counts toward pi's session totals. See
-[docs/architecture.md](./docs/architecture.md) for the implementation details
+tools, compaction, and cache warming, counts toward pi's session totals
+
+Each call has a short task label. Its compact display shows the resolved model,
+thinking level, elapsed time, and latest tool activity, with distinct running,
+done, failed, and cancelled states. Expand the tool to see the full task,
+output, usage, and transcript path. Progress does not show private reasoning
+
+See [docs/architecture.md](./docs/architecture.md) for the implementation details
 
 ## Adding a new extension
 
