@@ -541,7 +541,8 @@ findings, and names a concrete replacement for every finding
 Peon plays Warcraft orc peon and human peasant lines for session start, task
 acknowledgement, task completion, task error, and rapid prompt spam. `/peon`
 opens a settings panel. The two packs are mixed for every category, and a pick
-does not immediately repeat within that category
+does not immediately repeat within that category. Task completion draws from all
+33 unique voice lines, regardless of which other categories are enabled
 
 The extension intentionally omits the other sound packs, pack installation,
 relay mode, desktop notifications, preview sounds, and unsupported event

@@ -70,6 +70,8 @@ const SOUNDS = {
   ],
 };
 
+SOUNDS["task.complete"] = [...new Set(Object.values(SOUNDS).flat())];
+
 const VOLUME_STEPS = ["10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"];
 const SILENT_WINDOW_STEPS = ["0s", "1s", "2s", "3s", "5s", "10s", "15s", "30s"];
 
