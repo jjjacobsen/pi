@@ -125,8 +125,12 @@ Each git command and the commit child have a 60-second timeout. The command
 signal cancels git processes, the commit child, and the message-writing agent
 session. Commit stdout and stderr are drained concurrently into bounded
 buffers, so verbose hooks do not block the child or grow memory without a
-limit. A TUI widget shows analysis, writing, and commit progress. Headless
-sessions skip the widget and notifications safely
+limit. A TUI widget shows the current step with live elapsed time. A per-command
+monotonic timer records sequential steps and reports each duration and the total
+in a final notification, including on early return or failure. Steps separate
+Git commands, context preparation, model session setup, generation, validation,
+and retries. The Git commit step includes hooks and signing as one duration.
+Headless sessions skip the widget and notifications safely
 
 There is no fallback message and no confirmation prompt. A second invalid
 message reports the validation problems and the last attempt. One invocation

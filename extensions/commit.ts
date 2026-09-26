@@ -13,14 +13,18 @@ import { modelKey, registerWorkerModel } from "./lib/worker-model";
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_WIDGET = "commit";
 
-function showSpinner(ctx, label) {
+function duration(ms) {
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function showSpinner(ctx, label, started) {
   try {
     ctx.ui.setWidget(SPINNER_WIDGET, (tui, theme) => {
-      const text = new Text(theme.fg("dim", `${SPINNER_FRAMES[0]} ${label}`), 1, 0);
+      const text = new Text(theme.fg("dim", `${SPINNER_FRAMES[0]} ${label} · ${duration(performance.now() - started)}`), 1, 0);
       let frame = 0;
       const timer = setInterval(() => {
         frame = (frame + 1) % SPINNER_FRAMES.length;
-        text.setText(theme.fg("dim", `${SPINNER_FRAMES[frame]} ${label}`));
+        text.setText(theme.fg("dim", `${SPINNER_FRAMES[frame]} ${label} · ${duration(performance.now() - started)}`));
         tui.requestRender();
       }, 80);
       return Object.assign(text, { dispose: () => clearInterval(timer) });
@@ -36,6 +40,27 @@ function hideSpinner(ctx) {
   } catch {
     // headless sessions have no widgets
   }
+}
+
+function trackTiming(ctx) {
+  const started = performance.now();
+  const parts = [];
+  let current;
+  const finish = () => {
+    if (current) parts.push(`${current.label}: ${duration(performance.now() - current.started)}`);
+  };
+  return {
+    step(label) {
+      finish();
+      current = { label, started: performance.now() };
+      showSpinner(ctx, label, current.started);
+    },
+    finish() {
+      finish();
+      hideSpinner(ctx);
+      notify(ctx, `Timing (total ${duration(performance.now() - started)}):\n${parts.join("\n")}`);
+    },
+  };
 }
 
 const MAX_SESSION_TAIL = 4000;
@@ -80,7 +105,8 @@ function resourceLoader() {
   };
 }
 
-async function askModel(model, thinkingLevel, prompt, cwd, signal) {
+async function askModel(model, thinkingLevel, prompt, cwd, signal, step, attempt) {
+  step(`${attempt}: model session setup`);
   let session;
   try {
     ({ session } = await createAgentSession({
@@ -107,6 +133,7 @@ async function askModel(model, thinkingLevel, prompt, cwd, signal) {
   signal?.addEventListener("abort", onAbort);
   try {
     signal?.throwIfAborted();
+    step(`${attempt}: message generation`);
     const pending = session.prompt(prompt);
     if (signal?.aborted) onAbort();
     await pending;
@@ -272,10 +299,12 @@ function commitGuidance(root) {
   return out;
 }
 
-async function analyze(pi, cwd, signal) {
+async function analyze(pi, cwd, signal, step) {
+  step("analysis: repository lookup");
   const root = await gitRoot(pi, cwd, signal);
   if (!root) throw new Error("not a git repository");
 
+  step("analysis: check blocking files");
   for (const name of ["goal.md", "handoff.md"]) {
     try {
       statSync(path.join(root, name));
@@ -286,23 +315,31 @@ async function analyze(pi, cwd, signal) {
     throw new Error(`${name} still exists; remove it before committing`);
   }
 
+  step("analysis: git add -A");
   const add = await runGit(pi, root, ["add", "-A"], signal, 4096);
   if (!add.ok) throw new Error("git add failed");
+  step("analysis: initial git write-tree");
   const initialTree = await runGit(pi, root, ["write-tree"], signal, 128);
   if (!initialTree.ok) throw new Error("git write-tree failed");
   const tree = trim(initialTree.stdout);
+  step("analysis: git diff --name-status");
   const files = await runGit(pi, root, ["diff", "--cached", "-M", "--name-status"], signal, 64 * 1024);
   if (!files.ok) throw new Error("git diff --name-status failed");
   const names = trim(files.stdout);
   if (!names) return "";
 
+  step("analysis: git diff --stat");
   const stat = await runGit(pi, root, ["diff", "--cached", "-M", "--stat"], signal, 64 * 1024);
+  step("analysis: git diff -U3");
   const diff = await runGit(pi, root, ["diff", "--cached", "-M", "-U3"], signal);
+  step("analysis: branch lookup");
   const branch = await runGit(pi, root, ["rev-parse", "--abbrev-ref", "HEAD"], signal, 4096);
   if (!stat.ok || !diff.ok) throw new Error("git diff failed");
+  step("analysis: final git write-tree");
   const finalTree = await runGit(pi, root, ["write-tree"], signal, 128);
   if (!finalTree.ok || trim(finalTree.stdout) !== tree) throw new Error("staged changes changed during analysis; run /commit again");
 
+  step("analysis: build diff context and read guidance");
   let context = `## Repository\n${path.basename(root)}\n\n`;
   if (branch.ok) context += `## Current branch\n${trim(branch.stdout)}\n\n`;
   const guidance = commitGuidance(root);
@@ -460,15 +497,20 @@ function commitWithInput(root, message, signal) {
   });
 }
 
-async function commit(pi, cwd, message, signal, expectedTree) {
+async function commit(pi, cwd, message, signal, expectedTree, step) {
+  step("commit: repository lookup");
   const root = await gitRoot(pi, cwd, signal);
   if (!root) throw new Error("not a git repository");
+  step("commit: check staged files");
   const staged = await runGit(pi, root, ["diff", "--cached", "--name-status"], signal, 64 * 1024);
   if (!staged.ok || !trim(staged.stdout)) throw new Error("nothing is staged; run /commit again so the working tree is re-snapshotted");
+  step("commit: verify staged tree");
   const tree = await runGit(pi, root, ["write-tree"], signal, 128);
   if (!tree.ok || trim(tree.stdout) !== expectedTree) throw new Error("staged changes changed while writing the message; run /commit again");
+  step("commit: git commit (includes hooks and signing)");
   const result = await commitWithInput(root, trim(message), signal);
   if (!result.ok) throw new Error(trim(result.stderr) || "git commit failed");
+  step("commit: hash lookup");
   const hashResult = await runGit(pi, root, ["rev-parse", "--short", "HEAD"], signal, 64);
   if (!hashResult.ok) throw new Error("commit created but hash lookup failed");
   return `${trim(hashResult.stdout)} ${trim(message.split("\n")[0] ?? message)}`;
@@ -519,7 +561,9 @@ export default function (pi: ExtensionAPI) {
     description: "Stage all changes and write a Conventional Commit: /commit [CAS-1234] [intent]",
     handler: async (args, ctx) => {
       const cwd = ctx.cwd;
-      showSpinner(ctx, "analyzing changes");
+      const timing = trackTiming(ctx);
+      const { step } = timing;
+      step("load settings and select model");
       try {
         const config = await readConfig();
         const model = config
@@ -528,31 +572,32 @@ export default function (pi: ExtensionAPI) {
         if (!model) throw new Error(config ? `Commit model unavailable: ${config.model}. Run /commit-model` : "no model available");
         const thinkingLevel = clampThinkingLevel(model, config?.thinking ?? "low");
 
-        const analysis = await analyze(pi, cwd, ctx.signal);
+        const analysis = await analyze(pi, cwd, ctx.signal, step);
         if (!analysis) return notify(ctx, "nothing to commit", "info");
+        step("build prompt and session context");
         const input = (args ?? "").trim();
         const requiredPrefix = input.match(/^[A-Z][A-Z0-9]*-\d+(?=\s|$)/)?.[0] ?? "";
         const intent = input.slice(requiredPrefix.length).trim();
         const prompt = buildPrompt(analysis.context, intent, sessionTail(ctx), requiredPrefix);
 
-        showSpinner(ctx, "writing commit message");
-        let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, ctx.signal));
+        let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, ctx.signal, step, "first attempt"));
+        step("validate message");
         let problems = validate(message, requiredPrefix);
         if (problems) {
           const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
           const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
-          const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, ctx.signal));
+          const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, ctx.signal, step, "retry"));
+          step("validate retry");
           problems = validate(retry, requiredPrefix);
           if (problems) return notify(ctx, `message rejected after retry:\n${problems}Last attempt:\n${retry}`, "error");
           message = retry;
         }
 
-        showSpinner(ctx, "creating commit");
-        notify(ctx, await commit(pi, cwd, message, ctx.signal, analysis.tree), "success");
+        notify(ctx, await commit(pi, cwd, message, ctx.signal, analysis.tree, step), "success");
       } catch (error) {
         notify(ctx, error?.message ?? String(error), "error");
       } finally {
-        hideSpinner(ctx);
+        timing.finish();
       }
     },
   });

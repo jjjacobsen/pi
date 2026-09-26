@@ -158,6 +158,11 @@ Use `/commit-model` and `/commit-thinking` to select separate settings, saved
 for all sessions. Select a model first, then try `/commit-thinking off` for
 speed. Without saved settings, commit uses the session model with low thinking
 
+The progress widget shows the current step and its elapsed time. A final timing
+summary lists each step and the total, including on failure. Git commands,
+model setup, message generation, and retries have separate timings. The commit
+time includes hooks and signing, not separate times for individual hooks
+
 ### imagegen - image generation with a separate model
 
 `/image-model` opens a searchable picker of live image-output models from your
