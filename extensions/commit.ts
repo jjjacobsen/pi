@@ -66,7 +66,8 @@ function trackTiming(ctx) {
     setMode(value) { mode = value; },
     step(label) {
       const now = performance.now();
-      const nextPhase = label.startsWith("commit:") ? "Create commit"
+      const nextPhase = label.startsWith("push:") ? "Push"
+        : label.startsWith("commit:") ? "Create commit"
         : label.startsWith("first attempt:") || label.startsWith("retry:") || label.startsWith("validate") ? "Write message"
         : "Analyze";
       if (mode === "verbose") {
@@ -582,51 +583,59 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.registerCommand("commit", {
-    description: "Stage all changes and write a Conventional Commit: /commit [CAS-1234] [intent]",
-    handler: async (args, ctx) => {
-      const cwd = ctx.cwd;
-      const timing = trackTiming(ctx);
-      const { step } = timing;
-      try {
-        timing.setMode(await readTiming());
-        step("load settings and select model");
-        const config = await readConfig();
-        const model = config
-          ? ctx.modelRegistry.getAvailable().find((candidate) => modelKey(candidate) === config.model)
-          : ctx.model;
-        if (!model) throw new Error(config ? `Commit model unavailable: ${config.model}. Run /commit-model` : "no model available");
-        const thinkingLevel = clampThinkingLevel(model, config?.thinking ?? "low");
+  for (const command of ["commit", "commit-and-push"]) {
+    pi.registerCommand(command, {
+      description: `Stage all changes and write a Conventional Commit${command === "commit-and-push" ? ", then git push" : ""}: /${command} [CAS-1234] [intent]`,
+      handler: async (args, ctx) => {
+        const cwd = ctx.cwd;
+        const timing = trackTiming(ctx);
+        const { step } = timing;
+        try {
+          timing.setMode(await readTiming());
+          step("load settings and select model");
+          const config = await readConfig();
+          const model = config
+            ? ctx.modelRegistry.getAvailable().find((candidate) => modelKey(candidate) === config.model)
+            : ctx.model;
+          if (!model) throw new Error(config ? `Commit model unavailable: ${config.model}. Run /commit-model` : "no model available");
+          const thinkingLevel = clampThinkingLevel(model, config?.thinking ?? "low");
 
-        const analysis = await analyze(pi, cwd, ctx.signal, step);
-        if (!analysis) return notify(ctx, "nothing to commit", "info");
-        step("build prompt and session context");
-        const input = (args ?? "").trim();
-        const requiredPrefix = input.match(/^[A-Z][A-Z0-9]*-\d+(?=\s|$)/)?.[0] ?? "";
-        const intent = input.slice(requiredPrefix.length).trim();
-        const prompt = buildPrompt(analysis.context, intent, sessionTail(ctx), requiredPrefix);
+          const analysis = await analyze(pi, cwd, ctx.signal, step);
+          if (!analysis) return notify(ctx, "nothing to commit", "info");
+          step("build prompt and session context");
+          const input = (args ?? "").trim();
+          const requiredPrefix = input.match(/^[A-Z][A-Z0-9]*-\d+(?=\s|$)/)?.[0] ?? "";
+          const intent = input.slice(requiredPrefix.length).trim();
+          const prompt = buildPrompt(analysis.context, intent, sessionTail(ctx), requiredPrefix);
 
-        let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, ctx.signal, step, "first attempt"));
-        step("validate message");
-        let problems = validate(message, requiredPrefix);
-        if (problems) {
-          const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
-          const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
-          const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, ctx.signal, step, "retry"));
-          step("validate retry");
-          problems = validate(retry, requiredPrefix);
-          if (problems) return notify(ctx, `message rejected after retry:\n${problems}Last attempt:\n${retry}`, "error");
-          message = retry;
+          let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, ctx.signal, step, "first attempt"));
+          step("validate message");
+          let problems = validate(message, requiredPrefix);
+          if (problems) {
+            const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
+            const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
+            const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, ctx.signal, step, "retry"));
+            step("validate retry");
+            problems = validate(retry, requiredPrefix);
+            if (problems) return notify(ctx, `message rejected after retry:\n${problems}Last attempt:\n${retry}`, "error");
+            message = retry;
+          }
+
+          notify(ctx, await commit(pi, cwd, message, ctx.signal, analysis.tree, step), "success");
+          if (command === "commit-and-push") {
+            step("push: git push");
+            const result = await runGit(pi, cwd, ["push"], ctx.signal);
+            if (!result.ok) throw new Error(`commit created, but git push failed: ${trim(result.stderr)}`);
+            notify(ctx, "git push completed", "success");
+          }
+        } catch (error) {
+          notify(ctx, error?.message ?? String(error), "error");
+        } finally {
+          timing.finish();
         }
-
-        notify(ctx, await commit(pi, cwd, message, ctx.signal, analysis.tree, step), "success");
-      } catch (error) {
-        notify(ctx, error?.message ?? String(error), "error");
-      } finally {
-        timing.finish();
-      }
-    },
-  });
+      },
+    });
+  }
 
   const readConfig = registerWorkerModel(pi, "commit", "Commit");
 

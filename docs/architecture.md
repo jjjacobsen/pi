@@ -63,6 +63,9 @@ cleanup. Non-TUI modes do nothing
 
 `/commit` stages all changes, asks the selected model for a Conventional Commit
 message, validates it, and creates the commit. It has no automatic trigger.
+`/commit-and-push` shares the same handler and arguments, then runs plain
+`git push` only after a successful commit. It adds a Push timing phase and
+reports push errors without undoing the local commit.
 It is inspired by tmonk/pi-committer
 
 `/commit-model` and `/commit-thinking` use the shared worker settings helper

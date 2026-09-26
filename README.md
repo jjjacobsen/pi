@@ -148,6 +148,10 @@ session context. It does not use commit history for style. It stops before
 staging while `goal.md` or `handoff.md` exists in the repository root, and it
 refuses to commit if the staged snapshot changes while it writes the message
 
+Use `/commit-and-push [CAS-1234] [intent]` for the same workflow followed by
+plain `git push`. It pushes only after a successful commit. Push failures leave
+the local commit in place
+
 Use `/commit CAS-1234` to require an exact ticket prefix, for example
 `CAS-1234 fix: handle expired sessions`. You can add intent after the ticket.
 The explicit prefix takes priority over repository guidance. Without it, a
