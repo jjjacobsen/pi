@@ -1,11 +1,12 @@
 // pi-commit: /commit implemented directly in TypeScript.
 // Inspired by tmonk/pi-committer (https://github.com/tmonk/pi-committer).
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createAgentSession, createExtensionRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, createExtensionRuntime, getAgentDir, SessionManager, SettingsManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { modelKey, registerWorkerModel } from "./lib/worker-model";
@@ -42,23 +43,47 @@ function hideSpinner(ctx) {
   }
 }
 
+const timingPath = () => path.join(getAgentDir(), "commit-timing.json");
+
+async function readTiming() {
+  const file = timingPath();
+  if (!existsSync(file)) return "normal";
+  const mode = JSON.parse(await readFile(file, "utf8")).mode;
+  if (mode !== "normal" && mode !== "verbose") throw new Error("Invalid commit timing setting. Use /commit-timing normal or verbose");
+  return mode;
+}
+
 function trackTiming(ctx) {
+  let mode = "normal";
   const started = performance.now();
   const parts = [];
   let current;
-  const finish = () => {
-    if (current) parts.push(`${current.label}: ${duration(performance.now() - current.started)}`);
+  let phase;
+  const finish = (entry, now) => {
+    if (entry) parts.push(`${entry.label}: ${duration(now - entry.started)}`);
   };
   return {
+    setMode(value) { mode = value; },
     step(label) {
-      finish();
-      current = { label, started: performance.now() };
-      showSpinner(ctx, label, current.started);
+      const now = performance.now();
+      const nextPhase = label.startsWith("commit:") ? "Create commit"
+        : label.startsWith("first attempt:") || label.startsWith("retry:") || label.startsWith("validate") ? "Write message"
+        : "Analyze";
+      if (mode === "verbose") {
+        finish(current, now);
+        current = { label, started: now };
+        showSpinner(ctx, label, now);
+      } else if (!phase || phase.label !== nextPhase) {
+        finish(phase, now);
+        phase = { label: nextPhase, started: now };
+        showSpinner(ctx, nextPhase, now);
+      }
     },
     finish() {
-      finish();
+      const now = performance.now();
+      finish(mode === "verbose" ? current : phase, now);
       hideSpinner(ctx);
-      notify(ctx, `Timing (total ${duration(performance.now() - started)}):\n${parts.join("\n")}`);
+      notify(ctx, `Timing (total ${duration(now - started)}):\n${parts.join("\n")}`);
     },
   };
 }
@@ -563,8 +588,9 @@ export default function (pi: ExtensionAPI) {
       const cwd = ctx.cwd;
       const timing = trackTiming(ctx);
       const { step } = timing;
-      step("load settings and select model");
       try {
+        timing.setMode(await readTiming());
+        step("load settings and select model");
         const config = await readConfig();
         const model = config
           ? ctx.modelRegistry.getAvailable().find((candidate) => modelKey(candidate) === config.model)
@@ -603,4 +629,22 @@ export default function (pi: ExtensionAPI) {
   });
 
   const readConfig = registerWorkerModel(pi, "commit", "Commit");
+
+  pi.registerCommand("commit-timing", {
+    description: "Select commit timing detail: /commit-timing [normal|verbose]",
+    handler: async (args, ctx) => {
+      let mode = args.trim();
+      if (!mode) {
+        if (ctx.mode !== "tui") throw new Error("Use /commit-timing normal or /commit-timing verbose outside the TUI");
+        mode = await ctx.ui.select("Commit timing (saved for all sessions)", ["normal", "verbose"]);
+        if (!mode) return;
+      }
+      if (mode !== "normal" && mode !== "verbose") throw new Error("Commit timing must be normal or verbose");
+      await withFileMutationQueue(timingPath(), async () => {
+        await mkdir(getAgentDir(), { recursive: true });
+        await writeFile(timingPath(), `${JSON.stringify({ mode }, null, 2)}\n`);
+      });
+      ctx.ui.notify(`Commit timing: ${mode}`, "info");
+    },
+  });
 }

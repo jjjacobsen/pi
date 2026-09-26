@@ -158,10 +158,13 @@ Use `/commit-model` and `/commit-thinking` to select separate settings, saved
 for all sessions. Select a model first, then try `/commit-thinking off` for
 speed. Without saved settings, commit uses the session model with low thinking
 
-The progress widget shows the current step and its elapsed time. A final timing
-summary lists each step and the total, including on failure. Git commands,
-model setup, message generation, and retries have separate timings. The commit
-time includes hooks and signing, not separate times for individual hooks
+`/commit-timing [normal|verbose]` saves the timing view across sessions in
+`~/.pi/agent/commit-timing.json`, independently of model settings. Bare
+`/commit-timing` opens a TUI selection. The default is `normal`: live progress
+shows Analyze, Write message, and Create commit with whole-phase elapsed time.
+`verbose` shows each Git step, model session setup, generation, validation,
+and retries. Both views summarize reached phases or steps and the total, including
+on failure or early exit. Git commit time includes hooks and signing together
 
 ### imagegen - image generation with a separate model
 
