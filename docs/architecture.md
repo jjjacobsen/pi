@@ -805,8 +805,8 @@ text or private reasoning. `extensions/lib/subagent-render.ts` renders a compact
 header and metadata, with native expansion for the task, output, usage, and
 transcript path. Final result details preserve metadata on session restore
 
-Failed and cancelled calls return structured details. A scoped `tool_result`
-handler marks these results as errors while retaining their metadata and usage
+Failed and cancelled calls return structured details with native `isError: true`,
+which retains their metadata and usage without a separate event handler
 
 The caller's abort signal calls `session.abort()` during execution. Cancellation
 is checked again after session startup, before sending the prompt. A partial

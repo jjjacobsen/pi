@@ -249,7 +249,8 @@ until set. Defaults are saved across sessions in `~/.pi/agent/subagent-model.jso
 without changing the main session. Per-call overrides take priority, then saved
 defaults, then the caller's settings if no defaults are saved. Tasks are passed
 literally, and failed or empty final responses fail the tool with the transcript
-path. Its full transcript is saved under the agent dir
+path. Failed and cancelled calls use pi's native error results and retain usage.
+Its full transcript is saved under the agent dir
 (`~/.pi/agent/subagents/`), is resumable, and its complete usage, including
 tools, compaction, and cache warming, counts toward pi's session totals
 

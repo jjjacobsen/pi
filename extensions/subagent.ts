@@ -149,14 +149,6 @@ function assistantText(message) {
 export default function subagentExtension(pi: ExtensionAPI) {
   const readConfig = registerWorkerModel(pi, "subagent", "Subagent");
 
-  // Returning a failure preserves details and usage; the SDK marks returned
-  // tool results successful unless tool_result overrides isError.
-  pi.on("tool_result", (event) => {
-    if (event.toolName !== TOOL_NAME) return;
-    const details = event.details as { status?: string } | undefined;
-    if (details?.status === "failed" || details?.status === "cancelled") return { isError: true };
-  });
-
   pi.registerTool({
     name: TOOL_NAME,
     label: "Subagent",
@@ -342,6 +334,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
         return {
           content: [{ type: "text" as const, text: `subagent ${details.status}: ${details.activity}` }],
           details: { ...details },
+          isError: true,
           ...(details.usage ? { usage: details.usage } : {}),
         };
       } finally {
