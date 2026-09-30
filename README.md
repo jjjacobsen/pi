@@ -15,6 +15,7 @@ people and organizations I trust
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
    - `pi install npm:@ff-labs/pi-fff`
 6. Export `EXA_API_KEY` before starting pi (the search extension needs it)
+7. Merge the [personal pi settings](docs/pi-settings.md) into `~/.pi/agent/settings.json`
 
 ## Layout
 
