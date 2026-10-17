@@ -686,11 +686,14 @@ optional extension-status line
 
 ```text
 π  ~/Projects/pi  main ↑1 ↓2 *1 ?2 +1
-↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   deepseek-v4-flash • max
+↑26 ↓44 CH95.0% $0.000 38,234/1.0M 12.4 tok/s   deepseek-v4-flash • max
 ```
 
-It removes cache and automatic-compaction segments, adds live throughput, and
-uses the active theme
+It removes cache read/write totals and automatic-compaction segments, adds live
+throughput, and uses the active theme. `CH` between output tokens and cost matches
+pi's default footer: the latest assistant response's cache-read tokens divided
+by input plus cache-read plus cache-write tokens, shown to one decimal place.
+It is hidden until the session has cache usage and the latest response has prompt tokens
 
 ## Data and lifecycle
 

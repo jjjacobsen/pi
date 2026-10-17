@@ -3,10 +3,10 @@
  *
  * Replaces pi's built-in footer with a cleaner two-line layout:
  *   line 1:  π  ~/Projects/pi  main ↑1 *1 ?2 +1  󰖟 1    (workspace, git and browser status)
- *   line 2:  ↑26 ↓44 $0.000 38,234/1.0M 12.4 tok/s   ...   deepseek-v4-flash • max
+ *   line 2:  ↑26 ↓44 CH95.0% $0.000 38,234/1.0M 12.4 tok/s   ...   deepseek-v4-flash • max
  *
  * vs the built-in footer this drops the R (cache read), W (cache write),
- * CH (cache hit %) and (auto) compaction segments, and adds a tok/s
+ * and (auto) compaction segments, and adds a tok/s
  * readout: always visible (starts at 0.0 until the first stream), live
  * while streaming, frozen at the last value once idle. The live value is a
  * rolling average over the last ~15s of streaming, excluding downtime
@@ -234,12 +234,18 @@ function addEntryUsage(totals, entry): void {
 	totals.input += usage.input;
 	totals.output += usage.output;
 	totals.cost += usage.cost.total;
+	totals.cacheRead += usage.cacheRead;
+	totals.cacheWrite += usage.cacheWrite;
+	if (entry.type === "message" && entry.message.role === "assistant") {
+		const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+		totals.latestCacheHitRate = promptTokens > 0 ? usage.cacheRead / promptTokens * 100 : undefined;
+	}
 }
 
-function sessionTotals(ctx: ExtensionContext): { input: number; output: number; cost: number } {
+function sessionTotals(ctx: ExtensionContext) {
 	const manager = ctx.sessionManager;
 	const entries = manager.getEntries();
-	let totals = { input: 0, output: 0, cost: 0 };
+	let totals = { input: 0, output: 0, cost: 0, cacheRead: 0, cacheWrite: 0, latestCacheHitRate: undefined as number | undefined };
 	let start = 0;
 	if (
 		totalsCache?.manager === manager &&
@@ -343,7 +349,7 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	lines.push(truncateToWidth(segments.join("  "), width, theme.fg("dim", "...")));
 
 	// Line 2 left: token/cost/context stats
-	const { input, output, cost } = sessionTotals(ctx);
+	const { input, output, cost, cacheRead, cacheWrite, latestCacheHitRate } = sessionTotals(ctx);
 	const contextUsage = ctx.getContextUsage();
 	const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 	const contextTokens = contextUsage?.tokens ?? null;
@@ -362,6 +368,9 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 
 	const parts: string[] = [];
 	parts.push(theme.fg("dim", `↑${formatTokens(input)} ↓${formatTokens(output)}`));
+	if ((cacheRead > 0 || cacheWrite > 0) && latestCacheHitRate !== undefined) {
+		parts.push(theme.fg("dim", `CH${latestCacheHitRate.toFixed(1)}%`));
+	}
 	parts.push(theme.fg("dim", `$${cost.toFixed(3)}`));
 	parts.push(theme.fg(contextColor, contextDisplay));
 	// tok/s last so the rest of the line never shifts when it appears

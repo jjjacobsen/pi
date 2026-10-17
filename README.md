@@ -224,7 +224,7 @@ collect session usage or write a cache. The view is adapted from omp
 The custom footer shows your workspace, git branch and status (`↑N ↓N` upstream
 ahead / behind commits and `*N ?N +N` worktree-changed / untracked / staged
 counters, polled from `git status`), an icon and count for active agent-browser
-sessions, token and cost stats, and
+sessions, token and cost stats, the latest response's cache hit percentage (`CH`), and
 a context color set on absolute tokens (warning ~100k, error ~200k). Totals
 include cache-warming usage. `/footer`
 switches between it and the built-in footer.
