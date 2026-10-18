@@ -119,6 +119,7 @@ async function startDashboard(pi: ExtensionAPI, ctx: DashboardContext, owner: Da
 
 /**
  * Open the stock trusted-local UI for an owner-unique browser namespace.
+ * All commands and /api/exec children share browser.sh's headless launch settings.
  * The caller must launch its browser in this same namespace. Namespace scopes
  * default discovery, NOT authorization. Stock loopback access bypasses tokens,
  * and /api/exec can select other namespaces. This is not a security sandbox

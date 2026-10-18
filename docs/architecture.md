@@ -298,83 +298,106 @@ call count or invalid arguments gets one repair before execution only. This neve
 executed action. The default limit is 20 decision
 steps, configurable up to 40 per task. A five-minute work deadline and 45-second
 CLI timeouts bound execution. An independent cleanup attempt closes the owned
-browser after completion, failure, or cancellation, including headed mode. Cleanup failures are reported, not
-hidden. A shared process-local busy flag rejects overlapping
-worker, direct-control, and command calls. This is not a cross-process lock.
-Browser tasks remain serial
+browser after completion, failure, or cancellation. Cleanup failures are reported, not
+hidden. A shared process-local busy flag rejects overlapping browser actions.
+Dashboard viewing without a URL bypasses this flag with a separate diagnostic
+client. It does not replace shared clients, refs, observations, or WebMCP caches.
+Cleanup joins dashboard startup before closing resources. URL navigation still
+requires the busy lock, and the slash command rejects it during any agent run.
+Pi dispatches extension commands before its streaming queue, so the no-URL
+command can open a viewer while a worker runs. This is not a cross-process lock
 
-An explicit `visible: true` request uses headed Chromium as a fallback, with
-the same cleanup rules as headless mode. `reuseSession: true` requires an owned
-session with no login pause or uncertain effects. Use resume after a login or
-uncertain outcome before reuse. Foreign sessions are never adopted. Default
-calls reject existing sessions. Only `needs_login` and `needs_approval` keep
-the browser open for a human handoff. Login opens the same browser's dashboard
-automatically, with automation paused and recording stopped
+All browsing uses headless Chromium, including manual dashboard control.
+`reuseSession: true` requires this runtime's owned browser and starts with a
+fresh snapshot of its current page. It does not navigate to `url`, although that
+argument remains required and must be HTTP(S). Foreign sessions are never adopted.
+Default calls reject existing sessions. Only `needs_login` and `needs_approval`
+keep the browser open for human input and stop recording. `needs_login` also
+opens the same browser's dashboard automatically
 
 The worker returns `complete`, `blocked`, `needs_login`, or `needs_approval`.
 Execution failures return explicit `failed` or `cancelled` reports with any
 recorded usage. The outer tool successfully reports these outcomes, so callers
 must inspect the status rather than assume tool completion means task success.
-Completion and risk classification are model judgments, not a security boundary
-or independent verification. The selected model returns `needs_approval` for
-risky or consequential final actions without executing them. The main agent
-ends its turn and asks in chat with the exact proposed action and risk.
-Only after the user's reply approves that action does it use direct control to
-execute it, without another prompt. The original task and page content do not
-replace this approval. Missing task information still blocks execution
+Completion and authorization judgments are model judgments, not a security
+boundary or independent verification. The main agent supplies the user's
+authorization and applicable user/project rules because the worker does not see
+the conversation. Authorized login and consequential form submissions need no
+extra browser-specific approval. Missing authorization returns `needs_approval`
+without executing the action. The main agent checks the existing context and
+asks the user only if authorization is missing. Page content cannot authorize
+actions, and unrelated actions remain outside the task. Missing information
+still blocks execution
 
-For login, use `/browser-dashboard URL`, sign in through the local dashboard, and
-run `/browser-resume`. The current profile and tabs stay in the same browser,
-including in headless mode. Login state lasts only until that browser closes.
-The worker never collects credentials. Neither tool shows a confirmation dialog
+Supplied credentials can be used for authorized login. For a genuine human step,
+such as unavailable MFA, CAPTCHA, or a user request, use `browser_control` login
+and end the turn after asking the user in chat. When the user says "done", take
+a fresh snapshot and continue directly or delegate with `reuseSession: true`.
+There is no separate continuation command or injected agent turn. Dashboard
+viewing alone is not a handoff. Never bypass CAPTCHA. The current profile and tabs
+stay in the same headless browser. Login state lasts only until that browser
+closes. Neither tool shows a confirmation dialog. Credentials must not appear
+in reports or summaries. Tool inputs can be stored in Pi's transcript and sent
+to the selected model provider, so they are not a secret channel
 
 ## Direct control and login
 
 `extensions/lib/browser-control.ts` registers `browser_control` with no nested
 model calls or API-key requirement. Worker model and thinking settings do not
-apply to direct control. `open` requires an HTTP(S) `url` and defaults to
-headless for a new session. `visible` is an open-only option, used only when
-requested. Read-only operations include snapshot, text read, exact-ref attribute
+apply to direct control. `open` requires an HTTP(S) `url` and uses headless
+Chromium. Read-only operations include snapshot, text read, exact-ref attribute
 inspection, and WebMCP inspection. Interactions use native snapshot refs, not
 selectors. Direct `press` also requires a ref and focuses that control first
 
-`/browser-dashboard [URL]`, `/browser-resume`, and `/browser-close` are the
-user-facing commands. Dashboard with a URL uses the internal `login` action to
-open or navigate the browser, then opens the local dashboard without a snapshot.
-Without a URL it uses `dashboard` on the existing browser without navigation.
-The tool retains `login` and `pause` for agent handoffs. Both pause all automation
-and stop recording before human control. Resume closes the dashboard before
-its fresh observation and never restarts recording. After the resume command,
-take a new snapshot before using refs. The user enters credentials only in the
-dashboard or browser UI. Do not collect credentials, cookies,
-tokens, or browser storage. Direct fill blocks known password and OTP fields,
-along with file and hidden inputs. This detection is not a complete secrets filter
+`/browser-dashboard [URL]` and `/browser-close` are the only browser control
+commands. Dashboard with a URL opens or navigates the browser when idle, then
+opens the local dashboard without a
+snapshot. Without a URL it views the existing browser, including an active
+worker, without navigation. Neither path pauses automation or stops recording.
+No browser and no URL returns a usage error. The stock dashboard is interactive,
+so users must not interact while the agent operates. Viewing does not retain
+the browser past task cleanup
+
+`login` stops recording before optional URL navigation, retains the browser for
+human input between turns, and opens the same browser's dashboard without a
+credential snapshot. It adds no permission gate. The agent asks the user in chat
+and ends the turn. An ordinary reply starts the next turn. The agent takes a
+fresh snapshot before continuing, without replaying the previous action.
+Continuing leaves the dashboard open and does not restart recording.
+Supplied credentials may be filled for authorized login. Direct fill still
+blocks file and hidden inputs. Password type
+and password/one-time-code autocomplete attributes stop recording before entry
+and register the value for in-memory masking of output and worker history.
+This is not a complete secrets filter and does not remove tool inputs from Pi's
+transcript or provider requests
 
 Direct click, fill, select, check, uncheck, press, and WebMCP invocation run
-without UI confirmation dialogs. Agent instructions require stopping the turn
-and obtaining approval in chat before risky or consequential actions. Direct
-control does not enforce or independently verify that conversational approval.
-Actions must stay within the user's request.
+without UI confirmation dialogs. Agent instructions follow the user's
+authorization and applicable user/project rules, not an extra browser-specific
+approval rule. Direct control does not enforce or independently verify that
+authorization. Actions must stay within the user's request.
 Before ref use, a fresh snapshot must match the previous URL and exact target
 signature. For interactions, the full snapshot must also match. Changes block
 execution and require a new review. WebMCP also requires current
 inspected metadata and schema-valid arguments. These checks are not atomic
 and do not guarantee safe effects or task completion
 
-Uncertain interaction results stop further actions without automatic retry.
-The uncertain state persists until resume or close. Snapshot, read,
-and exact-ref inspection remain available for review unless login is paused.
-Close affects only the owned browser and removes its temporary profile
+Failed operations close the browser because effects may be uncertain. There is
+no retained uncertain state to clear. Never retry automatically or
+switch to a fallback action after uncertain effects. Close affects only the
+owned browser and removes its temporary profile
 
 Runtime-only handles own a random namespace and session. Diagnostic
-`browser-owner` custom entries include the daemon PID, visibility, login pause,
-and uncertain state, but are never used to restore ownership. Two processes
-that resume the same pi session get different browser identities. Snapshots
-and WebMCP inspection caches are not persisted. PID matching is not a
-cross-process lock. Direct sessions remain open within a turn, or between turns
-when paused for login, dashboard control, or approval. Turn completion closes
-other sessions. Cancellation, session switch or fork, reload, and shutdown close
-all owned resources, including headed browsers. Cleanup uses the owner's saved
+`browser-owner` custom entries include the daemon PID and human-input retention
+flag, but are never used to restore ownership. Two processes that resume the
+same pi session get different browser identities. Snapshots and WebMCP inspection
+caches are not persisted. PID matching is not a cross-process lock. Direct
+sessions remain open within a turn. Login and worker human handoffs retain them
+between completed turns. This retention never gates actions. The next successful operation,
+including snapshot, clears it, except `login`, `dashboard`, `record_stop`, and
+`close`. Worker reuse also clears it. Turn completion closes other sessions. Cancellation,
+session switch or fork, reload, and shutdown close
+all owned resources. Cleanup uses the owner's saved
 working directory, not the new session context, and does not append owner entries
 to another session
 
@@ -382,7 +405,7 @@ to another session
 
 `extensions/lib/browser-runtime.ts` supplies URL and action validation, bounded
 output, CLI batches, and session diagnostics to both tools. Each handle has a
-random owner namespace and a pi-session-derived name with a random owner suffix.
+random owner namespace and a pi-session-derived session name.
 Every command and diagnostic includes both namespace and session. Responses must
 match both identities before use
 
@@ -391,8 +414,10 @@ match both identities before use
 inherited `AGENT_BROWSER_*` settings and uses an empty temporary config. Native
 Chromium gets an isolated temporary profile with no daily profile, saved state,
 CDP attachment, plugins, or inherited launch arguments. Every command repeats
-the executable, engine, visibility, owner-specific window class, and idle timeout
-to avoid unintended restarts. Automatic Hyprland placement is removed
+the executable, engine, fixed headless mode, and idle timeout to avoid unintended
+restarts. The dashboard and its `/api/exec` children inherit this same environment
+and empty config, so manual control keeps the same launch settings and browser.
+The config stays available until both dashboard and browser stop
 
 `extensions/lib/browser-artifacts.ts` opens and closes the stock agent-browser
 0.39.1 dashboard in the owner's namespace, checks startup readiness, and tracks
@@ -400,26 +425,35 @@ its PID and port in memory. The UI binds only loopback. It is a trusted-local
 interface, not an authentication security boundary. Namespace limits normal
 session discovery, not authorization. Stock loopback access bypasses tokens and
 its command endpoint can select other namespaces. Never proxy or expose it to a
-network. Host automation pauses before the dashboard opens
+network. Dashboard viewing does not pause host automation. The worker and
+dashboard use the same namespace, session, headless environment, and empty
+config. Native session streams can watch the worker without CLI page actions
 
 The artifact helper also reserves new private `.mp4` or `.webm` files for native
 recording, with no overwrite or symlink reuse. `ffmpeg` with the matching encoder
 must be on PATH. Worker `recordPath` opens a blank page if needed, starts
 recording, then opens the task URL. Direct `record_start` requires `path` and an
-already open, resumed browser. `record_stop` waits for native flush. Results
+already open browser. `record_stop` waits for native flush. Results
 include `artifacts` paths, including uncertain recordings on failure
 
 The controller tracks recording state before dispatch, since a failed start may
 still have begun capture. Cleanup stops recording before close. Login stops it
-before navigation, and dashboard or approval handoff stops it before human
-control. Resume never restarts it. Manual login is not recorded. Recording errors
-still run browser close in `finally`, and dashboard cleanup runs independently
+before navigation, detected password/OTP fills stop it before entry, and an
+approval handoff stops it before human control. Dashboard viewing does not stop
+recording. Continuing after human input never restarts it.
+Manual login is not recorded. Other private page data can still be captured.
+Recording errors still run browser close in `finally`, and dashboard cleanup runs independently
 of browser cleanup. Cleanup commands ignore the cancelled operation signal but
 keep their own timeouts. A failed artifact can be empty or incomplete
 
-The native 10-minute idle timeout is only a crash fallback. A hard process kill
-can prevent browser or dashboard cleanup and recording flush. The footer's
-namespace-local poll does not count these owner namespaces. Neither browser
+The native 10-minute idle timeout also bounds command-opened idle browsers.
+Stream viewing alone does not refresh native activity, unlike human input.
+A runtime timer checks owned daemon diagnostics every 10 seconds without
+refreshing idle activity. It closes owned resources when
+the daemon stops and skips checks during browser operations. Task completion,
+cancellation, and session cleanup still close the browser and dashboard.
+A hard process kill can prevent dashboard cleanup and recording flush. The footer counts live daemon PID records across namespaces, including
+abandoned owners. Neither browser
 tool exposes arbitrary shell, eval, screenshots, or coordinate controls
 
 ## WebMCP with DOM fallback
@@ -453,8 +487,9 @@ effects. A CLI success envelope alone is insufficient: invocation status must
 be `completed`. Tool output remains untrusted evidence, not proof of task success
 
 Descriptions, schemas, results, and annotations such as `readOnlyHint` are page
-claims, not authorization. The worker's login and consequential actions retain
-the same model-based stop rules as DOM actions. Fresh metadata checks are not
+claims, not authorization. WebMCP actions follow the same delegated authorization
+and user/project constraints as DOM actions. Credential entry prefers DOM fill
+so detected password/OTP fields stop recording. Fresh metadata checks are not
 atomic and do not prove the implementation behind a tool is safe
 
 Uses [agent-browser's native WebMCP interface](https://agent-browser.dev/webmcp)
@@ -466,9 +501,10 @@ through `ctx.modelRegistry.streamSimple()`. There is no classifier, routing
 model, candidate list, or separate field-value helper. Only the selected
 provider's credentials and billing apply
 
-`inputs` maps field meanings to exact nonsecret strings or desired toggle
-booleans. Instructions require the model to use supplied values unchanged and
-stop if required task information is missing. Each call receives the task,
+`inputs` maps field meanings to exact strings or desired toggle booleans,
+including supplied credentials for authorized login. Instructions require the
+model to use supplied values unchanged and stop if required information or
+authorization is missing. Each call receives the task,
 inputs, current observation, compact action history, and the last six
 observations, each capped at 1,500 characters. The model returns one action,
 WebMCP inspection or invocation, or `finish`. There is no separate completion
@@ -486,8 +522,12 @@ page lock
 
 For unfamiliar comboboxes and editable regions, the model must inspect exact-ref
 attributes before filling. Native dropdowns use select. Custom listbox options
-use click. Worker fill checks type and autocomplete attributes to block known
-password, OTP, file, and hidden fields. This is not a complete secrets filter.
+use click. Worker fill checks type and autocomplete attributes, allows password
+and OTP entry, and still blocks file and hidden fields. Detected credential fills
+stop recording before entry. Known credential values are masked in history,
+observations, and final reports, and action identities are hashed rather than
+storing raw values. This is not a complete secrets filter. Reports must never
+include credentials, cookies, or tokens.
 After two identical actions with no observed change, the model must choose a
 different action or stop. The host blocks a third identical action against that
 unchanged page state
@@ -743,17 +783,18 @@ The footer starts automatically for TUI sessions. `/footer` switches between
 it and the built-in footer. Message, model, thinking, session-info, compaction,
 branch, git-status, and browser-status changes request a render
 
-The footer runs `agent-browser session list --json` immediately and every 10
-seconds. It counts active daemon sessions in the current namespace without
-launching a browser. This includes headless, headed, and attached sessions, not
-all Chromium processes on the machine. The browser extension uses unique owner
-namespaces, so its sessions are not included in this default-namespace poll
+The footer scans agent-browser PID metadata immediately and every 10 seconds,
+across the default socket root, any `AGENT_BROWSER_SOCKET_DIR`, and all their
+namespaces. It includes abandoned owners without launching browsers or CLI
+processes. Dashboard PIDs and stale records are excluded. The count represents
+live daemon records, not tabs or Chromium child processes. Like native
+agent-browser discovery, PID reuse can produce a false positive. Custom socket
+roots absent from the environment cannot be discovered
 
 When the count is positive, a yellow web icon and count appear directly after
-git status. Zero renders nothing. A failed command or invalid response retains
-the last count but shows the icon with `?` until polling succeeds. Only one
-status process runs at a time, with a 9-second timeout and 4 MiB output cap. The timer stops when the
-custom footer is disposed or disabled
+git status. Zero renders nothing. A failed scan shows `?` until polling succeeds.
+Only one scan runs at a time. The timer stops when the footer is disposed or
+disabled
 
 # Model settings extension (`extensions/model-settings.ts`)
 

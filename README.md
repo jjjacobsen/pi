@@ -43,31 +43,35 @@ Use `/browser-model` to pick and save the worker model, or pass
 level, or pass a level directly. These settings do not change the main session.
 The selected model chooses every browser action and writes the final report,
 using only its provider credentials. Supply a starting URL, full task,
-constraints, and success conditions. Supply exact nonsecret form values in
-`inputs`, keyed by field meaning. The worker uses supplied values unchanged and
-stops if required task information is missing
+authorization, applicable user/project rules, constraints, and success conditions.
+Supply exact form values in `inputs`, keyed by field meaning, including supplied
+credentials for authorized login. The worker uses supplied values unchanged and
+stops if required task information or authorization is missing. Tool inputs can
+be stored in the transcript and sent to the selected model provider
 
-The worker runs headless with an isolated temporary profile and closes it on
-completion, failure, or cancellation. Login and approval keep the same session
-for a human handoff. After login, run `/browser-resume`, then use
-`reuseSession: true`. Headed mode remains an explicit fallback with
-`visible: true`, but has the same cleanup rules. The worker prefers suitable discovered WebMCP tools,
+All browsing uses headless Chromium, including manual dashboard control.
+The worker uses an isolated temporary profile and closes it on
+completion, failure, or cancellation. Human handoffs keep the same session.
+After human input, say "done" in chat. The agent takes a fresh snapshot and
+continues in the same browser, directly or with `reuseSession: true`. Reuse does
+not navigate back to the required `url` argument. The worker prefers suitable discovered WebMCP tools,
 checks their schemas and fresh metadata, and uses DOM text and refs elsewhere.
-It has no shell, eval, screenshots, or coordinate controls. It stops for login,
-approval, missing task information, or unsupported steps. Page data is untrusted. Failed or uncertain
+It has no shell, eval, screenshots, or coordinate controls. It can complete
+authorized login and form submissions. It stops for missing authorization or
+information, genuine human steps such as unavailable MFA or CAPTCHA, or
+unsupported steps. It never bypasses CAPTCHA. Page data is untrusted. Failed or uncertain
 WebMCP invocations stop without an automatic retry. Use `browser_control` for
-handoffs and direct actions. Do not run browser tools or commands in parallel
+handoffs and direct actions. Keep browser actions serial. Dashboard viewing
+without a URL can run while the worker operates
 
 `browser_control` runs direct operations without a nested model, model settings,
-or API keys. `open` requires a URL and starts new sessions headless by default. Use
-`visible: true` only when requested. It supports snapshots, text reads, exact-ref
+or API keys. `open` requires a URL. It supports snapshots, text reads, exact-ref
 inspection and interactions, scrolling, waits, and discovered WebMCP tools
 
 ```text
-/browser-dashboard https://example.com/login
-# Sign in manually through the local dashboard, then resume in pi
-/browser-resume
-# Open the dashboard for an existing browser without navigating
+# Open a page and view it when idle, without pausing or stopping recording
+/browser-dashboard https://example.com
+# Watch the current browser, including while the worker operates
 /browser-dashboard
 /browser-close
 ```
@@ -83,27 +87,38 @@ browser_control({action: "press", ref: "e3", value: "Enter"})
 browser_control({action: "close"})
 ```
 
-Neither browser tool shows Yes/No confirmation dialogs, including resume.
-Routine actions run without approval. Before a risky or consequential action,
-the agent ends its turn, explains the proposed action and risk in chat, and
-waits for your approval. It then uses direct control to execute the approved
-action without another prompt. The worker returns `needs_approval` instead of
-performing such actions. This is an agent instruction, not a runtime safety guarantee.
-Actions must stay within the user's request. Login automatically opens the
-local dashboard for the same browser, including a headless session. It takes no
-snapshot and pauses automation until resume. The worker does this too when it
-reports `needs_login`. Enter credentials only in the dashboard or browser,
-never in tool inputs. Known password and OTP fields cannot be filled.
-Refs must be fresh, including for press. After `/browser-resume`, take a new
-snapshot before using refs. A changed URL, target, or full snapshot blocks the
-action until a new review. Uncertain effects block further actions until resume
-or close, but snapshot, read, and exact-ref inspection remain available
+Neither browser tool shows Yes/No confirmation dialogs.
+Actions follow your authorization and applicable user/project rules. An already
+authorized action needs no extra browser-specific approval. Missing authorization
+returns `needs_approval` so the main agent can check the context or ask you.
+Actions must stay within your request. These are agent instructions, not a
+runtime safety guarantee. Use supplied credentials only within the authorized
+task, never in reports or summaries. Tool inputs are not a secret channel
+
+Use `browser_control({action: "login"})` when a human step is needed or you
+request manual control. An optional `url` navigates before the handoff.
+Login stops recording, retains the browser between turns, and opens the local
+dashboard without a snapshot. The agent asks for human input in chat and ends
+the turn. When you reply, it takes a fresh snapshot and continues. No special
+command or extra browser-specific approval is needed. The worker does this too
+when it reports `needs_login`. Password and OTP fills are allowed. Detected
+password/OTP values are masked in worker history and browser reports, but this
+is not a complete secrets filter.
+Refs must be fresh, including for press. A changed URL, target, or full snapshot
+blocks the action until a new review. Failed operations close the browser because
+effects may be uncertain. The agent must not retry them automatically
 
 The dashboard is agent-browser's stock trusted-local interface. Its unique
 owner namespace limits normal session discovery, not authorization. It is not
 an authentication security boundary. Keep it on loopback, never proxy or expose
-it to a network. Dashboard takeover pauses automation until `/browser-resume`,
-which closes the dashboard before observing the page again
+it to a network. Dashboard viewing does not pause automation, stop recording, or hold the browser
+open after task completion. Do not interact while the agent operates. The stock
+UI cannot enforce read-only access. Request human control through `login` first.
+`/browser-dashboard URL` is rejected during active work because navigation changes
+the page. With no browser, supply a URL. The browser control commands are only
+`/browser-dashboard [URL]` and `/browser-close`. Continuing after human input
+leaves the dashboard open until normal cleanup. The agent must review a fresh
+snapshot, not replay the last action
 
 To record a worker task, supply an absolute new `.mp4` or `.webm` path in
 `recordPath`. This requires `ffmpeg` on PATH with the matching encoder.
@@ -118,21 +133,28 @@ browser_control({action: "record_stop"})
 ```
 
 Results include recording paths. Existing files are never overwritten.
-Recording stops and flushes before browser close, login, dashboard takeover,
-or an approval handoff. Manual login is not recorded. Resume does not restart
-recording. Use `record_start` with a new path if you want another recording.
+Recording stops and flushes before browser close, detected password/OTP fills,
+manual login or a human handoff, but not dashboard viewing. Manual login is not recorded.
+Detection uses field type and autocomplete attributes, not every possible secret.
+Continuing after human input does not restart recording. Use `record_start`
+with a new path if you want another recording.
 Recordings can contain private page data. Failed recordings can be incomplete
 
 Both tools use agent-browser 0.39.1 and system Chromium. Each runtime owns a
 unique namespace and session with a temporary profile, never the daily browser
 profile. Closing removes that temporary profile and its login state.
-Direct sessions close at turn completion unless held for login or approval.
+Direct sessions close at turn completion unless held for human input.
+The next successful browser operation, including snapshot, clears this retention, except
+`login`, `dashboard`, `record_stop`, and `close`. Dashboard viewing alone does not
+retain a browser.
 All owned sessions and dashboards close on cancellation, session change, reload,
-or shutdown, including headed sessions. No session is restored from transcript
-entries. The native 10-minute idle timeout is only a crash fallback. A hard kill
+or shutdown. No session is restored from transcript
+entries. A browser opened from the dashboard command also has the native
+10-minute idle timeout. Viewing alone does not reset it. The extension closes
+the dashboard after it detects that the browser has stopped. A hard kill
 can prevent cleanup and recording flush. PID checks are not a cross-process lock
-or a security guarantee. The footer currently counts only its configured CLI
-namespace, not these owner namespaces. Automatic Hyprland placement is removed
+or a security guarantee. The footer counts active agent-browser daemon sessions across namespaces,
+including abandoned owners, every 10 seconds
 
 Worker results include status, page evidence, timing, browser call and snapshot
 counts, tokens, and estimated cost. Check the evidence, not just the completion

@@ -4,13 +4,11 @@ umask 077
 
 namespace="${1:?Browser namespace required}"
 session="${2:?Browser session required}"
-headed="${3:?Browser visibility required}"
-browser="${4:?Browser executable required}"
-config="${5:?Browser config required}"
-shift 5
+browser="${3:?Browser executable required}"
+config="${4:?Browser config required}"
+shift 4
 [[ "$namespace" =~ ^pi-[a-f0-9]{16}$ ]] || { printf 'Invalid owned browser namespace\n' >&2; exit 1; }
 [[ "$session" =~ ^pi-[a-f0-9]{12}$ ]] || { printf 'Invalid owned browser session\n' >&2; exit 1; }
-[[ "$headed" == true || "$headed" == false ]] || { printf 'Invalid browser visibility\n' >&2; exit 1; }
 
 [ -x "$browser" ] || { printf 'System Chromium not found. Set AGENT_BROWSER_EXECUTABLE_PATH\n' >&2; exit 1; }
 [ -f "$config" ] || { printf 'Owned browser config not found\n' >&2; exit 1; }
@@ -25,9 +23,8 @@ export AGENT_BROWSER_NAMESPACE="$namespace"
 export AGENT_BROWSER_SESSION="$session"
 export AGENT_BROWSER_EXECUTABLE_PATH="$browser"
 export AGENT_BROWSER_ENGINE=chrome
-export AGENT_BROWSER_HEADED="$headed"
+export AGENT_BROWSER_HEADED=false
 export AGENT_BROWSER_IDLE_TIMEOUT_MS=600000
-export AGENT_BROWSER_ARGS="--class=$session"
 native() {
   agent-browser "$@"
 }

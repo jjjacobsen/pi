@@ -47,7 +47,7 @@ export function actionArgs(args) {
 }
 
 // Never restore this identity from a transcript. Two resumed copies need distinct owners.
-export function createBrowserHandle(piSessionId: string, visible = false) {
+export function createBrowserHandle(piSessionId: string) {
   const owner = randomBytes(8).toString("hex");
   const sessionName = `pi-${createHash("sha256").update(piSessionId).digest("hex").slice(0, 12)}`;
   const executablePath = process.env.AGENT_BROWSER_EXECUTABLE_PATH || execFileSync("bash", ["-c", "command -v chromium || command -v chromium-browser"], { encoding: "utf8", timeout: 1000 }).trim();
@@ -55,17 +55,17 @@ export function createBrowserHandle(piSessionId: string, visible = false) {
   const configPath = join(configDir, "config.json");
   try { writeFileSync(configPath, "{}", { mode: 0o600 }); }
   catch (error) { rmSync(configDir, { recursive: true, force: true }); throw error; }
-  return Object.freeze({ piSessionId, owner, namespace: `pi-${owner}`, sessionName, visible, executablePath, configPath });
+  return Object.freeze({ piSessionId, owner, namespace: `pi-${owner}`, sessionName, executablePath, configPath });
 }
 
 export function removeBrowserConfiguration(handle: ReturnType<typeof createBrowserHandle>) {
   rmSync(dirname(handle.configPath), { recursive: true, force: true });
 }
 
-// Both browser commands and the dashboard use browser.sh's sanitized environment.
+// Both browser commands and the dashboard use browser.sh's fixed headless environment.
 // The dashboard's /api/exec children inherit it, including the durable empty config.
 export function browserCommandArgs(handle: ReturnType<typeof createBrowserHandle>) {
-  return [helper, handle.namespace, handle.sessionName, String(handle.visible), handle.executablePath, handle.configPath];
+  return [helper, handle.namespace, handle.sessionName, handle.executablePath, handle.configPath];
 }
 
 export function createBrowserClient(pi: ExtensionAPI, cwd: string, handle: ReturnType<typeof createBrowserHandle>, signal?: AbortSignal, record?: (ms: number, snapshots: number) => void) {

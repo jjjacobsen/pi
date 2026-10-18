@@ -37,6 +37,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { countActiveBrowsers } from "./lib/browser-status";
 
 // Nerd Font glyphs (verified against FiraCode Nerd Font)
 const ICONS = {
@@ -63,7 +64,7 @@ const ERROR_CTX_FRACTION = 0.9;
 // How often to re-run `git status --porcelain` so the changed-file counters
 // stay fresh while the footer is showing (~10-40ms per spawn on a normal repo).
 const GIT_STATUS_POLL_MS = 3000;
-// List active agent-browser daemon sessions without starting a browser.
+// Count active agent-browser daemons across namespaces without starting a browser.
 // Poll less often than git while keeping forgotten browsers visible.
 const BROWSER_STATUS_POLL_MS = 10000;
 
@@ -180,34 +181,19 @@ function refreshGitStatus(ctx: ExtensionContext): void {
 	);
 }
 
-function refreshBrowserStatus(): void {
+async function refreshBrowserStatus(): Promise<void> {
 	if (browserStatusInFlight) return;
 	browserStatusInFlight = true;
-	execFile(
-		"agent-browser",
-		["session", "list", "--json"],
-		{ encoding: "utf8", timeout: BROWSER_STATUS_POLL_MS - 1000, maxBuffer: 4 * 1024 * 1024 },
-		(error, stdout) => {
-			browserStatusInFlight = false;
-			try {
-				if (error) throw error;
-				const result = JSON.parse(stdout);
-				if (
-					result.success !== true ||
-					!Array.isArray(result.data?.sessions) ||
-					!result.data.sessions.every((session) => typeof session === "string")
-				) {
-					throw new Error("Invalid agent-browser session list output");
-				}
-				browserCount = result.data.sessions.length;
-				browserStatusFailed = false;
-			} catch {
-				// Keep the last count, but show unknown instead of a stale value.
-				browserStatusFailed = true;
-			}
-			if (footerTui) footerTui.requestRender();
-		},
-	);
+	try {
+		browserCount = await countActiveBrowsers();
+		browserStatusFailed = false;
+	} catch {
+		// Keep the last count, but show unknown instead of a stale value.
+		browserStatusFailed = true;
+	} finally {
+		browserStatusInFlight = false;
+		if (footerTui) footerTui.requestRender();
+	}
 }
 
 // Starship-style upstream status followed by the omp-style worktree status:
