@@ -430,18 +430,28 @@ Uses [agent-browser's native WebMCP interface](https://agent-browser.dev/webmcp)
 
 ## Experimental Jev-first selection
 
-Every worker requires `TYPESAFE_API_KEY`. `extensions/lib/browser-jev.ts` sends
-the task, URL, focused snapshot, candidates, supplied inputs, and recent history
-to TypeSafe's `/v1/systemone` endpoint with `jev-1.13.0`. One request asks
-speculative questions for operation, target, and value selection, plus completion
-and separate per-candidate relevance and handoff judgments
+Every worker uses pi's TypeSafe credentials, configured with `/login` or
+`TYPESAFE_API_KEY`. `extensions/lib/browser-jev.ts` calls
+`ctx.modelRegistry.classify()` with the task, URL, focused snapshot, candidates,
+supplied inputs, and recent history. It copies the native `typesafe/jev-latest`
+catalog entry locally, pins its ID to `jev-1.13.0`, and sets the published price
+without changing the registry or global configuration. Pi handles authentication,
+HTTP transport, and response normalization. One request asks speculative questions
+for operation, target, and value selection, plus completion and separate
+per-candidate relevance and handoff judgments. Native `bool` questions map to
+TypeSafe's Noul probabilities. Choice descriptions must be strings, so supplied
+value records are encoded as JSON text
 
 There is no operation or target-confidence floor. Several next actions can be valid.
 For a DOM action, relevance must be at least 0.8 and handoff probability at most
 0.1. Fill-value confidence must be at least 0.8. These experimental routing
 thresholds are not a safety guarantee or authorization boundary. Uncertain
 choices go to the helper. API and response-validation errors fail the task.
-TypeSafe requests have a 30-second timeout within the task deadline
+TypeSafe requests have a 30-second cancellation signal within the task deadline.
+Native retries are disabled, as with the previous direct request. Non-success
+classifier results fail the task. Pi reports the requested model ID rather than
+the service's echoed ID, so the worker cannot independently check the resolved
+server model
 
 DOM candidates are capped at 48, with omissions reported. Candidates include
 ref-based interactions, exact-ref inspection, reads, scrolling, and short waits
@@ -483,6 +493,8 @@ counts, attempted actions, decision steps, model turns, protocol repairs, and
 combined usage. Structured decisions record the route and reason, operation,
 target and value confidence, relevance, handoff and completion probabilities,
 accepted selections, question counts, request size, and candidate omissions.
+Request size comes from pi's final classifier payload. Selected boolean answers
+use pi's `{ type: "bool", probability }` shape.
 The thresholds above explain these routing decisions. Fill-generation calls,
 delegated steps, stale and repeat skips, and WebMCP invocation identity and status are also
 recorded
@@ -495,10 +507,13 @@ helper call. `cleanupMs` is separate. Offsets include startup. Browser time
 includes startup, snapshots, and cleanup, not just worker actions. Check actual
 page outcomes separately from model judgments
 
-Usage feeds pi's session totals. Helper costs use the model catalog. Jev uses
-the published input price of $0.042 per million tokens, with free output.
-These are estimates, not billed charges. There is no separate trace archive or
-metrics database
+Usage feeds pi's session totals. Helper costs use the model catalog. Pi prices
+Jev's native usage with the local model's published input price of $0.042 per
+million tokens, with free output. Reported classifier usage is counted before
+checking errors or validating decisions, including failed responses with usage.
+A successful response without usage fails the task. Pi owns token-count
+normalization. These are estimates, not billed charges. There is no separate
+trace archive or metrics database
 
 The worker uses pi's extension SDK and agent-browser. Delegation follows this
 repository's subagent extension. Speculative routing draws from

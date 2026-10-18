@@ -39,7 +39,8 @@ The terminal must support the standard DECSCUSR cursor-shape sequence
 
 ### browser - delegated tasks and direct controls
 
-Every `browser` worker uses Jev first and requires `TYPESAFE_API_KEY`.
+Every `browser` worker uses pinned `jev-1.13.0` through pi's native classifier
+API. Configure TypeSafe credentials with `/login` or `TYPESAFE_API_KEY`.
 Use `/browser-model` to pick and save a helper model, or pass
 `/browser-model provider/model`. Use `/browser-thinking` to pick its thinking
 level, or pass a level directly. These settings do not change the main session.

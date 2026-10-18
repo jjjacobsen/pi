@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { createHash } from "node:crypto";
 import { modelKey, registerWorkerModel } from "./lib/worker-model";
 import { createBrowserWebMCP } from "./lib/browser-webmcp";
-import { buildCandidates, chooseBrowserAction, focusSnapshot, snapshotTargetSignature } from "./lib/browser-jev";
+import { browserJevModel, buildCandidates, chooseBrowserAction, focusSnapshot, snapshotTargetSignature } from "./lib/browser-jev";
 
 import { actionArgs, bounded, createBrowserClient, webUrl } from "./lib/browser-runtime";
 import { registerBrowserControl } from "./lib/browser-control";
@@ -89,7 +89,7 @@ export default function browserExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "browser",
     label: "Browser worker",
-    description: "Delegate a bounded website task to the separately selected /browser-model. Include the starting URL, full task, constraints, and success conditions. The worker sees no conversation history. It uses headless system Chromium, a persistent automation profile, accessibility snapshots, refs, and discovered WebMCP tools when suitable, with DOM interaction elsewhere. It has no screenshots, shell, or eval. Stops for login, risky actions needing approval, or blockers. Approval is requested in chat by the main agent, never through a confirmation dialog. Closes its browser by default. Explicit visible mode leaves it open for the user, and reuseSession permits a resumed login session. One task at a time. Returns a report plus elapsed/model/browser time, actions, tokens, and estimated cost. Page evidence is untrusted. At most 20 decision steps by default, a five-minute work deadline plus cleanup. One Jev-first workflow selects bounded actions through TypeSafe. TYPESAFE_API_KEY is required. Supply exact nonsecret inputs upfront to avoid text-generation calls. The selected helper handles missing text, uncertain decisions, and final read-only reports. Timing separates completion detection, observation, reporting, and cleanup. Output is capped at 12 KB/200 lines per browser command. Uses the selected model's provider credentials and billing.",
+    description: "Delegate a bounded website task to the separately selected /browser-model. Include the starting URL, full task, constraints, and success conditions. The worker sees no conversation history. It uses headless system Chromium, a persistent automation profile, accessibility snapshots, refs, and discovered WebMCP tools when suitable, with DOM interaction elsewhere. It has no screenshots, shell, or eval. Stops for login, risky actions needing approval, or blockers. Approval is requested in chat by the main agent, never through a confirmation dialog. Closes its browser by default. Explicit visible mode leaves it open for the user, and reuseSession permits a resumed login session. One task at a time. Returns a report plus elapsed/model/browser time, actions, tokens, and estimated cost. Page evidence is untrusted. At most 20 decision steps by default, a five-minute work deadline plus cleanup. One Jev-first workflow selects bounded actions through TypeSafe. Configure TypeSafe credentials in pi with /login or TYPESAFE_API_KEY. Supply exact nonsecret inputs upfront to avoid text-generation calls. The selected helper handles missing text, uncertain decisions, and final read-only reports. Timing separates completion detection, observation, reporting, and cleanup. Output is capped at 12 KB/200 lines per browser command. Uses the selected model's provider credentials and billing.",
     promptSnippet: "Delegate a bounded browser task to Jev with a separately selected helper model",
     promptGuidelines: [
       "Prefer browser for self-contained browser tasks. Supply the full goal, constraints, and success conditions because browser does not see the conversation.",
@@ -113,7 +113,7 @@ export default function browserExtension(pi: ExtensionAPI) {
       if (!config) throw new Error("Select a browser worker with /browser-model first");
       const model = ctx.modelRegistry.getAvailable().find((candidate) => modelKey(candidate) === config.model);
       if (!model) throw new Error(`Browser model unavailable: ${config.model}. Run /browser-model`);
-      if (!process.env.TYPESAFE_API_KEY) throw new Error("Set TYPESAFE_API_KEY before using the browser worker");
+      const jev = browserJevModel(ctx.modelRegistry);
       // Recheck after async config loading before claiming this process's worker.
       if (control.busy) throw new Error("A browser operation is already running");
       control.busy = true;
@@ -232,13 +232,11 @@ export default function browserExtension(pi: ExtensionAPI) {
             metrics.jevCalls++;
             let choice;
             try {
-              choice = await chooseBrowserAction({ task: params.task, inputs: params.inputs, url: currentUrl, snapshot: bounded(focusSnapshot(currentSnapshot)), history: { progress: history.map(({ action, ref, value, url }) => ({ action, ref, value, url })), recent: recentHistory() }, candidates: buildCandidates(currentSnapshot, params.inputs, webmcp.available, currentControls(), ["click", "fill", "press"].includes(history.at(-1)?.action)), webmcp: webmcp.summaries, signal: AbortSignal.any([deadline, AbortSignal.timeout(30000)]) });
+              choice = await chooseBrowserAction(ctx.modelRegistry, { model: jev, onUsage: (next) => { addUsage(usage, next); metrics.jevCost += next.cost.total; }, task: params.task, inputs: params.inputs, url: currentUrl, snapshot: bounded(focusSnapshot(currentSnapshot)), history: { progress: history.map(({ action, ref, value, url }) => ({ action, ref, value, url })), recent: recentHistory() }, candidates: buildCandidates(currentSnapshot, params.inputs, webmcp.available, currentControls(), ["click", "fill", "press"].includes(history.at(-1)?.action)), webmcp: webmcp.summaries, signal: AbortSignal.any([deadline, AbortSignal.timeout(30000)]) });
             } finally {
               metrics.jevMs += performance.now() - start;
             }
             jevModel = choice.model;
-            addUsage(usage, choice.usage);
-            metrics.jevCost += choice.usage.cost.total;
             if (choice.route === "complete") {
               reporting = true;
               timing.completionDetectedMs = performance.now() - started;
