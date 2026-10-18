@@ -261,6 +261,11 @@ Its full transcript is saved under the agent dir
 (`~/.pi/agent/subagents/`), is resumable, and its complete usage, including
 tools, compaction, and cache warming, counts toward pi's session totals
 
+Each worker has its own resource loader and extension runtime. Only the search
+extension loads, so other extension factories do not run. Worker instructions
+append to Pi's normal system prompt. Skills and project instruction files still
+load, while only the model catalog and authentication runtime are shared
+
 Each call has a short task label. Its compact display shows the resolved model,
 thinking level, elapsed time, and latest tool activity, with distinct running,
 done, failed, and cancelled states. Expand the tool to see the full task,

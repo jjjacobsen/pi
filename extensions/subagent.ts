@@ -13,10 +13,9 @@
 //   tool calls from one assistant turn concurrently, so firing several
 //   subagent calls in one turn runs several subagents in parallel.
 // - The subagent gets the built-in tools (read, bash, edit, write) plus the
-//   allowlisted search extension. The resource loader filters every other
-//   extension out, so the subagent tool cannot recurse into itself and the
-//   system prompt stays small. The tools allowlist is the second guard: even
-//   if a filter leak slips an extension in, only the five names are callable.
+//   allowlisted search extension. Each worker's resource loader disables
+//   extension discovery and loads only search, so other factories never run.
+//   The tools allowlist also prevents recursive subagent calls.
 // - Model and thinking use saved defaults, then inherit from the caller.
 //   Optional per-call overrides take priority over those defaults.
 // - The transcript is persisted under <agent_dir>/subagents/<ts>_<id>.jsonl
@@ -46,9 +45,8 @@ import { renderSubagentCall, renderSubagentResult } from "./lib/subagent-render"
 const TOOL_NAME = "subagent";
 const REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-// Extensions whose factories may run inside a sub-session. Exact paths avoid
-// admitting an unrelated extension with the same filename.
-const SUBAGENT_EXTENSIONS = new Set([fileURLToPath(new URL("search.ts", import.meta.url))]);
+// The only extension factory allowed inside a sub-session.
+const SEARCH_EXTENSION_PATH = fileURLToPath(new URL("search.ts", import.meta.url));
 
 // The exact tools a subagent can call. The first four are built-ins, and the
 // last one comes from the allowlisted extension above.
@@ -61,30 +59,10 @@ Rules:
 - Your final reply is returned verbatim to the calling agent. Write it as a standalone report: what you did, what changed or found, and any caveats or recommended follow-ups.
 - End your reply with a short "Summary:" bullet section.`;
 
-// Shared across subagent calls in this process: the model catalog + auth
-// runtime, and the filtered resource loader (discovery runs once). A fresh
-// pair is built when the extension reloads. cwd comes from the first call;
-// pi's cwd is fixed per process, so it cannot drift.
-let sharedPromise;
-
-async function createShared(cwd: string) {
-  const modelRuntime = await ModelRuntime.create();
-  const loader = new DefaultResourceLoader({
-    cwd,
-    agentDir: getAgentDir(),
-    extensionsOverride: (base) => ({
-      ...base,
-      extensions: base.extensions.filter((ext) => SUBAGENT_EXTENSIONS.has(ext.path)),
-    }),
-    systemPromptOverride: (base) => [base, SUBAGENT_INSTRUCTIONS].filter(Boolean).join("\n\n"),
-  });
-  await loader.reload();
-  return { modelRuntime, loader };
-}
-
-function ensureShared(cwd: string) {
-  return (sharedPromise ??= createShared(cwd));
-}
+// Share only the model catalog + auth runtime. Search registers no providers
+// or virtual models, so it does not add session-bound state to this runtime.
+// Each worker gets its own resource loader and mutable extension runtime.
+let sharedModelRuntimePromise;
 
 function findExactModel(modelRuntime, reference) {
   const normalized = reference.trim().toLowerCase();
@@ -206,7 +184,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       try {
         signal?.throwIfAborted();
         const config = await readConfig();
-        const { modelRuntime, loader } = await ensureShared(ctx.cwd);
+        const modelRuntime = await (sharedModelRuntimePromise ??= ModelRuntime.create());
         const reference = params.model ?? config?.model;
         const model = reference ? findExactModel(modelRuntime, reference) : ctx.model;
         if (!model) {
@@ -229,6 +207,14 @@ export default function subagentExtension(pi: ExtensionAPI) {
         update();
 
         const agentDir = getAgentDir();
+        const loader = new DefaultResourceLoader({
+          cwd: ctx.cwd,
+          agentDir,
+          noExtensions: true,
+          additionalExtensionPaths: [SEARCH_EXTENSION_PATH],
+          appendSystemPromptOverride: (base) => [...base, SUBAGENT_INSTRUCTIONS],
+        });
+        await loader.reload();
         const parentSession = ctx.sessionManager.getSessionFile();
         const sessionManager = SessionManager.create(
           ctx.cwd,

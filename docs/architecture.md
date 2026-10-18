@@ -809,10 +809,13 @@ report, and usage instead of the full work transcript
 
 Each call creates one session in the current project directory. Sibling tool
 calls can run concurrently with no shared session state. The subagent gets
-`read`, `bash`, `edit`, and `write`, plus `web_search` from an extension filter.
-The exact tool allowlist is a second control that
-also prevents recursive subagent calls. Skills and project instruction files
-still load
+`read`, `bash`, `edit`, and `write`, plus `web_search`. Each call creates a fresh
+resource loader and extension runtime. `noExtensions: true` disables extension
+discovery, and `additionalExtensionPaths` loads only the exact `search.ts` path.
+Other extension factories do not run. The exact tool allowlist also prevents
+recursive subagent calls. Skills and project instruction files still load.
+Worker instructions append to the normal system prompt, preserving Pi's native
+guidance and any configured `SYSTEM.md` or `APPEND_SYSTEM.md` behavior
 
 Model and thinking resolve independently: per-call override, saved default,
 then the caller's setting. `/subagent-model` and `/subagent-thinking` save
@@ -828,11 +831,10 @@ model ID. An explicit reasoning level must be supported by that model. Saved
 or inherited thinking is clamped to the selected model. An unavailable saved
 model fails the call rather than silently using the caller's model
 
-The model runtime and filtered resource loader are created once per pi process
-and shared. Concurrent first calls share the same initialization promise. The
-extension filter compares exact source paths, so an unrelated extension with a
-matching filename cannot enter the sub-session. Each agent session remains
-separate
+Only the model catalog and authentication runtime are shared across calls.
+Concurrent first calls share its initialization promise. Search registers no
+providers or virtual models that could bind it to a worker session. Resource
+loading and mutable extension state remain separate for each worker
 
 Transcripts are stored at `<agent_dir>/subagents/<timestamp>_<id>.jsonl` and
 link to the parent session when it has a session file. They can be inspected
