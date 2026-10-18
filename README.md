@@ -8,13 +8,14 @@ people and organizations I trust
 ## Setup on a new machine
 
 1. `git clone git@github.com:jjjacobsen/pi.git` and `cd` in
-2. `mise trust` then `mise install` to pull the pinned development tools
-3. `mise use -g pi@latest` to install pi
-4. `mise use -g npm:agent-browser@0.39.1` to install agent-browser for the browser extension. To use system Chromium, set `AGENT_BROWSER_EXECUTABLE_PATH` to its executable path in your mise configuration. The CLI does not automatically use system Chromium from PATH
-5. Install the packages into pi, then restart pi
-   - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
-6. Export `EXA_API_KEY` before starting pi (the search extension needs it)
-7. Merge the [personal pi settings](docs/pi-settings.md) into `~/.pi/agent/settings.json`
+2. `mise trust`, then `mise use -g pi@latest` to install pi
+3. `pi install ~/Projects/pi` to load this repo's extensions, prompts, and skills, then restart pi
+4. Run `/login` to authenticate your model provider, then `/model` to select a model
+5. Merge the [personal pi settings](docs/pi-settings.md) into `~/.pi/agent/settings.json`
+
+See [environment and dependencies](docs/environment.md) for feature-specific API
+keys, browser and audio setup, external resources, and development tools
+Optional feature dependencies are not required just to run Pi
 
 ## Layout
 
@@ -212,6 +213,7 @@ See [docs/architecture.md](./docs/architecture.md) for the implementation detail
 1. Write `extensions/foo.ts` using pi's extension SDK and the shared helpers
    in `extensions/lib/` when useful
 2. Document it in `docs/architecture.md` and this README
+3. Update `docs/environment.md` if it needs an external command, service, credential, or environment setting
 
 ## Prompts
 

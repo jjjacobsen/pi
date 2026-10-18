@@ -5,20 +5,23 @@ file whenever packages change. Additional package notes are below
 
 ## 3rd party packages
 
-- pi-transcribe (git)
+- `npm:@earendil-works/pi-voice`
 
 ## Local installs
 
 | Path | Purpose |
 | ---- | ------- |
 | `../../Projects/pi` | this repo, dev install |
+| `../../Projects/obsidian-organize` | Obsidian skill and native review extension |
 
 ## Package notes
 
-### pi-transcribe
+### Pi Voice
 
-- [pi-transcribe](https://github.com/earendil-works/pi-voice) by earendil-works, the pi maintainer
+- [Pi Voice](https://github.com/earendil-works/pi-voice) by earendil-works, the pi maintainer
 - Install: `pi install npm:@earendil-works/pi-voice`
-- Command: `/transcribe`
+- Commands: `/voice` for dictation and `/voice-settings` for setup
+- Tool: `transcribe_file` for local audio or video files
 - Shortcut: `ctrl + alt + z`
+- [Environment requirements](environment.md#voice-configuration)
 - Use speech-to-text for input and read the output, rather than wait for spoken responses. This is the optimal interface setup

@@ -4,4 +4,5 @@ Custom pi extensions repo with small TypeScript modules that run directly in pi.
 - Use pi's extension SDK directly and keep each extension minimal
 - `mise x -- hk check --all` must pass after every turn
 - Update `docs/architecture.md` when architecture or protocols change, and keep the matching extension section in `README.md` in sync
+- Keep `docs/environment.md` current whenever dependencies, external commands or services, authentication, environment variables, or required external paths change
 - When adapting an existing package, extension, or idea, add a small credit note pointing to the original work
