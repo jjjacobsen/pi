@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createBrowserClient, actionArgs, webUrl, bounded } from "./browser-runtime";
-import { focusSnapshot, snapshotTargetSignature } from "./browser-jev";
+import { focusSnapshot, snapshotTargetSignature } from "./browser-snapshot";
 import { createBrowserWebMCP } from "./browser-webmcp";
 
 export function registerBrowserControl(pi: ExtensionAPI) {

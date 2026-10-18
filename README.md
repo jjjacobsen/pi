@@ -38,16 +38,14 @@ The terminal must support the standard DECSCUSR cursor-shape sequence
 
 ### browser - delegated tasks and direct controls
 
-Every `browser` worker uses pinned `jev-1.13.0` through pi's native classifier
-API. Configure TypeSafe credentials with `/login` or `TYPESAFE_API_KEY`.
-Use `/browser-model` to pick and save a helper model, or pass
+Use `/browser-model` to pick and save the worker model, or pass
 `/browser-model provider/model`. Use `/browser-thinking` to pick its thinking
 level, or pass a level directly. These settings do not change the main session.
-Supply a starting URL, full task, constraints, and success conditions. Supply exact
-nonsecret form values in `inputs`, keyed by field meaning, to avoid text
-generation. Jev selects actions and supplied values. The helper handles missing
-text, uncertainty, WebMCP arguments, and final read-only reports. This routing is
-experimental, not a safety guarantee
+The selected model chooses every browser action and writes the final report,
+using only its provider credentials. Supply a starting URL, full task,
+constraints, and success conditions. Supply exact nonsecret form values in
+`inputs`, keyed by field meaning. The worker uses supplied values unchanged and
+stops if required task information is missing
 
 The worker runs headless with the existing persistent automation profile and
 opens only the task tab. It closes its browser when done. For a requested visible
@@ -131,13 +129,10 @@ marker identifies the terminal even when several windows share a process.
 The original title is saved from Hyprland and restored after the lookup.
 Existing browser windows are left in place. Headless sessions are unchanged
 
-Worker results include status, page evidence, timing, structured decisions, browser call
-and snapshot counts, tokens, and estimated cost. Check the evidence, not just the
-completion claim. Usage counts toward pi's session totals. Worker page data and inputs
-go to TypeSafe and the selected helper provider. The routing draws from
-[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast/tree/1231850a0bf1a0c0341fe408ef1668dbbfdfac46),
-[TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling),
-and [OpenCode's Jev loop](https://github.com/anomalyco/opencode/blob/021f8b3202a8027b684e43a2e673c269becaf156/packages/plugin-browser/src/use.ts)
+Worker results include status, page evidence, timing, browser call and snapshot
+counts, tokens, and estimated cost. Check the evidence, not just the completion
+claim. Usage counts toward pi's session totals, including failed and cancelled
+runs. Worker page data and inputs go to the selected model's provider
 
 Browser setup is adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
 

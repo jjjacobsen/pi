@@ -274,9 +274,9 @@ authentication and the selected thinking level. Each worker supplies its tool-ca
 ID as `sessionId`, which lets the provider attach required session headers,
 including OpenCode Go's `x-opencode-session`
 
-The worker has an isolated in-memory conversation, a bounded DOM action tool,
-and a structured finish report. When native page tools are discovered, it also
-gets WebMCP inspection and invocation tools. It has no coding tools, shell,
+The worker makes isolated model calls with compact action history. It has a
+bounded DOM action tool and a structured finish report. When native page tools
+are discovered, it also gets WebMCP inspection and invocation tools. It has no coding tools, shell,
 eval, screenshots, or coordinates. Code validates each tool
 call and maps it to positional CLI arguments through `extensions/lib/browser.sh`.
 Only HTTP(S) navigation, snapshot/read, ref-based interactions, limited keyboard
@@ -316,9 +316,9 @@ Execution failures return explicit `failed` or `cancelled` reports with any
 recorded usage. The outer tool successfully reports these outcomes, so callers
 must inspect the status rather than assume tool completion means task success.
 Completion and risk classification are model judgments, not a security boundary
-or independent verification. Jev routes risky or consequential final actions
-to the helper, which returns `needs_approval` without executing them. The main
-agent ends its turn and asks in chat with the exact proposed action and risk.
+or independent verification. The selected model returns `needs_approval` for
+risky or consequential final actions without executing them. The main agent
+ends its turn and asks in chat with the exact proposed action and risk.
 Only after the user's reply approves that action does it use direct control to
 execute it, without another prompt. The original task and page content do not
 replace this approval. Missing task information still blocks execution
@@ -426,10 +426,10 @@ with the SDK validator. Unrecognized schema keywords, missing tools, or stale
 metadata cannot be invoked and explicitly direct the worker back to DOM or
 inspection. No arbitrary tool name or schema becomes a worker tool definition
 
-A Jev WebMCP choice sends tool inspection and argument selection
-to the helper. DOM candidates remain available. Invocations use a 15-second
-wait limit within the normal task deadline and return a fresh snapshot. The
-worker records invocation identity and status in `webmcpInvocations`
+The selected model chooses tool inspection and invocation arguments.
+DOM actions remain available. Invocations use a 15-second wait limit within
+the normal task deadline and return a fresh snapshot. The worker records
+invocation identity and status in `webmcpInvocations`
 
 Missing or unsupported WebMCP leaves DOM interaction available. Once invocation
 starts, a command error, failed status, timeout, cancellation, or lost response
@@ -439,105 +439,63 @@ be `completed`. Tool output remains untrusted evidence, not proof of task succes
 
 Descriptions, schemas, results, and annotations such as `readOnlyHint` are page
 claims, not authorization. The worker's login and consequential actions retain
-the same model-based stop rules as DOM actions. The final read-only phase exposes no
-WebMCP invocation, even for tools claiming to be read-only. Fresh metadata checks
-are not atomic and do not prove the implementation behind a tool is safe
+the same model-based stop rules as DOM actions. Fresh metadata checks are not
+atomic and do not prove the implementation behind a tool is safe
 
 Uses [agent-browser's native WebMCP interface](https://agent-browser.dev/webmcp)
 
-## Experimental Jev-first selection
+## Model-driven actions
 
-Every worker uses pi's TypeSafe credentials, configured with `/login` or
-`TYPESAFE_API_KEY`. `extensions/lib/browser-jev.ts` calls
-`ctx.modelRegistry.classify()` with the task, URL, focused snapshot, candidates,
-supplied inputs, and recent history. It copies the native `typesafe/jev-latest`
-catalog entry locally, pins its ID to `jev-1.13.0`, and sets the published price
-without changing the registry or global configuration. Pi handles authentication,
-HTTP transport, and response normalization. One request asks speculative questions
-for operation, target, and value selection, plus completion and separate
-per-candidate relevance and handoff judgments. Native `bool` questions map to
-TypeSafe's Noul probabilities. Choice descriptions must be strings, so supplied
-value records are encoded as JSON text
-
-There is no operation or target-confidence floor. Several next actions can be valid.
-For a DOM action, relevance must be at least 0.8 and handoff probability at most
-0.1. Fill-value confidence must be at least 0.8. These experimental routing
-thresholds are not a safety guarantee or authorization boundary. Uncertain
-choices go to the helper. API and response-validation errors fail the task.
-TypeSafe requests have a 30-second cancellation signal within the task deadline.
-Native retries are disabled, as with the previous direct request. Non-success
-classifier results fail the task. Pi reports the requested model ID rather than
-the service's echoed ID, so the worker cannot independently check the resolved
-server model
-
-DOM candidates are capped at 48, with omissions reported. Candidates include
-ref-based interactions, exact-ref inspection, reads, scrolling, and short waits
-after interaction. Query controls can use Enter after exact-ref focus. WebMCP
-and delegation remain available. Disabled and known protected fields are excluded.
-Read-only text fields are not filled, but can still open a picker. For unfamiliar comboboxes and
-contenteditable regions, inspect attributes on the exact ref before filling.
-Do not infer editability from a role or join controls by their labels. Native
-dropdown options use select. Custom listbox options use click
+The selected `/browser-model` chooses every action and writes the final report
+through `ctx.modelRegistry.streamSimple()`. There is no classifier, routing
+model, candidate list, or separate field-value helper. Only the selected
+provider's credentials and billing apply
 
 `inputs` maps field meanings to exact nonsecret strings or desired toggle
-booleans. Jev selects supplied strings and visible options without generating,
-changing, or combining text. If text is missing for a selected field, the helper
-gets only `fill_value` and `finish`, with a small field context. It cannot change
-the target. Normal delegation allows a bounded action or finish. Both models
-receive a compact action history and the last six observations, each capped at
-1,500 characters. The field helper gets shorter action history and recent read
-evidence. After two identical actions with no observed change, the helper must
-choose a different action or stop. The host rejects a third identical action
-against that unchanged page state
+booleans. Instructions require the model to use supplied values unchanged and
+stop if required task information is missing. Each call receives the task,
+inputs, current observation, compact action history, and the last six
+observations, each capped at 1,500 characters. The model returns one action,
+WebMCP inspection or invocation, or `finish`. There is no separate completion
+detector or read-only report phase. The model must verify all success conditions
+from page evidence before finishing
 
-Focused observations retain useful controls, evidence, and ancestors without
-changing native refs. The host retains the full tree for identity checks.
-Before any ref action, including a helper action, a fresh snapshot must have the
-same URL and target signature. Signatures include target state, ancestors,
-nearby heading, and row or list-item record context. Ambiguous refs are skipped,
-as are missing or changed targets. These checks are not an atomic page lock
+`extensions/lib/browser-snapshot.ts` supplies focused observations and target
+signatures to both browser tools. Focused observations retain useful controls,
+evidence, and ancestors without changing native refs. The host retains the full
+tree for identity checks. Before any worker ref action, a fresh snapshot must
+have the same URL and target signature. Signatures include target state,
+ancestors, nearby heading, and row or list-item record context. Ambiguous refs
+are skipped, as are missing or changed targets. These checks are not an atomic
+page lock
 
-A completion probability of at least 0.9 starts final read-only review. The
-helper uses the fresh observation and may make at most two extra read or snapshot
-calls before finishing. No mutations or WebMCP invocations are available in this
-phase. Insufficient evidence requires a blocked report. All normal final reports
-come from the helper, not the completion detector
+For unfamiliar comboboxes and editable regions, the model must inspect exact-ref
+attributes before filling. Native dropdowns use select. Custom listbox options
+use click. Worker fill checks type and autocomplete attributes to block known
+password, OTP, file, and hidden fields. This is not a complete secrets filter.
+After two identical actions with no observed change, the model must choose a
+different action or stop. The host blocks a third identical action against that
+unchanged page state
 
 ## Measurement
 
-Results include elapsed, helper, Jev, and browser time, browser call and snapshot
-counts, attempted actions, decision steps, model turns, protocol repairs, and
-combined usage. Structured decisions record the route and reason, operation,
-target and value confidence, relevance, handoff and completion probabilities,
-accepted selections, question counts, request size, and candidate omissions.
-Request size comes from pi's final classifier payload. Selected boolean answers
-use pi's `{ type: "bool", probability }` shape.
-The thresholds above explain these routing decisions. Fill-generation calls,
-delegated steps, stale and repeat skips, and WebMCP invocation identity and status are also
-recorded
+Results include elapsed, model, and browser time, browser call and snapshot
+counts, attempted actions, decision steps, model turns, protocol repairs,
+stale and repeat skips, and WebMCP invocation identity and status
 
 `firstSnapshotMs` and `lastObservationMs` locate observations.
-`completionDetectedMs` marks Jev's preliminary judgment, not proven success.
 `completionObservationMs` is the last observation before a final `complete`
-report and is null otherwise. `reportMs` covers read-only review or the final
-helper call. `cleanupMs` is separate. Offsets include startup. Browser time
-includes startup, snapshots, and cleanup, not just worker actions. Check actual
-page outcomes separately from model judgments
+report and is null otherwise. `reportMs` covers the final model call that returns
+`finish`. `cleanupMs` is separate. Offsets include startup. Browser time includes
+startup, snapshots, and cleanup, not just worker actions. Check actual page
+outcomes separately from model judgments
 
-Usage feeds pi's session totals. Helper costs use the model catalog. Pi prices
-Jev's native usage with the local model's published input price of $0.042 per
-million tokens, with free output. Reported classifier usage is counted before
-checking errors or validating decisions, including failed responses with usage.
-A successful response without usage fails the task. Pi owns token-count
-normalization. These are estimates, not billed charges. There is no separate
-trace archive or metrics database
+Selected-model usage feeds pi's session totals, including failed and cancelled
+responses with usage. Costs use the model catalog and are estimates, not billed
+charges. There is no separate trace archive or metrics database
 
 The worker uses pi's extension SDK and agent-browser. Delegation follows this
-repository's subagent extension. Speculative routing draws from
-[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast/tree/1231850a0bf1a0c0341fe408ef1668dbbfdfac46)
-and [TypeSafe's function-calling cookbook](https://docs.typesafe.ai/cookbooks/function_calling).
-Supplied inputs and parallel completion judgment follow
-[OpenCode's Jev loop](https://github.com/anomalyco/opencode/blob/021f8b3202a8027b684e43a2e673c269becaf156/packages/plugin-browser/src/use.ts)
+repository's subagent extension
 
 Browser setup is adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
 
