@@ -583,8 +583,6 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
-  const readConfig = registerWorkerModel(pi, "commit", "Commit");
-
   async function runCommit(args, ctx: ExtensionContext, signal, push = false) {
     const cwd = ctx.cwd;
     const timing = trackTiming(ctx);
@@ -649,6 +647,8 @@ export default function (pi: ExtensionAPI) {
       },
     });
   }
+
+  const readConfig = registerWorkerModel(pi, "commit", "Commit");
 
   pi.registerTool({
     name: "commit",
