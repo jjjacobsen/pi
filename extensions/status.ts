@@ -223,6 +223,8 @@ function formatDuration(ms: number): string {
 }
 
 function providerDisplayName(provider: string): string {
+	if (provider === "openai-codex") return "OpenAI Codex";
+	if (provider === "opencode-go") return "OpenCode Go";
 	if (provider === "x") return "X API";
 	return provider
 		.split(/[-_]/g)
