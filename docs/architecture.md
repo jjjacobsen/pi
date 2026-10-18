@@ -430,22 +430,26 @@ Lifecycle sounds run only in sessions with a UI
 ## Goal and behavior
 
 `/status` opens a TUI panel with current OpenAI Codex subscription and
-OpenCode Go quota windows. The view is adapted from can1357/oh-my-pi. It does
-not scan session use, store totals, or write a cache
+OpenCode Go quota windows, plus the X balance in USD. The view is
+adapted from can1357/oh-my-pi. It does not scan session use, store totals, or
+write a cache
 
-Both providers are fetched in parallel with native `fetch` and independent
-30-second timeout signals. Closing the panel aborts both requests
+All providers are fetched in parallel with native `fetch` and independent
+30-second timeout signals. Closing the panel aborts all requests
 
 - OpenCode Go calls `GET https://opencode.ai/zen/go/v1/usage` with
   `Bearer $OPENCODE_API_KEY` and shows rolling, weekly, and monthly limits
 - Codex calls `GET https://chatgpt.com/backend-api/wham/usage`. Credentials,
   OAuth refresh, and `auth.json` updates stay in pi's model registry. The
   request includes the bearer token and `ChatGPT-Account-Id` when available
+- X calls [`GET https://api.x.com/2/usage/credits`](https://docs.x.com/x-api/usage/get-usage-credits)
+  with `Bearer $X_BEARER_TOKEN`. `data.total_balance` is spendable USD, not cents
 
-One provider can fail while the other still renders. Provider response bodies
-are capped at 1 MiB before JSON parsing. The panel shows account information,
+Missing credentials and request errors show for that provider only. Response
+bodies are capped at 1 MiB before JSON parsing. The panel shows account information,
 used bars, free percentages, reset times, status colors, extra Codex feature
-limits, and saved reset credits. `[r]` refreshes, `[q]` or Esc closes, duplicate
+limits, and saved reset credits. Balances show dollars to two decimal places
+without percentage bars. `[r]` refreshes, `[q]` or Esc closes, duplicate
 refreshes are ignored, and results that arrive after close are discarded
 
 # Search extension (`extensions/search.ts`)

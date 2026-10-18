@@ -1,5 +1,5 @@
 /**
- * /status - Live OpenAI Codex and OpenCode Go quota limits
+ * /status - Live provider quota limits and USD balances
  *
  * Adapted from omp (can1357/oh-my-pi)
  */
@@ -14,6 +14,7 @@ const TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const CODEX_URL = "https://chatgpt.com/backend-api/wham/usage";
 const OPENCODE_URL = "https://opencode.ai/zen/go/v1/usage";
+const X_CREDITS_URL = "https://api.x.com/2/usage/credits";
 
 interface LimitInfo {
 	label: string;
@@ -28,6 +29,7 @@ interface ProviderLimits {
 	error: string | null;
 	account: { email?: string; planType?: string; accountId?: string };
 	resetCredits: number | null;
+	balanceUsd: number | null;
 	limits: LimitInfo[];
 }
 
@@ -59,6 +61,7 @@ function providerError(provider: string, error: unknown): ProviderLimits {
 		error: error instanceof Error ? error.message : String(error),
 		account: {},
 		resetCredits: null,
+		balanceUsd: null,
 		limits: [],
 	};
 }
@@ -96,7 +99,24 @@ async function fetchOpenCodeLimits(signal: AbortSignal): Promise<ProviderLimits>
 		error: null,
 		account: { planType: "OpenCode Go" },
 		resetCredits: null,
+		balanceUsd: null,
 		limits,
+	};
+}
+
+async function fetchXBalance(signal: AbortSignal): Promise<ProviderLimits> {
+	const token = process.env.X_BEARER_TOKEN;
+	if (!token) throw new Error("X_BEARER_TOKEN is not set");
+	const payload = await fetchJson(X_CREDITS_URL, { Authorization: `Bearer ${token}` }, signal);
+	const balance = payload.data.total_balance;
+	if (!Number.isFinite(balance)) throw new Error("credits response was malformed");
+	return {
+		provider: "x",
+		error: null,
+		account: {},
+		resetCredits: null,
+		balanceUsd: balance,
+		limits: [],
 	};
 }
 
@@ -166,17 +186,19 @@ async function fetchCodexLimits(ctx: ExtensionCommandContext, now: number, signa
 		error: null,
 		account: { email: auth.email, planType: payload.plan_type, accountId: auth.accountId },
 		resetCredits: payload.rate_limit_reset_credits?.available_count ?? null,
+		balanceUsd: null,
 		limits,
 	};
 }
 
 async function fetchLimits(ctx: ExtensionCommandContext, signal: AbortSignal): Promise<LimitsData> {
 	const fetchedAt = Date.now();
-	const [codex, opencode] = await Promise.all([
+	const providers = await Promise.all([
 		fetchCodexLimits(ctx, fetchedAt, signal).catch((error) => providerError("openai-codex", error)),
 		fetchOpenCodeLimits(signal).catch((error) => providerError("opencode-go", error)),
+		fetchXBalance(signal).catch((error) => providerError("x", error)),
 	]);
-	return { fetchedAt, providers: [codex, opencode] };
+	return { fetchedAt, providers };
 }
 
 function formatDuration(ms: number): string {
@@ -201,6 +223,7 @@ function formatDuration(ms: number): string {
 }
 
 function providerDisplayName(provider: string): string {
+	if (provider === "x") return "X API";
 	return provider
 		.split(/[-_]/g)
 		.map((part) => (part ? part[0]!.toUpperCase() + part.slice(1) : ""))
@@ -295,7 +318,7 @@ class StatusComponent {
 		if (!this.data) {
 			lines.push(this.theme.fg("dim", "  Fetching provider status…"), "");
 		} else {
-			lines.push(this.theme.fg("muted", `Provider limits · fetched ${formatDuration(Date.now() - this.data.fetchedAt)} ago`), "");
+			lines.push(this.theme.fg("muted", `Provider status · fetched ${formatDuration(Date.now() - this.data.fetchedAt)} ago`), "");
 			for (const provider of this.data.providers) this.renderProvider(lines, provider, width);
 		}
 		lines.push(this.theme.fg("dim", "[r] refresh  [q] close"));
@@ -310,6 +333,7 @@ class StatusComponent {
 		}
 		const account = accountLabel(provider);
 		if (account) lines.push(`  ${this.theme.fg("dim", account)}`);
+		if (provider.balanceUsd !== null) lines.push(`  ${this.theme.bold(`$${provider.balanceUsd.toFixed(2)} USD`)} remaining`);
 		let trailingWidth = 0;
 		for (const limit of provider.limits) {
 			trailingWidth = Math.max(trailingWidth, visibleWidth(`  ${formatRemaining(limit.remainingFraction)}${resetSuffix(limit.resetsAt)}`));
@@ -340,7 +364,7 @@ class StatusComponent {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("status", {
-		description: "Show provider quota status",
+		description: "Show provider quotas and USD balances",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			if (ctx.mode !== "tui") return;
 			await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {

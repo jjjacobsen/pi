@@ -156,11 +156,12 @@ panel to adjust volume and which events make noise. Task complete draws from
 all 33 voice lines, even when other events are disabled. Audio plays through
 PipeWire's `pw-play`. Adapted from the third-party `pi-peon-ping` extension
 
-### status - provider limits via /status
+### status - provider limits and balances via /status
 
-`/status` shows live OpenAI Codex and OpenCode Go quota limits. It does not
-collect session usage or write a cache. The view is adapted from omp
-(can1357/oh-my-pi)
+`/status` shows live OpenAI Codex and OpenCode Go quota limits, plus the X
+balance in USD using `X_BEARER_TOKEN`. Missing credentials or request errors
+show under that provider without blocking the others. It does not collect
+session usage or write a cache. The view is adapted from omp (can1357/oh-my-pi)
 
 ### footer - custom status footer via /footer
 
