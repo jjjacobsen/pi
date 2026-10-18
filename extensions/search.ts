@@ -62,7 +62,7 @@ function isoDateAgo(days) {
   return date.toISOString();
 }
 
-function buildBody(query, numResults, recency, domains, excerptCap) {
+function buildBody(query, numResults, recency, domains) {
   const includeDomains = [];
   const excludeDomains = [];
   for (const raw of domains ?? []) {
@@ -81,11 +81,10 @@ function buildBody(query, numResults, recency, domains, excerptCap) {
     query,
     numResults: Math.min(numResults, MAX_NUM_RESULTS),
     type: "auto",
-    useAutoprompt: false,
     ...(includeDomains.length > 0 ? { includeDomains } : {}),
     ...(excludeDomains.length > 0 ? { excludeDomains } : {}),
     ...(days ? { startPublishedDate: isoDateAgo(days) } : {}),
-    contents: { text: { maxCharacters: excerptCap } },
+    contents: { highlights: true },
   });
 }
 
@@ -127,7 +126,8 @@ function formatResults(parsed, excerptCap) {
     sources.push({
       url,
       title: normalizeText(typeof result.title === "string" ? result.title : "", 200),
-      snippet: normalizeText(typeof result.text === "string" ? result.text : "", excerptCap),
+      publishedDate: normalizeText(typeof result.publishedDate === "string" ? result.publishedDate : "", 64),
+      snippet: normalizeText(Array.isArray(result.highlights) ? result.highlights.join(" ") : "", excerptCap),
     });
   }
 
@@ -149,6 +149,7 @@ function formatResults(parsed, excerptCap) {
   for (const [index, source] of sources.entries()) {
     if (Buffer.byteLength(text) >= MAX_ANSWER) break;
     text += `${index + 1}. ${source.title || source.url} (${source.url})\n`;
+    if (source.publishedDate) text += `   Published: ${source.publishedDate}\n`;
     if (source.snippet) text += `   ${source.snippet}\n`;
   }
   return { text: truncateUtf8(text, MAX_ANSWER), usage };
@@ -173,7 +174,6 @@ async function search(params, apiKey, callerSignal) {
     params.numResults ?? DEFAULT_NUM_RESULTS,
     params.recencyFilter,
     params.domainFilter,
-    excerptCap,
   );
   const timeoutSignal = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
   const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
@@ -224,18 +224,18 @@ export default function searchExtension(pi: ExtensionAPI) {
     name: TOOL_NAME,
     label: "Web Search",
     description:
-      "Search the web via the Exa API and return a numbered source list with excerpts. Exa returns raw results with no built-in answer synthesis, so write the answer yourself and cite sources as [n] markers resolving to the numbered list. Mode 'answer' (default) returns sources with longer excerpts for synthesis; mode 'results' returns a compact list only, faster and cheaper. Use web_search for current, niche, or factual queries.",
-    promptSnippet: "Search the web and return an answer with cited sources",
+      "Search the web via the Exa API and return a numbered source list with query-relevant highlights and publication dates when available. This tool does not request answer synthesis, so write the answer yourself and cite sources as [n] markers resolving to the numbered list. Mode 'answer' (default) returns longer excerpts for synthesis; mode 'results' shortens excerpts to reduce downstream context. Both use the same Exa auto search tier. Use web_search for current, niche, or factual queries.",
+    promptSnippet: "Search the web for numbered sources with query-relevant highlights",
     promptGuidelines: [
-      "Use web_search when a question needs current, niche, or factual information the model may not know: recent events, version numbers, API docs, prices, or anything with a right answer on the web. The extension searches Exa and returns a numbered source list with excerpts; Exa does not synthesize answers, so write the answer yourself and cite sources as [n] markers resolving to the numbered list.",
-      "Default mode 'answer' returns sources with longer excerpts for synthesis. Use mode 'results' for quick lookups where only the source list matters, it is faster and cheaper.",
+      "Use web_search when a question needs current, niche, or factual information the model may not know: recent events, version numbers, API docs, prices, or anything with a right answer on the web. The extension returns numbered sources with query-relevant highlights and publication dates when available. It does not request answer synthesis, so write the answer yourself and cite sources as [n] markers resolving to the numbered list.",
+      "Default mode 'answer' returns longer excerpts for synthesis. Mode 'results' shortens excerpts to reduce downstream context. Both make the same Exa auto request, with no lower API price or latency guarantee for results mode.",
       "recencyFilter narrows to the past day/week/month/year (Exa filters by published date); domainFilter restricts to domains (prefix with - to exclude, e.g. [\"openai.com\", \"-reddit.com\"]).",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "The search query." }),
       mode: Type.Optional(
         StringEnum(["answer", "results"], {
-          description: "answer returns sources with longer excerpts for synthesis (default); results returns a compact source list only, faster.",
+          description: "answer returns longer excerpts for synthesis (default); results shortens excerpts to reduce downstream context. Both use the same Exa auto search tier.",
           default: "answer",
         }),
       ),

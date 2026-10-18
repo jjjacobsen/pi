@@ -679,14 +679,20 @@ read from `EXA_API_KEY` at call time. There is no config file or auth flow
 ## Request and result behavior
 
 The extension sends `POST https://api.exa.ai/search` with `x-api-key`,
-`type: "auto"`, and `useAutoprompt: false`. `numResults` defaults to 8 and is
-capped at 10. `domainFilter` values become allowed domains, or excluded
-domains when prefixed with `-`. Day, week, month, and year recency values map
-to an ISO UTC `startPublishedDate`
+`type: "auto"`, and `contents: { highlights: true }`, as recommended in
+[Exa's highlights guide](https://exa.ai/docs/search/highlights). Exa selects
+query-relevant passages instead of returning the beginning of each page
 
-`answer` mode requests excerpts up to 900 bytes. `results` mode requests
-compact excerpts up to 250 bytes. Titles are normalized and capped at 200
-bytes. Results are deduplicated by URL and capped at 30 sources. The complete
+`numResults` defaults to 8 and is capped at 10. `domainFilter` values become
+allowed domains, or excluded domains when prefixed with `-`. Day, week,
+month, and year recency values map to an ISO UTC `startPublishedDate`
+
+Both modes make the same request. The extension joins each result's
+`highlights` and caps the displayed excerpt at 900 bytes in `answer` mode or
+250 bytes in `results` mode. This reduces downstream context and does not
+select a lower Exa API price or latency tier. Publication dates are included
+when available, normalized and capped at 64 bytes. Titles are normalized and
+capped at 200 bytes. Results are deduplicated by URL and capped at 30 sources. The complete
 formatted output is capped at 32 KiB. An empty result is the successful text
 `No results found.`
 

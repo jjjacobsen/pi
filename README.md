@@ -235,9 +235,13 @@ The design takes inspiration from opencode and omp
 
 ### search - web search via the Exa API
 
-`web_search` queries Exa with your `EXA_API_KEY` and hands back numbered
-sources the model can cite. Adapted from `pi-web-access` and the earlier
-Codex-backed search
+`web_search` queries Exa with your `EXA_API_KEY` and returns numbered sources
+with query-relevant highlights and publication dates when available. The model
+writes the answer and cites sources with `[n]`. `answer` mode keeps longer
+excerpts, while `results` shortens them to reduce downstream context. Both use
+the same Exa `auto` request, not different API price or latency tiers
+
+Adapted from `pi-web-access` and the earlier Codex-backed search
 
 ### subagent - isolated task delegation
 
