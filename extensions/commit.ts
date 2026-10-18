@@ -1,14 +1,14 @@
-// pi-commit: /commit implemented directly in TypeScript.
+// pi-commit: shared commit command and tool workflow.
 // Inspired by tmonk/pi-committer (https://github.com/tmonk/pi-committer).
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, createExtensionRuntime, getAgentDir, SessionManager, SettingsManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, Type } from "@earendil-works/pi-ai";
 import { modelKey, registerWorkerModel } from "./lib/worker-model";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -583,61 +583,92 @@ function notify(ctx, text, level = "info") {
 }
 
 export default function (pi: ExtensionAPI) {
+  const readConfig = registerWorkerModel(pi, "commit", "Commit");
+
+  async function runCommit(args, ctx: ExtensionContext, signal, push = false) {
+    const cwd = ctx.cwd;
+    const timing = trackTiming(ctx);
+    const { step } = timing;
+    try {
+      timing.setMode(await readTiming());
+      step("load settings and select model");
+      const config = await readConfig();
+      const model = config
+        ? ctx.modelRegistry.getAvailable().find((candidate) => modelKey(candidate) === config.model)
+        : ctx.model;
+      if (!model) throw new Error(config ? `Commit model unavailable: ${config.model}. Run /commit-model` : "no model available");
+      const thinkingLevel = clampThinkingLevel(model, config?.thinking ?? "low");
+
+      const analysis = await analyze(pi, cwd, signal, step);
+      if (!analysis) {
+        notify(ctx, "nothing to commit", "info");
+        return "nothing to commit";
+      }
+      step("build prompt and session context");
+      const input = (args ?? "").trim();
+      const requiredPrefix = input.match(/^[A-Z][A-Z0-9]*-\d+(?=\s|$)/)?.[0] ?? "";
+      const intent = input.slice(requiredPrefix.length).trim();
+      const prompt = buildPrompt(analysis.context, intent, sessionTail(ctx), requiredPrefix);
+
+      let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, signal, step, "first attempt"));
+      step("validate message");
+      let problems = validate(message, requiredPrefix);
+      if (problems) {
+        const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
+        const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
+        const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, signal, step, "retry"));
+        step("validate retry");
+        problems = validate(retry, requiredPrefix);
+        if (problems) throw new Error(`message rejected after retry:\n${problems}Last attempt:\n${retry}`);
+        message = retry;
+      }
+
+      const summary = await commit(pi, cwd, message, signal, analysis.tree, step);
+      notify(ctx, summary, "success");
+      if (push) {
+        step("push: git push");
+        const result = await runGit(pi, cwd, ["push"], signal);
+        if (!result.ok) throw new Error(`commit created (${summary}), but git push failed: ${trim(result.stderr)}`);
+        notify(ctx, "git push completed", "success");
+      }
+      return summary;
+    } finally {
+      timing.finish();
+    }
+  }
+
   for (const command of ["commit", "commit-and-push"]) {
     pi.registerCommand(command, {
       description: `Stage all changes and write a Conventional Commit${command === "commit-and-push" ? ", then git push" : ""}: /${command} [CAS-1234] [intent]`,
       handler: async (args, ctx) => {
-        const cwd = ctx.cwd;
-        const timing = trackTiming(ctx);
-        const { step } = timing;
         try {
-          timing.setMode(await readTiming());
-          step("load settings and select model");
-          const config = await readConfig();
-          const model = config
-            ? ctx.modelRegistry.getAvailable().find((candidate) => modelKey(candidate) === config.model)
-            : ctx.model;
-          if (!model) throw new Error(config ? `Commit model unavailable: ${config.model}. Run /commit-model` : "no model available");
-          const thinkingLevel = clampThinkingLevel(model, config?.thinking ?? "low");
-
-          const analysis = await analyze(pi, cwd, ctx.signal, step);
-          if (!analysis) return notify(ctx, "nothing to commit", "info");
-          step("build prompt and session context");
-          const input = (args ?? "").trim();
-          const requiredPrefix = input.match(/^[A-Z][A-Z0-9]*-\d+(?=\s|$)/)?.[0] ?? "";
-          const intent = input.slice(requiredPrefix.length).trim();
-          const prompt = buildPrompt(analysis.context, intent, sessionTail(ctx), requiredPrefix);
-
-          let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, ctx.signal, step, "first attempt"));
-          step("validate message");
-          let problems = validate(message, requiredPrefix);
-          if (problems) {
-            const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
-            const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
-            const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, ctx.signal, step, "retry"));
-            step("validate retry");
-            problems = validate(retry, requiredPrefix);
-            if (problems) return notify(ctx, `message rejected after retry:\n${problems}Last attempt:\n${retry}`, "error");
-            message = retry;
-          }
-
-          notify(ctx, await commit(pi, cwd, message, ctx.signal, analysis.tree, step), "success");
-          if (command === "commit-and-push") {
-            step("push: git push");
-            const result = await runGit(pi, cwd, ["push"], ctx.signal);
-            if (!result.ok) throw new Error(`commit created, but git push failed: ${trim(result.stderr)}`);
-            notify(ctx, "git push completed", "success");
-          }
+          await runCommit(args, ctx, ctx.signal, command === "commit-and-push");
         } catch (error) {
           notify(ctx, error?.message ?? String(error), "error");
-        } finally {
-          timing.finish();
         }
       },
     });
   }
 
-  const readConfig = registerWorkerModel(pi, "commit", "Commit");
+  pi.registerTool({
+    name: "commit",
+    label: "Commit",
+    description: "Stage all repository changes and create one Conventional Commit through the /commit workflow, using /commit-model and /commit-thinking settings. Only use when the user explicitly requests a commit. Stops if root goal.md or handoff.md exists. Never pushes",
+    promptSnippet: "Create a user-requested commit through the shared /commit workflow",
+    promptGuidelines: [
+      "Only commit when the user explicitly requests it. After work and checks are complete, use the commit tool for requests such as 'do the work then commit', not bash or a separate git workflow. Never make unsolicited commits",
+      "The commit tool stages all repository changes, not a selected subset. Check the full change set first. If that scope conflicts with the user's request, ask the user rather than bypassing the workflow. Do not delete goal.md or handoff.md just to bypass the commit safeguard",
+      "Pass any requested ticket prefix and intent in commit's intent parameter, as with /commit [CAS-1234] [intent]. The tool never pushes. /commit-and-push is a separate user command for explicitly requested pushes",
+    ],
+    parameters: Type.Object({
+      intent: Type.Optional(Type.String({ description: "Optional /commit arguments: a leading ticket ID such as CAS-1234, followed by message intent" })),
+    }),
+    executionMode: "sequential",
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const summary = await runCommit(params.intent, ctx, signal);
+      return { content: [{ type: "text", text: summary }], details: undefined };
+    },
+  });
 
   pi.registerCommand("commit-timing", {
     description: "Select commit timing detail: /commit-timing [normal|verbose]",

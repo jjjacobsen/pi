@@ -63,7 +63,14 @@ cleanup. Non-TUI modes do nothing
 
 `/commit` stages all changes, asks the selected model for a Conventional Commit
 message, validates it, and creates the commit. It has no automatic trigger.
-`/commit-and-push` shares the same handler and arguments, then runs plain
+The model-callable `commit` tool and both slash commands call one shared
+workflow. The tool accepts only an optional `intent` string with the same
+`[CAS-1234] [intent]` syntax. It never pushes. Prompt guidelines require an
+explicit user commit request, route natural-language commit requests to this
+tool, and require a check of the all-changes staging scope without removing
+blocking files to bypass the safeguard
+
+`/commit-and-push` shares the same workflow and arguments, then runs plain
 `git push` only after a successful commit. It adds a Push timing phase and
 reports push errors without undoing the local commit.
 It is inspired by tmonk/pi-committer
@@ -125,8 +132,9 @@ noise, and a substantive body of at least 50 bytes. Allowed types are `feat`,
 `revert`
 
 Each git command and the commit child have a 60-second timeout. The command
-signal cancels git processes, the commit child, and the message-writing agent
-session. Commit stdout and stderr are drained concurrently into bounded
+context signal or tool execution signal cancels git processes, the commit
+child, and the message-writing agent session. Commit stdout and stderr are
+drained concurrently into bounded
 buffers, so verbose hooks do not block the child or grow memory without a
 limit. `/commit-timing [normal|verbose]` saves its view independently in
 `~/.pi/agent/commit-timing.json` across sessions. Bare `/commit-timing` opens a
@@ -137,6 +145,12 @@ setup, generation, validation, and retries. Both views summarize reached phases
 or steps and the total, including on early return or failure. The Git commit
 duration includes hooks and signing together. Headless sessions skip the widget
 and notifications safely
+
+The shared workflow uses `ExtensionContext`, with no command-only session
+controls or blocking UI dialogs. The tool runs sequentially and returns the
+short hash and header, or `nothing to commit`, as text. Workflow errors throw
+so Pi marks the tool result as failed, rather than returning success after an
+error notification. Slash commands still report errors through notifications
 
 There is no fallback message and no confirmation prompt. A second invalid
 message reports the validation problems and the last attempt. One invocation

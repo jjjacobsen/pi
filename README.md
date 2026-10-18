@@ -83,6 +83,13 @@ session context. It does not use commit history for style. It stops before
 staging while `goal.md` or `handoff.md` exists in the repository root, and it
 refuses to commit if the staged snapshot changes while it writes the message
 
+The `commit` tool uses this same workflow when you ask Pi to commit, including
+requests such as "do the work then commit". It never commits without a user
+request and never pushes. Its optional `intent` string accepts the same
+`[CAS-1234] [intent]` arguments as `/commit`. It stages all changes, so Pi must
+check that scope first and must not remove blocking files just to bypass it.
+The result reports the short commit hash and header, or that nothing changed
+
 Use `/commit-and-push [CAS-1234] [intent]` for the same workflow followed by
 plain `git push`. It pushes only after a successful commit. Push failures leave
 the local commit in place
