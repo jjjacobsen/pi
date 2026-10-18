@@ -260,8 +260,8 @@ never commits the memory repository
 ## Worker
 
 `browser({task})` runs a self-contained browser task in a fresh in-memory pi
-`AgentSession` with only `bash`. The worker uses agent-browser CLI through a
-shell function supplied to every bash call. It receives the task literally,
+`AgentSession` with only `bash`. The worker uses the plain agent-browser CLI
+with its native configuration and environment. It receives the task literally,
 without prompt-template expansion, and does not load extensions, skills,
 prompt templates, themes, or context files. The caller must include URLs,
 inputs, authorization, applicable user/project rules, and success conditions
@@ -283,29 +283,27 @@ model, thinking, and usage metadata. Failed and cancelled calls return
 
 ## Browser lifetime and dashboard
 
-`extensions/lib/browser-runtime.ts` creates ownership lazily for the active pi
-session. A random namespace isolates each runtime, including two processes that
-resume the same pi session. The CLI session name derives from the pi session ID.
-The browser starts on the first browser command, uses a temporary profile, and
-stays open across calls and turns, including worker failure or cancellation
+The browser starts lazily on the first CLI browser command. The extension adds
+no per-session namespace, session, profile, configuration, or shell wrapper.
+Native defaults use a temporary profile, not the daily browser. The default
+browser is shared across pi sessions and stays open across calls and turns,
+including worker failure or cancellation. Session changes, forks, reload, and
+shutdown do not close it
 
-The runtime resolves system Chromium from `AGENT_BROWSER_EXECUTABLE_PATH` or
-PATH and creates an empty temporary config. `extensions/lib/browser.sh` clears
-inherited `AGENT_BROWSER_*` settings, then sets the namespace, session,
-executable, config, Chrome engine, and headless mode for every CLI call.
-Dashboard child commands inherit the same settings. The daily browser profile
-is not used
+`extensions/lib/browser-runtime.ts` runs the plain CLI for dashboard and close
+commands. Native configuration and environment apply to all calls. To use system
+Chromium, set `AGENT_BROWSER_EXECUTABLE_PATH` in mise. The extension does not
+search PATH for Chromium
 
-`/browser-dashboard` takes no arguments. It opens the stock local dashboard only
-when this session already has an active browser, otherwise it reports that no
-browser is open. It does not create a browser or navigate to a URL. Keep the
-dashboard local, do not expose it to a network
+`/browser-dashboard` takes no arguments. It checks `session info --json` for an
+active default shared browser before running `dashboard start --json` and opening
+the local URL. If no browser is open, it reports that fact without starting one.
+Keep the dashboard local, do not expose it to a network
 
-`/browser-close` stops an active worker, closes the dashboard and browser, and
-removes the temporary config directory. Session switch, fork, start, reload,
-and shutdown use the same cleanup. Native agent-browser idle shutdown closes
-the browser after one hour without commands or dashboard input. A later
-browser command starts a new browser without the old page or login state
+`/browser-close` aborts and waits for only this extension's active worker, then
+runs `agent-browser close --all`. Native close-all semantics apply, so browsers
+used by other pi sessions can close too. The standalone dashboard stays running.
+There is no pi session lifecycle cleanup
 
 Browser setup is adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
 
@@ -540,16 +538,16 @@ branch, git-status, and browser-status changes request a render
 
 The footer scans agent-browser PID metadata immediately and every 10 seconds,
 across the default socket root, any `AGENT_BROWSER_SOCKET_DIR`, and all their
-namespaces. It includes abandoned owners without launching browsers or CLI
-processes. Dashboard PIDs and stale records are excluded. The count represents
-live daemon records, not tabs or Chromium child processes. Like native
-agent-browser discovery, PID reuse can produce a false positive. Custom socket
-roots absent from the environment cannot be discovered
+namespaces. It detects live daemon records across pi sessions without launching
+browsers or CLI processes. Dashboard PIDs and stale records are excluded. It does
+not count tabs or Chromium child processes. Like native agent-browser discovery,
+PID reuse can produce a false positive. Custom socket roots absent from the
+environment cannot be discovered
 
-When the count is positive, a yellow web icon and count appear directly after
-git status. Zero renders nothing. A failed scan shows `?` until polling succeeds.
-Only one scan runs at a time. The timer stops when the footer is disposed or
-disabled
+When any daemon is live, a yellow web icon appears directly after git status,
+with no count. No live daemon or a failed scan hides the icon, with no `?`
+indicator. Only one scan runs at a time. The timer stops when the footer is
+disposed or disabled
 
 # Model settings extension (`extensions/model-settings.ts`)
 

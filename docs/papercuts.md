@@ -136,6 +136,6 @@
 
 - agent-browser 0.38.1 can restart a session when later commands omit the launch
   options used by `open`. A successful navigation was followed by an empty page
-  on `snapshot`. Use `extensions/lib/browser.sh` to keep the same configuration,
-  executable, namespace, session, and headed mode on every command, including
-  dashboard child commands and `close`
+  on `snapshot`. Keep launch settings consistent through native configuration
+  and environment across CLI and dashboard calls, including `close`. Do not
+  mix launch options between calls

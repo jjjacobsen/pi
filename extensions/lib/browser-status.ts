@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 // Native agent-browser 0.39.1: get_socket_dir, walk_daemons, is_pid_alive
 // https://github.com/vercel-labs/agent-browser/blob/v0.39.1/cli/src/connection.rs
-// Count live daemon PID records, not tabs or Chromium child processes. Unlike
+// Find live daemon PID records, not tabs or Chromium child processes. Unlike
 // walk_daemons, this read-only scan never removes stale metadata or reads keys.
 async function entries(directory: string) {
 	try {
@@ -15,8 +15,7 @@ async function entries(directory: string) {
 	}
 }
 
-async function countDirectory(directory: string): Promise<number> {
-	let count = 0;
+async function directoryHasActiveBrowser(directory: string): Promise<boolean> {
 	for (const entry of await entries(directory)) {
 		if (!entry.name.endsWith(".pid") || entry.name === ".pid" || entry.name === "dashboard.pid") continue;
 		let text: string;
@@ -36,12 +35,12 @@ async function countDirectory(directory: string): Promise<number> {
 			// Native treats EPERM and every error except ESRCH as alive.
 			if (error.code === "ESRCH") continue;
 		}
-		count++;
+		return true;
 	}
-	return count;
+	return false;
 }
 
-export async function countActiveBrowsers(): Promise<number> {
+export async function hasActiveBrowsers(): Promise<boolean> {
 	const home = homedir();
 	const defaultRoot = process.env.XDG_RUNTIME_DIR
 		? join(process.env.XDG_RUNTIME_DIR, "agent-browser")
@@ -64,7 +63,8 @@ export async function countActiveBrowsers(): Promise<number> {
 			if (entry.isDirectory()) directories.add(join(root, "namespaces", entry.name, "run"));
 		}
 	}
-	let count = 0;
-	for (const directory of directories) count += await countDirectory(directory);
-	return count;
+	for (const directory of directories) {
+		if (await directoryHasActiveBrowser(directory)) return true;
+	}
+	return false;
 }

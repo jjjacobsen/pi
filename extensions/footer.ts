@@ -2,7 +2,7 @@
  * /footer - custom status footer (opencode-style, minimal)
  *
  * Replaces pi's built-in footer with a cleaner two-line layout:
- *   line 1:  π  ~/Projects/pi  main ↑1 *1 ?2 +1  󰖟 1    (workspace, git and browser status)
+ *   line 1:  π  ~/Projects/pi  main ↑1 *1 ?2 +1  󰖟    (workspace, git and browser status)
  *   line 2:  ↑26 ↓44 CH95.0% $0.000 38,234/1.0M 12.4 tok/s   ...   deepseek-v4-flash • max
  *
  * vs the built-in footer this drops the R (cache read), W (cache write),
@@ -37,7 +37,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { countActiveBrowsers } from "./lib/browser-status";
+import { hasActiveBrowsers } from "./lib/browser-status";
 
 // Nerd Font glyphs (verified against FiraCode Nerd Font)
 const ICONS = {
@@ -64,7 +64,7 @@ const ERROR_CTX_FRACTION = 0.9;
 // How often to re-run `git status --porcelain` so the changed-file counters
 // stay fresh while the footer is showing (~10-40ms per spawn on a normal repo).
 const GIT_STATUS_POLL_MS = 3000;
-// Count active agent-browser daemons across namespaces without starting a browser.
+// Detect active agent-browser daemons across namespaces without starting a browser.
 // Poll less often than git while keeping forgotten browsers visible.
 const BROWSER_STATUS_POLL_MS = 10000;
 
@@ -102,8 +102,7 @@ interface GitStatus {
 let gitStatus: GitStatus | null = null; // null = not in a repo / unknown
 let gitStatusTimer: ReturnType<typeof setInterval> | null = null;
 let gitStatusInFlight = false;
-let browserCount = 0;
-let browserStatusFailed = false;
+let browserActive = false;
 let browserStatusTimer: ReturnType<typeof setInterval> | null = null;
 let browserStatusInFlight = false;
 
@@ -185,11 +184,10 @@ async function refreshBrowserStatus(): Promise<void> {
 	if (browserStatusInFlight) return;
 	browserStatusInFlight = true;
 	try {
-		browserCount = await countActiveBrowsers();
-		browserStatusFailed = false;
+		browserActive = await hasActiveBrowsers();
 	} catch {
-		// Keep the last count, but show unknown instead of a stale value.
-		browserStatusFailed = true;
+		// Hide the icon when browser status is unknown.
+		browserActive = false;
 	} finally {
 		browserStatusInFlight = false;
 		if (footerTui) footerTui.requestRender();
@@ -327,9 +325,7 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	if (branch) {
 		segments.push(theme.fg("success", `${ICONS.git} ${branch}${gitStatus ? gitStatusSuffix(gitStatus) : ""}`));
 	}
-	if (browserStatusFailed || browserCount > 0) {
-		segments.push(theme.fg("warning", `${ICONS.browser} ${browserStatusFailed ? "?" : browserCount}`));
-	}
+	if (browserActive) segments.push(theme.fg("warning", ICONS.browser));
 	const sessionName = ctx.sessionManager.getSessionName();
 	if (sessionName) segments.push(theme.fg("dim", `• ${sessionName}`));
 	lines.push(truncateToWidth(segments.join("  "), width, theme.fg("dim", "...")));

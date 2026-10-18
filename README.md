@@ -10,7 +10,7 @@ people and organizations I trust
 1. `git clone git@github.com:jjjacobsen/pi.git` and `cd` in
 2. `mise trust` then `mise install` to pull the pinned development tools
 3. `mise use -g pi@latest` to install pi
-4. `mise use -g npm:agent-browser@0.39.1` to install agent-browser for the browser extension. Install system Chromium separately, available on PATH or through `AGENT_BROWSER_EXECUTABLE_PATH`
+4. `mise use -g npm:agent-browser@0.39.1` to install agent-browser for the browser extension. To use system Chromium, set `AGENT_BROWSER_EXECUTABLE_PATH` to its executable path in your mise configuration. The CLI does not automatically use system Chromium from PATH
 5. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
 6. Export `EXA_API_KEY` before starting pi (the search extension needs it)
@@ -52,14 +52,17 @@ not see the main conversation
 browser({task: "Open https://example.com and report the page title"})
 ```
 
-The isolated headless Chromium browser starts on demand in a unique namespace
-for this pi session, with a temporary profile separate from your daily browser.
-It stays open across calls and turns, so later tasks can use the current page.
-`/browser-close`, session changes, forks, reload, and shutdown close it and the
-dashboard. Native idle shutdown closes the browser after one hour of inactivity
+The plain agent-browser CLI uses its native configuration and environment.
+By default, the browser uses a temporary profile, not your daily browser, and
+starts on the first CLI browser command. It is shared across pi sessions and
+stays open across calls, session changes, forks, reload, and shutdown
 
-`/browser-dashboard` opens the local dashboard for this session's existing
-browser. It takes no URL or other arguments and does not start a browser
+`/browser-close` stops only this extension's active worker, then runs
+`agent-browser close --all` with native semantics. This can close browsers used
+by other pi sessions. The standalone dashboard stays running
+
+`/browser-dashboard` opens the local dashboard only for an existing default
+shared browser. It takes no arguments and does not start a browser if none is open
 
 ```text
 /browser-dashboard
@@ -155,11 +158,12 @@ collect session usage or write a cache. The view is adapted from omp
 
 The custom footer shows your workspace, git branch and status (`↑N ↓N` upstream
 ahead / behind commits and `*N ?N +N` worktree-changed / untracked / staged
-counters, polled from `git status`), an icon and count for active agent-browser
-sessions, token and cost stats, the latest response's cache hit percentage (`CH`), and
+counters, polled from `git status`), a browser icon when any agent-browser daemon
+is live, token and cost stats, the latest response's cache hit percentage (`CH`), and
 a context color set on absolute tokens (warning ~100k, error ~200k). Totals
 include cache-warming usage. `/footer`
-switches between it and the built-in footer.
+switches between it and the built-in footer. Browser status has no count or `?`
+indicator. A failed status scan hides the icon
 The design takes inspiration from opencode and omp
 (can1357/oh-my-pi)
 
