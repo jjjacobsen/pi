@@ -6,6 +6,7 @@ file automatically
 
 ```json
 {
+  "defaultTools": ["+codemode", "+grep", "+find"],
   "hideThinkingBlock": false,
   "tuiMode": "fullscreen",
   "fullscreenWheelScrollLines": 1,
@@ -13,6 +14,7 @@ file automatically
 }
 ```
 
+- Enable codemode and native file search with `grep` and `find`
 - Use fullscreen mode with visible thinking and one line per wheel event
 - Print a resume hint instead of the transcript when exiting fullscreen mode
 

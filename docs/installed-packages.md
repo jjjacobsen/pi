@@ -5,7 +5,6 @@ file whenever packages change. Additional package notes are below
 
 ## 3rd party packages
 
-- @ff-labs/pi-fff (npm)
 - pi-transcribe (git)
 
 ## Local installs

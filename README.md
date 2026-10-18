@@ -13,7 +13,6 @@ people and organizations I trust
 4. `mise use -g npm:agent-browser@0.38.1` to install agent-browser for the browser extension. Install system Chromium separately, available on PATH or through `AGENT_BROWSER_EXECUTABLE_PATH`
 5. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
-   - `pi install npm:@ff-labs/pi-fff`
 6. Export `EXA_API_KEY` before starting pi (the search extension needs it)
 7. Merge the [personal pi settings](docs/pi-settings.md) into `~/.pi/agent/settings.json`
 
