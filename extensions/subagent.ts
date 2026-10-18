@@ -131,14 +131,16 @@ export default function subagentExtension(pi: ExtensionAPI) {
     name: TOOL_NAME,
     label: "Subagent",
     description:
-      "Delegate a self-contained task to an isolated subagent and get back only its final summary. The subagent runs with its own fresh context in the current project directory, with read, bash, edit, write, and web_search. It does not see this conversation. Model and reasoning overrides are optional; omit them to use saved /subagent-model and /subagent-thinking defaults, or inherit the parent session if unset. Use this for meaty but well-scoped work where you only need the outcome, not the intermediate steps: research, isolated refactors, digging through logs, writing reports. Call subagent once per independent task and several calls in parallel when tasks do not depend on each other. Do not delegate tiny tasks you can do yourself, and do not delegate tasks where you need to inspect the full intermediate output.",
+      "Delegate substantial implementation and investigation by default, before doing the full investigation yourself. The subagent starts with fresh context in the current project directory, with read, bash, edit, write, and web_search. It does not see this conversation and returns only its final summary. Give it a complete task with context, constraints, file ownership, and completion criteria. Run independent tasks in parallel, but do not force tightly coupled work into separate tasks. Review actual changes and run required checks rather than trust summaries alone. Model and reasoning overrides are optional; omit them to use saved /subagent-model and /subagent-thinking defaults, or inherit the parent session if unset. Do not delegate tiny tasks where overhead outweighs the benefit, or tasks where you need the full intermediate output.",
     promptSnippet: "Delegate a self-contained task with a short 3-8 word label to an isolated subagent that returns only a summary",
     promptGuidelines: [
-      "Use subagent when a task is meaty but self-contained and the caller only needs the outcome: research, isolated refactors, log digging, report writing. The subagent returns only its final message, so the caller's context stays small.",
-      "Fire several subagent calls in the same turn to run independent tasks in parallel, one call per task.",
+      "Orchestrate substantial implementation and investigation by default. Do only enough initial inspection to define the task, then delegate before doing the full investigation yourself.",
+      "Give each subagent a complete, self-contained task with relevant context, constraints, file ownership, and completion criteria. It does not see this conversation and returns only its final message.",
+      "Run independent tasks in parallel with one subagent call per task and no overlapping file edits. Keep tightly coupled work together rather than force a split.",
+      "Keep responsibility for resolving questions, reviewing actual changes or evidence, integration, and final validation. Run required checks and do not trust summaries alone.",
       "Omit subagent model and reasoning to use saved defaults, or inherit from the parent session if unset. Set only the value that needs an override.",
       "Supply a short 3-8 word label that describes the task, separate from the full task prompt.",
-      "Do not delegate tiny tasks you can do yourself, and do not delegate tasks where you need to see the full intermediate output.",
+      "Do not delegate tiny tasks where overhead outweighs the benefit, or tasks where you need to see the full intermediate output.",
     ],
     parameters: Type.Object({
       label: Type.String({ description: "Short 3-8 word description of this task, supplied by the parent agent." }),
