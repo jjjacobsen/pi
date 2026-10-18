@@ -1,19 +1,17 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { resizeImage, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
-import { discoverImageModels, generateImages, imageFormat, imageThinkingLevels, normalizeImageThinking } from "./lib/image-providers";
+import { discoverImageModels, imageFormat, registerImageProviders } from "./lib/image-providers";
 import { modelKey, registerWorkerModel } from "./lib/worker-model";
 
 export default function imagegenExtension(pi: ExtensionAPI) {
+  registerImageProviders(pi);
   const readConfig = registerWorkerModel(pi, "image", "Image", {
     getModels: discoverImageModels,
-    getThinkingLevels: imageThinkingLevels,
-    normalizeThinking: normalizeImageThinking,
-    defaultThinking: "default",
-    modelConfig: (model) => ({ provider: model.provider, id: model.id, api: model.api, thinkingLevels: model.thinkingLevels }),
+    thinking: false,
   });
 
   pi.registerTool({
@@ -28,8 +26,12 @@ export default function imagegenExtension(pi: ExtensionAPI) {
       references: Type.Optional(Type.Array(Type.String(), { description: "Local reference image paths to send to the selected provider" })),
     }),
     async execute(_id, params, signal, onUpdate, ctx) {
-      const model = await readConfig();
-      if (!model) throw new Error("Select an image model with /image-model first");
+      const config = await readConfig();
+      if (!config) throw new Error("Select an image model with /image-model first");
+      const model = (await ctx.modelRegistry.getAvailableOfType("image", undefined, { signal }))
+        .find((candidate) => modelKey(candidate) === config.model);
+      if (!model) throw new Error(`Image model unavailable: ${config.model}. Run /image-model`);
+      if (params.references?.length && !model.input.includes("image")) throw new Error("Selected image model does not accept reference images. Run /image-model");
       const requestSignal = AbortSignal.any([AbortSignal.timeout(300_000), ...(signal ? [signal] : [])]);
       requestSignal.throwIfAborted();
       const target = resolve(ctx.cwd, params.path.replace(/^@/, ""));
@@ -41,11 +43,29 @@ export default function imagegenExtension(pi: ExtensionAPI) {
       const references = await Promise.all((params.references ?? []).map(async (path) => {
         const bytes = await readFile(resolve(ctx.cwd, path.replace(/^@/, "")));
         const { mimeType } = imageFormat(bytes);
-        return `data:${mimeType};base64,${bytes.toString("base64")}`;
+        return { type: "image" as const, mimeType, data: bytes.toString("base64") };
       }));
       onUpdate?.({ content: [{ type: "text", text: `Generating with ${modelKey(model)}…` }], details: {} });
-      const { images, usage, warnings } = await generateImages(ctx, model, params.prompt, references, requestSignal, model.thinking);
-      requestSignal.throwIfAborted();
+      // The pinned 0.99.1 registry types omit this method exposed by Pi 1.3.0.
+      const registry = ctx.modelRegistry as typeof ctx.modelRegistry & Pick<ModelRuntime, "generateImages">;
+      const result = await registry.generateImages(model, {
+        input: [{ type: "text", text: params.prompt }, ...references],
+      }, { signal: requestSignal, maxRetries: 0 });
+      const { usage } = result;
+      const details = { model: modelKey(model), providerUsage: usage };
+      const blocks = result.output.filter((block) => block.type === "image");
+      if (result.stopReason !== "stop" || requestSignal.aborted || !blocks.length) {
+        return {
+          content: [{ type: "text", text: result.errorMessage ?? (requestSignal.aborted ? "Image generation cancelled or timed out" : "Image generation returned no images") }],
+          details,
+          isError: true,
+          usage,
+        };
+      }
+      const images = blocks.map((image) => {
+        const bytes = Buffer.from(image.data, "base64");
+        return { bytes, ...imageFormat(bytes) };
+      });
       const paths = [];
       for (const [index, image] of images.entries()) {
         const path = `${stem}${index ? `-${index + 1}` : ""}.${image.extension}`;
@@ -57,21 +77,15 @@ export default function imagegenExtension(pi: ExtensionAPI) {
       }
       const preview = await resizeImage(images[0].bytes, images[0].mimeType, { maxWidth: 1024, maxHeight: 1024, maxBytes: 1_000_000 });
       const text = `Saved with ${modelKey(model)}:\n${paths.join("\n")}`
-        + (warnings?.length ? `\nProvider warnings: ${JSON.stringify(warnings).slice(0, 2000)}` : "")
+        + result.output.filter((block) => block.type === "text").map((block) => `\n${block.text}`).join("")
         + (preview ? "\nPreview only. Saved files retain the original resolution." : "\nPreview unavailable. Use read to inspect the saved image.");
       return {
         content: [
           { type: "text" as const, text },
           ...(preview ? [{ type: "image" as const, mimeType: preview.mimeType, data: preview.data }] : []),
         ],
-        details: { paths, model: modelKey(model), thinking: model.thinking, providerUsage: usage },
-        ...(usage?.cost !== undefined ? { usage: {
-          input: usage.prompt_tokens ?? 0,
-          output: usage.completion_tokens ?? 0,
-          totalTokens: usage.total_tokens ?? 0,
-          cacheRead: 0, cacheWrite: 0,
-          cost: { input: 0, output: usage.cost, cacheRead: 0, cacheWrite: 0, total: usage.cost },
-        } } : {}),
+        details: { ...details, paths },
+        usage,
       };
     },
   });

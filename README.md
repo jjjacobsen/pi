@@ -174,17 +174,19 @@ on failure or early exit. Git commit time includes hooks and signing together
 
 ### imagegen - image generation with a separate model
 
-`/image-model` opens a searchable picker of live image-output models from your
-configured OpenRouter and Vercel AI Gateway providers. The selection is saved
-for all sessions and does not change your coding model. `imagegen` generates
-images or edits local references, saves original files, and returns a preview.
-`/image-thinking` selects provider-supported effort for Vercel chat image models.
-Other image endpoints use the provider default without a thinking control.
-These commands share the subagent, browser, and commit settings code
+`/image-model` opens a searchable picker from Pi's native image catalog. The
+selection is saved for all sessions and does not change your coding model
+`imagegen` uses Pi's native image API to generate images or edit local references,
+saves original files without overwrites, and returns a reduced preview
+The picker and settings writes are shared with subagent, browser, and commit
 
-It uses existing pi credentials and the selected provider's billing, not Codex
-subscription usage. OpenCode Go is not offered because image output is not
-documented. See [docs/imagegen.md](docs/imagegen.md) for setup and limits
+Pi 1.3.0 includes OpenRouter image models. A small registered provider adapter
+sends image-only models to OpenRouter's Images API because Pi incorrectly uses
+Chat Completions for them. The selected model does not change
+The custom Vercel integration and `/image-thinking` are removed because Pi has
+no native image-thinking control. It uses existing Pi credentials and the
+selected provider's billing, not Codex subscription usage. Usage counts toward
+session totals. See [docs/imagegen.md](docs/imagegen.md) for setup and limits
 
 ### lazygit - full-screen git TUI via /lg
 
@@ -194,8 +196,8 @@ background, so you can browse commits and stage diffs
 ### model-settings - worker model overview
 
 `/model-settings` shows the global pi default model and thinking level, plus
-settings for subagent, browser, commit, and imagegen. The image row shows provider
-defaults or saved effort, including when thinking control is unavailable.
+settings for subagent, browser, commit, and imagegen. The image row checks Pi's
+native image catalog and shows that thinking control is unavailable.
 Global defaults exclude project
 and current-session overrides. Unset global defaults show as `not set`. It marks saved, inherited, and default values, unavailable models,
 and thinking levels adjusted to model support. Subagent per-call overrides

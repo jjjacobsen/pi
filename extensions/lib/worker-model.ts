@@ -16,10 +16,7 @@ export async function readWorkerModel(name: string) {
 
 export function registerWorkerModel(pi: ExtensionAPI, name: string, label: string, {
   getModels = async (ctx) => ctx.modelRegistry.getAvailable(),
-  getThinkingLevels = (model): string[] => getSupportedThinkingLevels(model),
-  normalizeThinking = (model, thinking): string => clampThinkingLevel(model, thinking),
-  defaultThinking = "off",
-  modelConfig = (_model) => ({}),
+  thinking = true,
 } = {}) {
   const configPath = () => workerConfigPath(name);
   const readConfig = () => readWorkerModel(name);
@@ -42,36 +39,36 @@ export function registerWorkerModel(pi: ExtensionAPI, name: string, label: strin
       }
       const model = models.find((model) => modelKey(model) === key);
       if (!model) throw new Error(`Model unavailable. Use /${name}-model to select an exact provider/model`);
-      const thinking = await withFileMutationQueue(configPath(), async () => {
+      const level = await withFileMutationQueue(configPath(), async () => {
         const current = await readConfig();
-        const thinking = normalizeThinking(model, current?.thinking ?? defaultThinking);
-        await writeConfig({ ...current, ...modelConfig(model), model: key, thinking });
-        return thinking;
+        const level = thinking ? clampThinkingLevel(model, current?.thinking ?? "off") : undefined;
+        await writeConfig({ model: key, ...(thinking ? { thinking: level } : {}) });
+        return level;
       });
-      ctx.ui.notify(`${label}: ${key} · thinking: ${thinking}`, "info");
+      ctx.ui.notify(`${label}: ${key}${thinking ? ` · thinking: ${level}` : ""}`, "info");
     },
   });
 
-  pi.registerCommand(`${name}-thinking`, {
+  if (thinking) pi.registerCommand(`${name}-thinking`, {
     description: `Select thinking for the ${name}, separate from the main session`,
     handler: async (args, ctx) => {
       const config = await readConfig();
       if (!config) throw new Error(`Select a model with /${name}-model first`);
       const model = (await getModels(ctx)).find((candidate) => modelKey(candidate) === config.model);
       if (!model) throw new Error(`${label} model unavailable: ${config.model}. Run /${name}-model`);
-      const levels = getThinkingLevels(model);
+      const levels = getSupportedThinkingLevels(model);
       let thinking = args.trim();
       if (!thinking) {
         if (ctx.mode !== "tui") throw new Error(`Use /${name}-thinking level outside the TUI`);
         thinking = await ctx.ui.custom<string>((tui, theme, keys, done) =>
-          workerPicker(tui, theme, keys, done, `${label} thinking: ${config.model}`, levels, normalizeThinking(model, config.thinking ?? defaultThinking)));
+          workerPicker(tui, theme, keys, done, `${label} thinking: ${config.model}`, levels, clampThinkingLevel(model, config.thinking ?? "off")));
         if (!thinking) return;
       }
       if (!levels.some((level) => level === thinking)) throw new Error(`Supported ${name} thinking levels: ${levels.join(", ")}`);
       await withFileMutationQueue(configPath(), async () => {
         const current = await readConfig();
         if (current.model !== config.model) throw new Error(`${label} model changed. Run /${name}-thinking again`);
-        await writeConfig({ ...current, ...modelConfig(model), thinking });
+        await writeConfig({ model: config.model, thinking });
       });
       ctx.ui.notify(`${label}: ${config.model} · thinking: ${thinking}`, "info");
     },

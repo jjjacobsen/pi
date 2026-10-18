@@ -144,34 +144,51 @@ creates one commit, and inferred intent can still be wrong
 
 # Image generation extension (`extensions/imagegen.ts`)
 
-`/image-model` discovers image-output models from configured OpenRouter and
-Vercel AI Gateway providers. It shares model and thinking commands, the searchable
-picker, and queued settings writes with subagent, browser, and commit through
-`worker-model.ts` and `worker-picker.ts`. Image discovery and thinking rules are
-supplied to that shared code. Settings are stored in
+`/image-model` lists Pi's available image catalog through
+`modelRegistry.getAvailableOfType("image")`. It shares the searchable picker and
+queued settings writes with subagent, browser, and commit through
+`worker-model.ts` and `worker-picker.ts`. The shared helper can omit thinking
+controls for image models. Settings contain only the exact `model` reference in
 `<agent_dir>/image-model.json`, separate from the main coding model and shared
-across sessions. The saved model includes its API mode and catalog effort values
+across sessions
 
-The `imagegen` tool reads that choice for each call, sends the prompt and any
-local reference images, saves original image files without overwriting existing
-files, and returns a resized preview of the first image. Writes use pi's file
-mutation queue. Provider-reported cost is included in tool usage when available
+The `imagegen` tool reads that choice for each call and resolves it against the
+available image catalog. An unavailable model fails without switching providers
+It sends text and local reference image blocks to
+`ctx.modelRegistry.generateImages()`. References require image input support
+Pi owns credentials and catalog updates. `extensions/lib/image-providers.ts`
+lists native models, identifies file formats, and registers a small OpenRouter
+image implementation through `pi.registerProvider()`. The registration keeps
+Pi's built-in models, authentication, chat, and classifier implementations
 
-`extensions/lib/image-providers.ts` owns discovery and provider-specific HTTP
-requests. It resolves credentials and base URLs through pi's model registry.
-Image models are not registered as coding models. OpenRouter uses its dedicated
-Images API. Vercel uses Images endpoints for image-only models and Chat
-Completions for multimodal language models. `/image-thinking` offers `default`
-plus catalog effort values only for Vercel chat models. Explicit thinking maps
-to `reasoning.effort`. `default` omits it. Images endpoints receive no reasoning
-field. Unsupported choices reset to `default` when changing models
+All returned images are saved with their original bytes, correct format suffix,
+and numbered names for additional images. Exclusive writes use Pi's file
+mutation queue and never overwrite existing files. The first image gets a
+preview capped at 1024 pixels per side and 1 MB. Native text blocks accompany
+the paths. Native usage feeds tool usage and details, including returned errors
+with usage. Native Chat Completions cost is a catalog-based estimate. The
+image-only adapter uses OpenRouter's reported `usage.cost` when present
 
-Discovery is on demand, with a 30-second network deadline per provider and
-visible partial failures. Generation has a five-minute deadline, shares the
-agent abort signal, and never retries automatically. No dependencies are added
+Pi 1.3.0 incorrectly sends image-only OpenRouter models to Chat Completions
+The registered adapter uses `POST /images` for models without text output,
+sending `prompt` and optional `input_references` and normalizing `data[].b64_json`
+Models with text output delegate to Pi's built-in image implementation
+The tool still calls `ctx.modelRegistry.generateImages()` for the exact saved
+model. There is no endpoint retry or model substitution
+The old Vercel adapter is removed. Providers need native image models and an
+image implementation to appear here. `/image-thinking` is removed because the
+native image API has no thinking control. Selecting a model writes only its
+reference, without the old API mode or thinking metadata
 
-See [imagegen.md](imagegen.md) for the tool contract, endpoint references,
-billing details, and provider limits
+Generation has a five-minute deadline, shares the agent abort signal, and sets
+`maxRetries: 0` to prevent native request retries. Native error, aborted, and
+empty-image responses return failed tool results. No dependencies are added
+The pinned 0.99.1 development types omit `ModelRegistry.generateImages`, so a
+type-only intersection uses the exported `ModelRuntime` method signature
+Runtime support requires Pi 1.3.0. The explicit image-only provider adapter is
+necessary until Pi supports OpenRouter's dedicated Images API
+
+See [imagegen.md](imagegen.md) for the tool contract, billing details, and limits
 
 # Lazygit extension (`extensions/lazygit.ts`)
 
@@ -770,9 +787,8 @@ calls or configuration writes.
 Unset subagent settings inherit the session values. Unset commit settings use
 the session model and low thinking. Browser requires a saved model. The table
 marks each value's source, unavailable models, and thinking clamped to model
-support. Image settings use saved catalog capabilities rather than pi's coding
-registry, without network discovery. The image row distinguishes provider default
-from explicit thinking and marks models with no thinking control.
+support. Image settings check Pi's available image catalog and show that the
+native image API has no thinking control.
 It shows worker defaults, not subagent per-call overrides
 
 # Subagent extension (`extensions/subagent.ts`)
@@ -797,9 +813,9 @@ then the caller's setting. `/subagent-model` and `/subagent-thinking` save
 `model` and `thinking` in `<agent_dir>/subagent-model.json`, read on each call.
 Select a model first. Its initial thinking level is `off`. Both commands share
 `extensions/lib/worker-model.ts` and `worker-picker.ts` with browser, commit,
-and image commands, including filtering, validation, and queued configuration
-writes. The shared code accepts model discovery, thinking rules, and saved model
-metadata for image providers
+and image model selection, including filtering, validation, and queued
+configuration writes. The shared code accepts a model catalog function and
+omits thinking commands and settings for image models
 
 A per-call model override must be an exact `provider/model` or an unambiguous
 model ID. An explicit reasoning level must be supported by that model. Saved

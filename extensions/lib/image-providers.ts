@@ -1,79 +1,65 @@
-// Provider protocols: see docs/imagegen.md for the official API references
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { modelKey } from "./worker-model";
 
-export const IMAGE_PROVIDERS = ["openrouter", "vercel-ai-gateway"];
-
-export type ImageModel = {
-  provider: string;
-  id: string;
-  api: "images" | "chat";
-  thinkingLevels: string[];
-};
-
-export function imageThinkingLevels(model: ImageModel) {
-  return ["default", ...model.thinkingLevels];
-}
-
-export function normalizeImageThinking(model: ImageModel, thinking: string) {
-  return imageThinkingLevels(model).includes(thinking) ? thinking : "default";
-}
-
-async function connection(ctx: ExtensionContext, provider: string) {
-  if (!IMAGE_PROVIDERS.includes(provider)) throw new Error(`Unsupported image provider: ${provider}`);
-  const resolved = await ctx.modelRegistry.getProviderAuth(provider);
-  if (!resolved?.auth.apiKey) throw new Error(`Run /login ${provider} before using imagegen`);
-  const auth = resolved.auth;
-  let baseUrl = (auth.baseUrl ?? ctx.modelRegistry.getProvider(provider).baseUrl).replace(/\/$/, "");
-  if (provider === "vercel-ai-gateway" && !baseUrl.endsWith("/v1")) baseUrl += "/v1";
-  const headers = new Headers({ Authorization: `Bearer ${auth.apiKey}`, "Content-Type": "application/json" });
-  for (const [key, value] of Object.entries(auth.headers ?? {})) {
-    if (value === null) headers.delete(key);
-    else headers.set(key, value);
-  }
-  return { baseUrl, headers };
-}
-
-async function request(connection, path, signal, body?) {
-  const response = await fetch(`${connection.baseUrl}${path}`, {
-    method: body ? "POST" : "GET",
-    headers: connection.headers,
-    body: body ? JSON.stringify(body) : undefined,
-    signal,
-    redirect: "error",
+export function registerImageProviders(pi: ExtensionAPI) {
+  const nativeOpenRouter = builtinProviders().find((provider) => provider.id === "openrouter");
+  // Pi 1.3.0 sends image-only models to Chat Completions, which rejects them.
+  // Protocol: https://openrouter.ai/docs/guides/overview/multimodal/image-generation
+  pi.registerProvider("openrouter", {
+    images: {
+      "openrouter-images": {
+        async generateImages(model, context, options) {
+          if (model.output.includes("text")) return nativeOpenRouter.generateImages(model, context, options);
+          if (!options?.apiKey) throw new Error("No API key for provider: openrouter");
+          const references = context.input.filter((block) => block.type === "image");
+          const payload = {
+            model: model.id,
+            prompt: context.input.filter((block) => block.type === "text").map((block) => block.text).join("\n"),
+            n: 1,
+            ...(references.length ? { input_references: references.map((image) => ({
+              type: "image_url", image_url: { url: `data:${image.mimeType};base64,${image.data}` },
+            })) } : {}),
+          };
+          const body = await options.onPayload?.(payload, model) ?? payload;
+          const headers = new Headers({ Authorization: `Bearer ${options.apiKey}`, "Content-Type": "application/json" });
+          for (const [key, value] of Object.entries({ ...model.headers, ...options.headers })) {
+            if (value === null) headers.delete(key);
+            else headers.set(key, value);
+          }
+          const response = await (options.fetch ?? fetch)(`${model.baseUrl.replace(/\/+$/, "")}/images`, {
+            method: "POST", headers, body: JSON.stringify(body), signal: options.signal, redirect: "error",
+          });
+          await options.onResponse?.({ status: response.status, headers: Object.fromEntries(response.headers) }, model);
+          if (!response.ok) throw new Error(`Image API HTTP ${response.status}: ${(await response.text()).slice(0, 2000)}`);
+          const result = await response.json();
+          if (result.error) throw new Error(`Image API: ${JSON.stringify(result.error).slice(0, 2000)}`);
+          const raw = result.usage;
+          const usage = raw ? {
+            input: raw.prompt_tokens ?? 0, output: raw.completion_tokens ?? 0,
+            totalTokens: raw.total_tokens ?? (raw.prompt_tokens ?? 0) + (raw.completion_tokens ?? 0),
+            cacheRead: 0, cacheWrite: 0,
+            cost: { input: 0, output: raw.cost ?? 0, cacheRead: 0, cacheWrite: 0, total: raw.cost ?? 0 },
+          } : undefined;
+          return {
+            api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
+            stopReason: "stop",
+            output: result.data.map((image) => ({
+              type: "image", data: image.b64_json,
+              mimeType: imageFormat(Buffer.from(image.b64_json, "base64")).mimeType,
+            })),
+            usage,
+          };
+        },
+      },
+    },
   });
-  if (!response.ok) throw new Error(`Image API HTTP ${response.status}: ${(await response.text()).slice(0, 2000)}`);
-  const result = await response.json();
-  if (result.error) throw new Error(`Image API: ${JSON.stringify(result.error).slice(0, 2000)}`);
-  return result;
 }
 
 export async function discoverImageModels(ctx: ExtensionContext) {
-  const providers = IMAGE_PROVIDERS.filter((id) => ctx.modelRegistry.getProviderAuthStatus(id).configured);
-  if (!providers.length) throw new Error("Run /login openrouter or /login vercel-ai-gateway first");
-  const results = await Promise.allSettled(providers.map(async (provider) => {
-    const conn = await connection(ctx, provider);
-    const { data } = await request(conn, provider === "openrouter" ? "/images/models" : "/models", AbortSignal.timeout(30_000));
-    return data
-      .filter((m) => (provider === "openrouter" ? m.architecture?.output_modalities : m.modalities?.output)?.includes("image"))
-      .map((m) => ({
-        provider,
-        id: m.id,
-        api: provider === "vercel-ai-gateway" && m.type !== "image" ? "chat" : "images",
-        thinkingLevels: provider === "vercel-ai-gateway" && m.type !== "image"
-          ? (m.reasoning_options?.find((option) => option.type === "effort")?.values ?? [])
-          : [],
-      } as ImageModel));
-  }));
-  const models: ImageModel[] = [];
-  const errors = [];
-  results.forEach((result, i) => {
-    if (result.status === "fulfilled") models.push(...result.value);
-    else errors.push(`${providers[i]}: ${result.reason.message}`);
-  });
-  if (!models.length) throw new Error(errors.join("\n") || "No image-output models found");
-  if (errors.length) ctx.ui.notify(errors.join("\n"), "warning");
-  return models.sort((a, b) => modelKey(a).localeCompare(modelKey(b)));
+  const models = await ctx.modelRegistry.getAvailableOfType("image", undefined, { signal: ctx.signal });
+  if (!models.length) throw new Error("No image models available. Configure an image provider with /login");
+  return [...models].sort((a, b) => modelKey(a).localeCompare(modelKey(b)));
 }
 
 export function imageFormat(bytes: Buffer) {
@@ -81,51 +67,5 @@ export function imageFormat(bytes: Buffer) {
   if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return { extension: "jpg", mimeType: "image/jpeg" };
   if (bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") return { extension: "webp", mimeType: "image/webp" };
   if (["GIF87a", "GIF89a"].includes(bytes.toString("ascii", 0, 6))) return { extension: "gif", mimeType: "image/gif" };
-  throw new Error("Image API returned an unsupported image format (expected PNG, JPEG, WebP, or GIF)");
-}
-
-export async function generateImages(ctx: ExtensionContext, model: ImageModel, prompt: string, references: string[], signal: AbortSignal, thinking: string) {
-  if (!imageThinkingLevels(model).includes(thinking)) throw new Error("Unsupported image thinking level. Run /image-thinking");
-  const conn = await connection(ctx, model.provider);
-  let path;
-  let body;
-  if (model.provider === "openrouter") {
-    path = "/images";
-    body = {
-      model: model.id, prompt, n: 1,
-      ...(references.length ? { input_references: references.map((url) => ({ type: "image_url", image_url: { url } })) } : {}),
-    };
-  } else if (model.api === "chat") {
-    path = "/chat/completions";
-    body = {
-      model: model.id,
-      messages: [{ role: "user", content: [
-        { type: "text", text: prompt },
-        ...references.map((url) => ({ type: "image_url", image_url: { url } })),
-      ] }],
-      modalities: ["text", "image"],
-      ...(thinking !== "default" ? { reasoning: { effort: thinking } } : {}),
-      stream: false,
-    };
-  } else {
-    path = references.length ? "/images/edits" : "/images/generations";
-    body = {
-      model: model.id, prompt, n: 1, response_format: "b64_json",
-      ...(references.length ? { images: references.map((image_url) => ({ image_url })) } : {}),
-    };
-  }
-  const result = await request(conn, path, signal, body);
-  const encoded = model.api === "chat"
-    ? result.choices?.flatMap((choice) => (choice.message.images ?? []).map((image) => {
-        const match = /^data:image\/[\w.+-]+;base64,([\s\S]+)$/.exec(image.image_url.url);
-        if (!match) throw new Error("Image API did not return a base64 image");
-        return match[1];
-      }))
-    : result.data?.map((image) => image.b64_json);
-  if (!encoded?.length) throw new Error("Image API returned no images");
-  const images = encoded.map((data) => {
-    const bytes = Buffer.from(data, "base64");
-    return { bytes, ...imageFormat(bytes) };
-  });
-  return { images, usage: result.usage, warnings: result.warnings };
+  throw new Error("Unsupported image format (expected PNG, JPEG, WebP, or GIF)");
 }
