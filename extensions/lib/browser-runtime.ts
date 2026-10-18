@@ -1,7 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
-import { withBrowserPlacement } from "./browser-hyprland";
+import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 const helper = fileURLToPath(new URL("./browser.sh", import.meta.url));
 
@@ -42,38 +46,61 @@ export function actionArgs(args) {
   }
 }
 
-export function createBrowserClient(pi: ExtensionAPI, cwd: string, visible: boolean, signal?: AbortSignal, record?: (ms: number, snapshots: number) => void) {
+// Never restore this identity from a transcript. Two resumed copies need distinct owners.
+export function createBrowserHandle(piSessionId: string, visible = false) {
+  const owner = randomBytes(8).toString("hex");
+  const sessionName = `pi-${createHash("sha256").update(piSessionId).digest("hex").slice(0, 12)}`;
+  const executablePath = process.env.AGENT_BROWSER_EXECUTABLE_PATH || execFileSync("bash", ["-c", "command -v chromium || command -v chromium-browser"], { encoding: "utf8", timeout: 1000 }).trim();
+  const configDir = mkdtempSync(join(tmpdir(), "pi-browser-"));
+  const configPath = join(configDir, "config.json");
+  try { writeFileSync(configPath, "{}", { mode: 0o600 }); }
+  catch (error) { rmSync(configDir, { recursive: true, force: true }); throw error; }
+  return Object.freeze({ piSessionId, owner, namespace: `pi-${owner}`, sessionName, visible, executablePath, configPath });
+}
+
+export function removeBrowserConfiguration(handle: ReturnType<typeof createBrowserHandle>) {
+  rmSync(dirname(handle.configPath), { recursive: true, force: true });
+}
+
+// Both browser commands and the dashboard use browser.sh's sanitized environment.
+// The dashboard's /api/exec children inherit it, including the durable empty config.
+export function browserCommandArgs(handle: ReturnType<typeof createBrowserHandle>) {
+  return [helper, handle.namespace, handle.sessionName, String(handle.visible), handle.executablePath, handle.configPath];
+}
+
+export function createBrowserClient(pi: ExtensionAPI, cwd: string, handle: ReturnType<typeof createBrowserHandle>, signal?: AbortSignal, record?: (ms: number, snapshots: number) => void) {
   const timed = async (snapshots, execute) => {
     const start = performance.now();
     try { return await execute(); }
     finally { record?.(performance.now() - start, snapshots); }
   };
-  const placed = (opens, execute) => visible && opens ? withBrowserPlacement(pi, signal, execute) : execute();
+  const helperArgs = browserCommandArgs(handle);
   return {
-    run: (args, cleanup = false) => timed(0, () => placed(args[0] === "open", async () => {
-      const result = await pi.exec("env", [`AGENT_BROWSER_HEADED=${visible}`, "bash", helper, ...args], {
+    handle,
+    run: (args, cleanup = false) => timed(0, async () => {
+      const result = await pi.exec("bash", [...helperArgs, ...args], {
         cwd, timeout: 45000, signal: cleanup ? undefined : signal,
       });
       if (result.killed || result.code !== 0) throw new Error(bounded(result.stderr || result.stdout || "Browser command interrupted"));
       return bounded(result.stdout);
-    })),
-    batch: (commands, allowFailure = false) => timed(commands.filter((command) => command[0] === "snapshot").length, () => placed(commands.some((command) => command[0] === "open"), async () => {
+    }),
+    batch: (commands, allowFailure = false) => timed(commands.filter((command) => command[0] === "snapshot").length, async () => {
       // JSON stdin preserves exact positional values, including empty strings.
-      const result = await pi.exec("bash", ["-c", 'set -o pipefail; printf "%s" "$1" | env AGENT_BROWSER_HEADED="$3" bash "$2" --json batch --bail', "browser-batch", JSON.stringify(commands), helper, String(visible)], {
+      const result = await pi.exec("bash", ["-c", 'set -o pipefail; printf "%s" "$1" | bash "${@:2}" --json batch --bail', "browser-batch", JSON.stringify(commands), ...helperArgs], {
         cwd, timeout: 45000, signal,
       });
       if (result.killed) throw new Error(`Browser batch interrupted; earlier actions may have run. Do not retry blindly. ${bounded(result.stderr + result.stdout)}`);
       const entries = JSON.parse(result.stdout);
       if (!allowFailure && (result.code !== 0 || entries.some((entry) => !entry.success))) throw new Error(`Browser batch failed; earlier actions may have run. Do not retry blindly. ${bounded(result.stderr + result.stdout)}`);
       return entries;
-    })),
+    }),
     info: () => timed(0, async () => {
       // Native session diagnostics do not start a browser or alter launch settings.
-      const result = await pi.exec("agent-browser", ["--session", "browser", "session", "info", "--json"], { cwd, timeout: 9000, signal });
+      const result = await pi.exec("bash", [...helperArgs, "session", "info", "--json"], { cwd, timeout: 9000, signal });
       if (result.killed || result.code !== 0) throw new Error("Cannot inspect browser ownership");
       const entry = JSON.parse(result.stdout);
-      if (!entry.success || typeof entry.data.active !== "boolean" || (entry.data.active && !Number.isInteger(entry.data.pid))) throw new Error("Invalid browser ownership response");
-      return { active: entry.data.active, pid: entry.data.pid };
+      if (!entry.success || entry.data.namespace !== handle.namespace || entry.data.session !== handle.sessionName || typeof entry.data.active !== "boolean" || (entry.data.active && (!Number.isInteger(entry.data.pid) || entry.data.pid <= 0))) throw new Error("Invalid browser ownership response");
+      return { ...handle, active: entry.data.active, pid: entry.data.pid };
     }),
   };
 }

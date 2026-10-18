@@ -297,19 +297,19 @@ The helper must return exactly one valid tool call. A response with the wrong
 call count or invalid arguments gets one repair before execution only. This never retries an
 executed action. The default limit is 20 decision
 steps, configurable up to 40 per task. A five-minute work deadline and 45-second
-CLI timeouts bound execution. An independent cleanup attempt closes the default
-headless browser after completion, failure, or cancellation. Cleanup failures are reported, not
+CLI timeouts bound execution. An independent cleanup attempt closes the owned
+browser after completion, failure, or cancellation, including headed mode. Cleanup failures are reported, not
 hidden. A shared process-local busy flag rejects overlapping
 worker, direct-control, and command calls. This is not a cross-process lock.
 Browser tasks remain serial
 
-An explicit `visible: true` request uses headed Chromium and leaves the browser
-open, including after failure, for user viewing or login. `reuseSession: true`
-requires an owned visible session with no login pause or uncertain effects.
-Use resume after a login or uncertain outcome before reuse. Foreign
-sessions are never adopted. Default calls reject existing sessions and close
-their own browser. At exit, a visible worker session passes to direct control,
-paused for `needs_login` or marked uncertain for `failed` and `cancelled`
+An explicit `visible: true` request uses headed Chromium as a fallback, with
+the same cleanup rules as headless mode. `reuseSession: true` requires an owned
+session with no login pause or uncertain effects. Use resume after a login or
+uncertain outcome before reuse. Foreign sessions are never adopted. Default
+calls reject existing sessions. Only `needs_login` and `needs_approval` keep
+the browser open for a human handoff. Login opens the same browser's dashboard
+automatically, with automation paused and recording stopped
 
 The worker returns `complete`, `blocked`, `needs_login`, or `needs_approval`.
 Execution failures return explicit `failed` or `cancelled` reports with any
@@ -323,10 +323,10 @@ Only after the user's reply approves that action does it use direct control to
 execute it, without another prompt. The original task and page content do not
 replace this approval. Missing task information still blocks execution
 
-For login, use `/browser-login URL`, sign in manually, and run
-`/browser-resume`. Then reuse the owned visible session or close it before a
-new headless task. The persistent profile keeps login state. The worker never
-collects credentials. Neither browser tool shows a confirmation dialog
+For login, use `/browser-dashboard URL`, sign in through the local dashboard, and
+run `/browser-resume`. The current profile and tabs stay in the same browser,
+including in headless mode. Login state lasts only until that browser closes.
+The worker never collects credentials. Neither tool shows a confirmation dialog
 
 ## Direct control and login
 
@@ -338,11 +338,15 @@ requested. Read-only operations include snapshot, text read, exact-ref attribute
 inspection, and WebMCP inspection. Interactions use native snapshot refs, not
 selectors. Direct `press` also requires a ref and focuses that control first
 
-`/browser-login URL`, `/browser-resume`, and `/browser-close` wrap the same
-control operations. Login opens a visible browser without a snapshot and pauses
-all automation until resume is called. Resume has no confirmation dialog. After the resume
-command, take a new snapshot before using refs. The user enters
-credentials in the browser's native UI. Do not collect credentials, cookies,
+`/browser-dashboard [URL]`, `/browser-resume`, and `/browser-close` are the
+user-facing commands. Dashboard with a URL uses the internal `login` action to
+open or navigate the browser, then opens the local dashboard without a snapshot.
+Without a URL it uses `dashboard` on the existing browser without navigation.
+The tool retains `login` and `pause` for agent handoffs. Both pause all automation
+and stop recording before human control. Resume closes the dashboard before
+its fresh observation and never restarts recording. After the resume command,
+take a new snapshot before using refs. The user enters credentials only in the
+dashboard or browser UI. Do not collect credentials, cookies,
 tokens, or browser storage. Direct fill blocks known password and OTP fields,
 along with file and hidden inputs. This detection is not a complete secrets filter
 
@@ -360,52 +364,63 @@ and do not guarantee safe effects or task completion
 Uncertain interaction results stop further actions without automatic retry.
 The uncertain state persists until resume or close. Snapshot, read,
 and exact-ref inspection remain available for review unless login is paused.
-Close affects only the owned browser and preserves the profile
+Close affects only the owned browser and removes its temporary profile
 
-Ownership records use pi custom entries named `browser-owner`, with the daemon
-PID, visible mode, login pause, and uncertain state. Session start restores a
-record only when its PID matches the live named session. Snapshots and WebMCP
-inspection caches are not persisted, so take a new snapshot before using refs
-after reload. PID matching is not a cross-process lock. Direct sessions remain
-open between calls. On `session_shutdown`, idle owned headless sessions close,
-while visible sessions remain open for the user, including across reload
+Runtime-only handles own a random namespace and session. Diagnostic
+`browser-owner` custom entries include the daemon PID, visibility, login pause,
+and uncertain state, but are never used to restore ownership. Two processes
+that resume the same pi session get different browser identities. Snapshots
+and WebMCP inspection caches are not persisted. PID matching is not a
+cross-process lock. Direct sessions remain open within a turn, or between turns
+when paused for login, dashboard control, or approval. Turn completion closes
+other sessions. Cancellation, session switch or fork, reload, and shutdown close
+all owned resources, including headed browsers. Cleanup uses the owner's saved
+working directory, not the new session context, and does not append owner entries
+to another session
 
 ## Shared browser runtime
 
 `extensions/lib/browser-runtime.ts` supplies URL and action validation, bounded
-output, CLI batches, and session diagnostics to both tools. The internal helper
-`extensions/lib/browser.sh` uses the named `browser` session in the default
-namespace. It resolves system Chromium through PATH or
-`AGENT_BROWSER_EXECUTABLE_PATH`, with no bundled-browser fallback. Every command,
-including close, repeats the same executable, absolute profile, visible mode,
-and timeout settings to avoid unintended browser restarts
+output, CLI batches, and session diagnostics to both tools. Each handle has a
+random owner namespace and a pi-session-derived name with a random owner suffix.
+Every command and diagnostic includes both namespace and session. Responses must
+match both identities before use
 
-The separate persistent profile at `~/.pi/agent/browser/profile` keeps browser
-data across restarts. The daily browser profile is never used, copied, or
-attached. No normal-browser remote-debugging setup is needed.
-`--no-startup-window` prevents an extra New Tab page, and additional
-`AGENT_BROWSER_ARGS` are retained. `--class=pi-browser` gives automation windows
-an identity separate from the daily browser. Hyprland can match this class to
-block initial focus, activation requests, and focus-follows-mouse without
-blocking clicks or keyboard window selection.
-The matching focus rule is user configuration, not installed by the extension.
+`extensions/lib/browser.sh` resolves system Chromium through PATH or
+`AGENT_BROWSER_EXECUTABLE_PATH`, with no bundled-browser fallback. It clears
+inherited `AGENT_BROWSER_*` settings and uses an empty temporary config. Native
+Chromium gets an isolated temporary profile with no daily profile, saved state,
+CDP attachment, plugins, or inherited launch arguments. Every command repeats
+the executable, engine, visibility, owner-specific window class, and idle timeout
+to avoid unintended restarts. Automatic Hyprland placement is removed
 
-For new visible windows on Hyprland, `extensions/lib/browser-hyprland.ts`
-identifies the calling terminal through a temporary title marker with title
-push/pop. It also saves the original window titles from Hyprland and explicitly
-restores the matched terminal's title after lookup, since title pop alone did
-not restore Ghostty's displayed title. Before navigation, it updates a named Lua window rule to select that
-terminal's workspace silently. After navigation, targeted swaps place the
-browser immediately to the terminal's right in the scrolling layout. Swaps
-preserve keyboard focus, and pointer warping is disabled only during the
-synchronous Lua operation, then restored. Single-window columns and terminal
-title push/pop support are required. Placement failures are reported, not
-replaced with active-workspace placement. Existing browser windows and
-headless sessions are unchanged. Non-Hyprland sessions skip placement
+`extensions/lib/browser-artifacts.ts` opens and closes the stock agent-browser
+0.39.1 dashboard in the owner's namespace, checks startup readiness, and tracks
+its PID and port in memory. The UI binds only loopback. It is a trusted-local
+interface, not an authentication security boundary. Namespace limits normal
+session discovery, not authorization. Stock loopback access bypasses tokens and
+its command endpoint can select other namespaces. Never proxy or expose it to a
+network. Host automation pauses before the dashboard opens
 
-The footer counts active agent-browser
-sessions. A 10-minute idle timeout is a backstop, including for visible sessions.
-Neither tool exposes arbitrary shell, eval, screenshots, or coordinate controls
+The artifact helper also reserves new private `.mp4` or `.webm` files for native
+recording, with no overwrite or symlink reuse. `ffmpeg` with the matching encoder
+must be on PATH. Worker `recordPath` opens a blank page if needed, starts
+recording, then opens the task URL. Direct `record_start` requires `path` and an
+already open, resumed browser. `record_stop` waits for native flush. Results
+include `artifacts` paths, including uncertain recordings on failure
+
+The controller tracks recording state before dispatch, since a failed start may
+still have begun capture. Cleanup stops recording before close. Login stops it
+before navigation, and dashboard or approval handoff stops it before human
+control. Resume never restarts it. Manual login is not recorded. Recording errors
+still run browser close in `finally`, and dashboard cleanup runs independently
+of browser cleanup. Cleanup commands ignore the cancelled operation signal but
+keep their own timeouts. A failed artifact can be empty or incomplete
+
+The native 10-minute idle timeout is only a crash fallback. A hard process kill
+can prevent browser or dashboard cleanup and recording flush. The footer's
+namespace-local poll does not count these owner namespaces. Neither browser
+tool exposes arbitrary shell, eval, screenshots, or coordinate controls
 
 ## WebMCP with DOM fallback
 
@@ -731,8 +746,8 @@ branch, git-status, and browser-status changes request a render
 The footer runs `agent-browser session list --json` immediately and every 10
 seconds. It counts active daemon sessions in the current namespace without
 launching a browser. This includes headless, headed, and attached sessions, not
-all Chromium processes on the machine. The browser extension uses the default
-namespace
+all Chromium processes on the machine. The browser extension uses unique owner
+namespaces, so its sessions are not included in this default-namespace poll
 
 When the count is positive, a yellow web icon and count appear directly after
 git status. Zero renders nothing. A failed command or invalid response retains

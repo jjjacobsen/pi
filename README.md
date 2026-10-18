@@ -10,7 +10,7 @@ people and organizations I trust
 1. `git clone git@github.com:jjjacobsen/pi.git` and `cd` in
 2. `mise trust` then `mise install` to pull the pinned development tools
 3. `mise use -g pi@latest` to install pi
-4. `mise use -g npm:agent-browser@0.38.1` to install agent-browser for the browser extension. Install system Chromium separately, available on PATH or through `AGENT_BROWSER_EXECUTABLE_PATH`
+4. `mise use -g npm:agent-browser@0.39.1` to install agent-browser for the browser extension. Install system Chromium separately, available on PATH or through `AGENT_BROWSER_EXECUTABLE_PATH`
 5. Install the packages into pi, then restart pi
    - `pi install ~/Projects/pi` (this repo: extensions, prompts, skills)
 6. Export `EXA_API_KEY` before starting pi (the search extension needs it)
@@ -47,11 +47,11 @@ constraints, and success conditions. Supply exact nonsecret form values in
 `inputs`, keyed by field meaning. The worker uses supplied values unchanged and
 stops if required task information is missing
 
-The worker runs headless with the existing persistent automation profile and
-opens only the task tab. It closes its browser when done. For a requested visible
-session, use `visible: true` to leave it open. To reuse an owned visible session
-after login, run `/browser-resume`, then also use `reuseSession: true`.
-It prefers suitable discovered WebMCP tools,
+The worker runs headless with an isolated temporary profile and closes it on
+completion, failure, or cancellation. Login and approval keep the same session
+for a human handoff. After login, run `/browser-resume`, then use
+`reuseSession: true`. Headed mode remains an explicit fallback with
+`visible: true`, but has the same cleanup rules. The worker prefers suitable discovered WebMCP tools,
 checks their schemas and fresh metadata, and uses DOM text and refs elsewhere.
 It has no shell, eval, screenshots, or coordinate controls. It stops for login,
 approval, missing task information, or unsupported steps. Page data is untrusted. Failed or uncertain
@@ -64,9 +64,11 @@ or API keys. `open` requires a URL and starts new sessions headless by default. 
 inspection and interactions, scrolling, waits, and discovered WebMCP tools
 
 ```text
-/browser-login https://example.com/login
-# Sign in manually in the visible window, then resume in pi
+/browser-dashboard https://example.com/login
+# Sign in manually through the local dashboard, then resume in pi
 /browser-resume
+# Open the dashboard for an existing browser without navigating
+/browser-dashboard
 /browser-close
 ```
 
@@ -87,47 +89,50 @@ the agent ends its turn, explains the proposed action and risk in chat, and
 waits for your approval. It then uses direct control to execute the approved
 action without another prompt. The worker returns `needs_approval` instead of
 performing such actions. This is an agent instruction, not a runtime safety guarantee.
-Actions must stay within the user's request. Login opens visibly without taking
-a snapshot and pauses automation until resume. Enter credentials only in the
-browser, never in tool inputs. Known password and OTP fields cannot be filled.
+Actions must stay within the user's request. Login automatically opens the
+local dashboard for the same browser, including a headless session. It takes no
+snapshot and pauses automation until resume. The worker does this too when it
+reports `needs_login`. Enter credentials only in the dashboard or browser,
+never in tool inputs. Known password and OTP fields cannot be filled.
 Refs must be fresh, including for press. After `/browser-resume`, take a new
 snapshot before using refs. A changed URL, target, or full snapshot blocks the
 action until a new review. Uncertain effects block further actions until resume
 or close, but snapshot, read, and exact-ref inspection remain available
 
-Both tools use agent-browser and system Chromium, with the separate persistent
-profile at `~/.pi/agent/browser/profile`, never the daily browser profile.
-Closing the browser keeps the profile. Direct sessions stay open until closed, with a
-10-minute idle timeout as a backstop. Idle owned headless sessions also close
-on pi shutdown or reload. Visible sessions stay open for the user across reload,
-subject to the idle timeout. The footer counts active agent-browser sessions.
-PID-based ownership prevents routine takeover of foreign sessions, but is not
-a cross-process lock or a safety guarantee
+The dashboard is agent-browser's stock trusted-local interface. Its unique
+owner namespace limits normal session discovery, not authorization. It is not
+an authentication security boundary. Keep it on loopback, never proxy or expose
+it to a network. Dashboard takeover pauses automation until `/browser-resume`,
+which closes the dashboard before observing the page again
 
-Automation windows use the `pi-browser` class. To prevent focus stealing on
-Omarchy with Lua-based Hyprland configuration, add this to
-`~/.config/hypr/hyprland.lua`, then run `hyprctl reload config-only`:
+To record a worker task, supply an absolute new `.mp4` or `.webm` path in
+`recordPath`. This requires `ffmpeg` on PATH with the matching encoder.
+The worker opens a blank page if needed, starts recording, then opens the task URL.
+Direct control requires an open browser first:
 
-```lua
-hl.window_rule({
-  match = { class = "^pi-browser$" },
-  no_initial_focus = true,
-  no_follow_mouse = true,
-  focus_on_activate = false,
-  suppress_event = "activate activatefocus",
-})
+```text
+browser_control({action: "open", url: "https://example.com"})
+browser_control({action: "record_start", path: "/tmp/example.webm"})
+# Perform the requested browser actions
+browser_control({action: "record_stop"})
 ```
 
-Click or use keyboard window selection to focus the browser for login. Mouse hover
-does not focus it. The class takes effect on the next browser launch
+Results include recording paths. Existing files are never overwritten.
+Recording stops and flushes before browser close, login, dashboard takeover,
+or an approval handoff. Manual login is not recorded. Resume does not restart
+recording. Use `record_start` with a new path if you want another recording.
+Recordings can contain private page data. Failed recordings can be incomplete
 
-On Hyprland, new visible browsers open on the calling terminal's workspace, in
-the column immediately to its right, without switching your workspace. This
-requires Lua-based Hyprland, the scrolling layout with single-window columns,
-and a terminal that supports title push/pop, such as Ghostty. A brief title
-marker identifies the terminal even when several windows share a process.
-The original title is saved from Hyprland and restored after the lookup.
-Existing browser windows are left in place. Headless sessions are unchanged
+Both tools use agent-browser 0.39.1 and system Chromium. Each runtime owns a
+unique namespace and session with a temporary profile, never the daily browser
+profile. Closing removes that temporary profile and its login state.
+Direct sessions close at turn completion unless held for login or approval.
+All owned sessions and dashboards close on cancellation, session change, reload,
+or shutdown, including headed sessions. No session is restored from transcript
+entries. The native 10-minute idle timeout is only a crash fallback. A hard kill
+can prevent cleanup and recording flush. PID checks are not a cross-process lock
+or a security guarantee. The footer currently counts only its configured CLI
+namespace, not these owner namespaces. Automatic Hyprland placement is removed
 
 Worker results include status, page evidence, timing, browser call and snapshot
 counts, tokens, and estimated cost. Check the evidence, not just the completion

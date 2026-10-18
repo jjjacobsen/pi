@@ -1,20 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
-browser="${AGENT_BROWSER_EXECUTABLE_PATH:-$(command -v chromium || command -v chromium-browser || :)}"
-[ -n "$browser" ] && [ -x "$browser" ] || { printf 'System Chromium not found. Set AGENT_BROWSER_EXECUTABLE_PATH\n' >&2; exit 1; }
+namespace="${1:?Browser namespace required}"
+session="${2:?Browser session required}"
+headed="${3:?Browser visibility required}"
+browser="${4:?Browser executable required}"
+config="${5:?Browser config required}"
+shift 5
+[[ "$namespace" =~ ^pi-[a-f0-9]{16}$ ]] || { printf 'Invalid owned browser namespace\n' >&2; exit 1; }
+[[ "$session" =~ ^pi-[a-f0-9]{12}$ ]] || { printf 'Invalid owned browser session\n' >&2; exit 1; }
+[[ "$headed" == true || "$headed" == false ]] || { printf 'Invalid browser visibility\n' >&2; exit 1; }
 
-agent-browser --session browser \
-  --executable-path "$browser" --profile "$HOME/.pi/agent/browser/profile" \
-  --headed "${AGENT_BROWSER_HEADED:-false}" --idle-timeout 10m \
-  --args "--no-startup-window${AGENT_BROWSER_ARGS:+,$AGENT_BROWSER_ARGS},--class=pi-browser" "$@"
+[ -x "$browser" ] || { printf 'System Chromium not found. Set AGENT_BROWSER_EXECUTABLE_PATH\n' >&2; exit 1; }
+[ -f "$config" ] || { printf 'Owned browser config not found\n' >&2; exit 1; }
+
+# No inherited profile, restore state, provider, CDP attachment, plugin, or launch settings.
+# The native browser creates and removes its own temporary profile.
+for name in "${!AGENT_BROWSER_@}"; do unset "$name"; done
+# These native env settings also reach dashboard /api/exec children. Keep the
+# config until both dashboard and browser stop, so no child loads project config.
+export AGENT_BROWSER_CONFIG="$config"
+export AGENT_BROWSER_NAMESPACE="$namespace"
+export AGENT_BROWSER_SESSION="$session"
+export AGENT_BROWSER_EXECUTABLE_PATH="$browser"
+export AGENT_BROWSER_ENGINE=chrome
+export AGENT_BROWSER_HEADED="$headed"
+export AGENT_BROWSER_IDLE_TIMEOUT_MS=600000
+export AGENT_BROWSER_ARGS="--class=$session"
+native() {
+  agent-browser "$@"
+}
+native "$@"
 
 if [[ "${1:-}" == close ]]; then
   for attempt in {1..50}; do
-    sessions="$(agent-browser session list --json)"
-    [[ "$sessions" != *'"browser"'* ]] && exit 0
+    info="$(native session info --json)"
+    [[ "$info" =~ \"active\"[[:space:]]*:[[:space:]]*false ]] && exit 0
     sleep 0.1
   done
-  printf 'Browser session did not stop after close\n' >&2
+  printf 'Owned browser session did not stop after close\n' >&2
   exit 1
 fi
