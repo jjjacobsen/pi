@@ -42,21 +42,6 @@ newlines, indentation, and quotes with the existing `$@` placeholders and
 `/goal` default. Command source paths restrict this behavior to this package's
 prompt files. Extension-injected messages and other commands are unchanged
 
-# Bar cursor extension (`extensions/bar-cursor.ts`)
-
-The extension replaces the main input editor with a minimal `CustomEditor`
-subclass. It enables pi's native hardware-cursor mode on each render so
-`/reload` cannot leave it hidden when pi reapplies its settings. Pi suppresses
-the software cursor and keeps the cursor marker at the same cell. It embeds
-pi's working, compaction, summary, and retry indicators in the editor border
-through `embedWorkingStatus`, and sends
-the standard DECSCUSR steady-bar sequence to the terminal
-
-On session shutdown, including `/reload`, it resets the terminal cursor shape
-and restores pi's previous hardware-cursor setting. On quit it also shows the
-terminal cursor, since interactive shutdown stops the TUI before extension
-cleanup. Non-TUI modes do nothing
-
 # Commit extension (`extensions/commit.ts`)
 
 ## Goal

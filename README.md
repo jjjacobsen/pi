@@ -29,14 +29,6 @@ Technical details for every extension live in [docs/architecture.md](./docs/arch
 
 ## Extensions
 
-### bar cursor - terminal bar cursor in the editor
-
-Uses pi's native hardware-cursor mode with a steady bar cursor while
-the input editor is active. It keeps pi's working, compaction, summary, and
-retry indicators in the editor border. The cursor stays visible after `/reload`,
-and quitting restores the terminal's default cursor shape and visibility.
-The terminal must support the standard DECSCUSR cursor-shape sequence
-
 ### browser - delegated browser tasks
 
 Use `/browser-model` or `/browser-model provider/model` to save the worker
