@@ -5,7 +5,7 @@ The coding agent keeps its current model and calls the image tool when needed
 
 ## Setup and use
 
-1. Run `/reload` after this extension is added
+1. Use Pi 1.4.0 or newer, then run `/reload` after this extension is added
 2. Configure an image provider through Pi's `/login` or its API-key environment
    variable. Pi 1.3.0 includes OpenRouter image models, using `/login openrouter`
    or `OPENROUTER_API_KEY`
@@ -55,13 +55,14 @@ Changing the image model does not change Pi's main model
   provider before this extension can offer them
 - Other providers are offered when Pi registers available image models and a
   matching native image implementation
-- Pi 1.3.0 sends every OpenRouter image model to Chat Completions. Image-only
+- Pi 1.4.0 still sends every OpenRouter image model to Chat Completions. Image-only
   models such as `openai/gpt-image-2.5-flare` reject that endpoint with HTTP 404
   The extension registers an image implementation through Pi's provider API
   It sends image-only models to `POST /api/v1/images`, with `prompt` and optional
   `input_references`, and normalizes `data[].b64_json` into native image blocks
   Models with text output still use Pi's native Chat Completions implementation
   The catalog, credentials, exact selection, and `generateImages()` call stay native
+  The adapter applies Pi's client identity headers before configured overrides
   There is no model substitution or retry through another endpoint
 
 [OpenRouter Image API](https://openrouter.ai/docs/guides/overview/multimodal/image-generation)

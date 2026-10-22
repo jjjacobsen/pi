@@ -15,7 +15,7 @@ Install or configure only what you use
 
 ## Tools and packages
 
-- Pi
+- Pi 1.4.0 or newer
 - mise
 - Node.js and npm
 - Bash and Git

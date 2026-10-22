@@ -1,10 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getIdentityHeaders } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { modelKey } from "./worker-model";
 
 export function registerImageProviders(pi: ExtensionAPI) {
   const nativeOpenRouter = builtinProviders().find((provider) => provider.id === "openrouter");
-  // Pi 1.3.0 sends image-only models to Chat Completions, which rejects them.
+  // Pi 1.4.0 still sends image-only models to Chat Completions, which rejects them.
   // Protocol: https://openrouter.ai/docs/guides/overview/multimodal/image-generation
   pi.registerProvider("openrouter", {
     images: {
@@ -23,7 +24,7 @@ export function registerImageProviders(pi: ExtensionAPI) {
           };
           const body = await options.onPayload?.(payload, model) ?? payload;
           const headers = new Headers({ Authorization: `Bearer ${options.apiKey}`, "Content-Type": "application/json" });
-          for (const [key, value] of Object.entries({ ...model.headers, ...options.headers })) {
+          for (const [key, value] of Object.entries({ ...getIdentityHeaders(model, options.identity), ...model.headers, ...options.headers })) {
             if (value === null) headers.delete(key);
             else headers.set(key, value);
           }

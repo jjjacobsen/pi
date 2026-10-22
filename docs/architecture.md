@@ -45,11 +45,11 @@ prompt files. Extension-injected messages and other commands are unchanged
 # Bar cursor extension (`extensions/bar-cursor.ts`)
 
 The extension replaces the main input editor with a minimal `CustomEditor`
-subclass. Its renderer removes only the inverse-video sequence that pi uses for
-the software block cursor and keeps the cursor marker at the same cell. It
-enables pi's hardware cursor on each render so `/reload` cannot leave it hidden
-when pi reapplies its settings. It embeds pi's working, compaction, summary, and
-retry indicators in the editor border through `embedWorkingStatus`, and sends
+subclass. It enables pi's native hardware-cursor mode on each render so
+`/reload` cannot leave it hidden when pi reapplies its settings. Pi suppresses
+the software cursor and keeps the cursor marker at the same cell. It embeds
+pi's working, compaction, summary, and retry indicators in the editor border
+through `embedWorkingStatus`, and sends
 the standard DECSCUSR steady-bar sequence to the terminal
 
 On session shutdown, including `/reload`, it resets the terminal cursor shape
@@ -183,9 +183,11 @@ the paths. Native usage feeds tool usage and details, including returned errors
 with usage. Native Chat Completions cost is a catalog-based estimate. The
 image-only adapter uses OpenRouter's reported `usage.cost` when present
 
-Pi 1.3.0 incorrectly sends image-only OpenRouter models to Chat Completions
+Pi 1.4.0 still incorrectly sends image-only OpenRouter models to Chat Completions
 The registered adapter uses `POST /images` for models without text output,
 sending `prompt` and optional `input_references` and normalizing `data[].b64_json`
+It applies Pi's client identity headers before model and request header overrides,
+including explicit `null` removals
 Models with text output delegate to Pi's built-in image implementation
 The tool still calls `ctx.modelRegistry.generateImages()` for the exact saved
 model. There is no endpoint retry or model substitution
@@ -197,10 +199,9 @@ reference, without the old API mode or thinking metadata
 Generation has a five-minute deadline, shares the agent abort signal, and sets
 `maxRetries: 0` to prevent native request retries. Native error, aborted, and
 empty-image responses return failed tool results. No dependencies are added
-The pinned 0.99.1 development types omit `ModelRegistry.generateImages`, so a
-type-only intersection uses the exported `ModelRuntime` method signature
-Runtime support requires Pi 1.3.0. The explicit image-only provider adapter is
-necessary until Pi supports OpenRouter's dedicated Images API
+Runtime support requires Pi 1.4.0 for the client identity API. The tool uses
+`ModelRegistry.generateImages` directly. The explicit image-only provider
+adapter is necessary until Pi supports OpenRouter's dedicated Images API
 
 See [imagegen.md](imagegen.md) for the tool contract, billing details, and limits
 

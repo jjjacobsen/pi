@@ -31,7 +31,7 @@ Technical details for every extension live in [docs/architecture.md](./docs/arch
 
 ### bar cursor - terminal bar cursor in the editor
 
-Replaces pi's inverted software block with a steady hardware bar cursor while
+Uses pi's native hardware-cursor mode with a steady bar cursor while
 the input editor is active. It keeps pi's working, compaction, summary, and
 retry indicators in the editor border. The cursor stays visible after `/reload`,
 and quitting restores the terminal's default cursor shape and visibility.
@@ -120,9 +120,9 @@ selection is saved for all sessions and does not change your coding model
 saves original files without overwrites, and returns a reduced preview
 The picker and settings writes are shared with subagent, browser, and commit
 
-Pi 1.3.0 includes OpenRouter image models. A small registered provider adapter
-sends image-only models to OpenRouter's Images API because Pi incorrectly uses
-Chat Completions for them. The selected model does not change
+Pi 1.4.0 still sends image-only OpenRouter models to Chat Completions. A small
+registered provider adapter sends them to OpenRouter's Images API and preserves
+Pi's client identity headers. The selected model does not change
 The custom Vercel integration and `/image-thinking` are removed because Pi has
 no native image-thinking control. It uses existing Pi credentials and the
 selected provider's billing, not Codex subscription usage. Usage counts toward

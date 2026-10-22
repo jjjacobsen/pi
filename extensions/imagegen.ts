@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resizeImage, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync } from "node:fs";
@@ -46,9 +46,7 @@ export default function imagegenExtension(pi: ExtensionAPI) {
         return { type: "image" as const, mimeType, data: bytes.toString("base64") };
       }));
       onUpdate?.({ content: [{ type: "text", text: `Generating with ${modelKey(model)}…` }], details: {} });
-      // The pinned 0.99.1 registry types omit this method exposed by Pi 1.3.0.
-      const registry = ctx.modelRegistry as typeof ctx.modelRegistry & Pick<ModelRuntime, "generateImages">;
-      const result = await registry.generateImages(model, {
+      const result = await ctx.modelRegistry.generateImages(model, {
         input: [{ type: "text", text: params.prompt }, ...references],
       }, { signal: requestSignal, maxRetries: 0 });
       const { usage } = result;
