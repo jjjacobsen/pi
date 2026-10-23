@@ -36,8 +36,8 @@ pins the TypeScript version. `mise x -- hk check --all` must stay green
 
 # Prompt input extension (`extensions/prompt-input.ts`)
 
-An `input` hook quotes the raw text after `/goal`, `/handoff`, `/implement`,
-`/q`, and `/worktree` as one argument before pi expands the template. This preserves
+An `input` hook quotes the raw text after `/fix-stack`, `/goal`, `/handoff`,
+`/implement`, `/q`, and `/worktree` as one argument before pi expands the template. This preserves
 newlines, indentation, and quotes with the existing `$@` placeholders and
 `/goal` default. Command source paths restrict this behavior to this package's
 prompt files. Extension-injected messages and other commands are unchanged

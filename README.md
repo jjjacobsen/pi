@@ -240,6 +240,13 @@ instructions to split the approved plan into tasks, delegate to subagents,
 integrate the results, and run checks. Bare `/implement` uses only the fixed
 instructions
 
+### fix-stack - repair a stacked PR chain
+
+`/fix-stack [PR link or additional instructions]` finds the stack from the
+current top branch, resolves upstream conflicts from bottom to top,
+and checks each repaired branch. It creates local backup refs before rewriting
+history and asks before pushing unless you explicitly request a push
+
 ### worktree - work alongside another agent
 
 `/worktree [task]` keeps the current working directory read-only and requires
