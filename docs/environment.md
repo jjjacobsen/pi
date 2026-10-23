@@ -17,7 +17,7 @@ Install or configure only what you use
 
 - Pi 1.4.0 or newer
 - mise
-- Node.js and npm
+- Node.js 24.22.1, pinned in `mise.toml`, and npm
 - Bash and Git
 - agent-browser and Chrome/Chromium
 - pi-voice
