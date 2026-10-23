@@ -5,7 +5,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", (event) => {
     if (event.source === "extension") return;
 
-    const match = event.text.match(/^\/(goal|handoff|implement|q)(?:\r\n|\s)([\s\S]*)$/);
+    const match = event.text.match(/^\/(goal|handoff|implement|q|worktree)(?:\r\n|\s)([\s\S]*)$/);
     if (!match) return;
 
     const [, name, input] = match;

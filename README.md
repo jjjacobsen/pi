@@ -218,7 +218,7 @@ See [docs/architecture.md](./docs/architecture.md) for the implementation detail
 ## Prompts
 
 The `prompt-input` extension preserves newlines, indentation, and literal quotes
-in input to this package's four templates. No special quoting is needed. Template
+in input to this package's argument-based templates. No special quoting is needed. Template
 commands must still be at the start of the prompt
 
 ### handoff - save session context
@@ -239,6 +239,13 @@ then passes through whatever you type after it
 instructions to split the approved plan into tasks, delegate to subagents,
 integrate the results, and run checks. Bare `/implement` uses only the fixed
 instructions
+
+### worktree - work alongside another agent
+
+`/worktree [task]` keeps the current working directory read-only and requires
+an external worktree on a new branch before writes. Commits and pushes still
+require an explicit request. This is an instruction template, not an enforced
+sandbox
 
 ### goal - execute the approved plan
 
