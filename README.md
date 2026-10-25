@@ -47,8 +47,11 @@ browser({task: "Open https://example.com and report the page title"})
 
 The plain agent-browser CLI uses its native configuration and environment.
 By default, the browser uses a temporary profile, not your daily browser, and
-starts on the first CLI browser command. It is shared across pi sessions and
-stays open across calls, session changes, forks, reload, and shutdown
+starts on the first CLI browser command. It is shared across pi sessions. The
+worker closes the current browser session when the task is complete, unless
+you ask to keep it open. It stays open when the task needs user input, an answer
+to a question, login, or another manual browser action. The worker reports what
+is needed to continue. Session changes, forks, reload, and shutdown do not close it
 
 `/browser-close` stops only this extension's active worker, then runs
 `agent-browser close --all` with native semantics. This can close browsers used

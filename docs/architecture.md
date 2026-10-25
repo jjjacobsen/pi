@@ -275,9 +275,14 @@ level. Both also offer pickers. A saved model is required. Thinking starts at
 Calls share a `ModelRuntime` for the model catalog and provider credentials,
 but each worker has its own in-memory history and settings. Instructions direct
 it to inspect the current page when continuing, use DOM, accessibility trees,
-and text instead of screenshots or coordinate clicks, and leave the browser
-open. Bash command starts produce progress updates. The main agent receives
-only the final report, truncated with pi's standard tool-result limit, plus
+and text instead of screenshots or coordinate clicks, and run `agent-browser close`
+when the delegated task is complete unless the user asks to keep it open. The
+worker leaves it open while waiting for user input, an answer to a question,
+login, or another manual browser action. Returning a report is not itself task
+completion. Reports include whether the browser was closed or left open and
+what is needed to continue a paused task. Bash command starts produce progress
+updates. The main agent receives only the final report, truncated with pi's
+standard tool-result limit, plus
 model, thinking, and usage metadata. Failed and cancelled calls return
 `isError: true` and retain available usage in pi's session totals
 
@@ -286,8 +291,10 @@ model, thinking, and usage metadata. Failed and cancelled calls return
 The browser starts lazily on the first CLI browser command. The extension adds
 no per-session namespace, session, profile, configuration, or shell wrapper.
 Native defaults use a temporary profile, not the daily browser. The default
-browser is shared across pi sessions and stays open across calls and turns,
-including worker failure or cancellation. Session changes, forks, reload, and
+browser is shared across pi sessions. Worker instructions close only the current
+browser session after task completion, not all sessions. Paused tasks keep their
+browser state across calls and turns. There is no unconditional cleanup after a
+worker report, failure, or cancellation. Session changes, forks, reload, and
 shutdown do not close it
 
 `extensions/lib/browser-runtime.ts` runs the plain CLI for dashboard and close
