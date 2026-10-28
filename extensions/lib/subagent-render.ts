@@ -13,10 +13,15 @@ function cleanLines(text: string) {
   return stripTerminalSequences(text).replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, " ");
 }
 
+function truncate(text: string, width: number) {
+  // Pi's ellipsis uses full resets. Clear our foreground and bold/dim, but keep the tool shell's background.
+  return truncateToWidth(text, width).replaceAll("\x1b[0m", "\x1b[22;39m");
+}
+
 function lines(text: string, width: number, wrap = false) {
   if (width <= 0) return [];
   return text.split("\n").flatMap((line) =>
-    (wrap ? wrapTextWithAnsi(line, width) : [line]).map((part) => truncateToWidth(part, width)),
+    (wrap ? wrapTextWithAnsi(line, width) : [line]).map((part) => truncate(part, width)),
   );
 }
 
@@ -36,7 +41,7 @@ export const renderSubagentCall: NonNullable<ToolDefinition<typeof params>["rend
       : status === "cancelled" ? theme.fg("warning", "■") : theme.fg("warning", "◌");
     const label = clean(context.state.latest?.label ?? args.label ?? args.task ?? "");
     const header = symbol + " " + theme.fg("toolTitle", theme.bold("Subagent")) + " " + theme.fg("accent", label);
-    return width > 0 ? [truncateToWidth(header, width)] : [];
+    return width > 0 ? [truncate(header, width)] : [];
   });
 };
 
