@@ -15,10 +15,10 @@ export default function (pi: ExtensionAPI) {
         ["Scope", "Model", "Thinking"],
         ["pi default", defaultModel, settings.defaultThinkingLevel ? `${settings.defaultThinkingLevel} (saved)` : "not set"],
       ];
-      for (const name of ["subagent", "browser", "commit"]) {
+      for (const name of ["subagent", "browser", "device", "commit"]) {
         const config = await readWorkerModel(name);
-        if (!config && name === "browser") {
-          rows.push([name, "not set (use /browser-model)", "not set"]);
+        if (!config && (name === "browser" || name === "device")) {
+          rows.push([name, `not set (use /${name}-model)`, "not set"]);
           continue;
         }
         const model = config

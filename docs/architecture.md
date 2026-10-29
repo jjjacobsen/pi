@@ -145,7 +145,7 @@ creates one commit, and inferred intent can still be wrong
 
 `/image-model` lists Pi's available image catalog through
 `modelRegistry.getAvailableOfType("image")`. It shares the searchable picker and
-queued settings writes with subagent, browser, and commit through
+queued settings writes with subagent, browser, device, and commit through
 `worker-model.ts` and `worker-picker.ts`. The shared helper can omit thinking
 controls for image models. Settings contain only the exact `model` reference in
 `<agent_dir>/image-model.json`, separate from the main coding model and shared
@@ -260,7 +260,7 @@ never commits the memory repository
 ## Worker
 
 `browser({task})` runs a self-contained browser task in a fresh in-memory pi
-`AgentSession` with only `bash`. The worker uses the plain agent-browser CLI
+`AgentSession` with `bash` and the internal `screenshot_artifact` tool. The worker uses the plain agent-browser CLI
 with its native configuration and environment. It receives the task literally,
 without prompt-template expansion, and does not load extensions, skills,
 prompt templates, themes, or context files. The caller must include URLs,
@@ -274,16 +274,17 @@ level. Both also offer pickers. A saved model is required. Thinking starts at
 
 Calls share a `ModelRuntime` for the model catalog and provider credentials,
 but each worker has its own in-memory history and settings. Instructions direct
-it to inspect the current page when continuing, use DOM, accessibility trees,
-and text instead of screenshots or coordinate clicks, and run `agent-browser close`
+it to inspect the current page when continuing, prefer DOM, accessibility trees,
+text, and semantic refs, use screenshots for authorized visual checks or evidence,
+and run `agent-browser close`
 when the delegated task is complete unless the user asks to keep it open. The
 worker leaves it open while waiting for user input, an answer to a question,
 login, or another manual browser action. Returning a report is not itself task
 completion. Reports include whether the browser was closed or left open and
 what is needed to continue a paused task. Bash command starts produce progress
-updates. The main agent receives only the final report, truncated with pi's
-standard tool-result limit, plus
-model, thinking, and usage metadata. Failed and cancelled calls return
+updates. The main agent receives a PASS, FAIL, or BLOCKED report with observed
+evidence, truncated with pi's standard tool-result limit, plus published screenshot
+paths, a reduced preview of the first image, and model, thinking, and usage metadata. Failed and cancelled calls return
 `isError: true` and retain available usage in pi's session totals
 
 ## Browser lifetime and dashboard
@@ -313,6 +314,61 @@ used by other pi sessions can close too. The standalone dashboard stays running.
 There is no pi session lifecycle cleanup
 
 Browser setup is adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
+
+# Device extension (`extensions/device.ts`)
+
+`device({target, task})` is a separate, minimal worker using Callstack's
+[agent-device CLI](https://github.com/callstack/agent-device). `target` must be an
+explicit dedicated Android emulator ADB serial matching `emulator-[0-9]+`
+Physical devices and other platforms are not supported. `task` carries the exact
+app package, inputs, authorization, applicable rules, and expected results
+
+`/device-model` and `/device-thinking` use the existing worker settings helper
+and save to `<agent_dir>/device-model.json`. A saved model is required. Thinking
+starts at off and is clamped to model support. The main and browser models do
+not change. `/model-settings` includes the device worker
+
+Each call has its own in-memory AgentSession, settings, and resource loader
+Only the model/authentication runtime is reused. Discovery of extensions,
+skills, templates, themes, and context files is disabled, so the caller must
+supply all applicable rules. The tools are `bash` and `screenshot_artifact`
+The task is passed literally without template expansion. One call runs at a
+time per extension instance. Cancellation aborts the worker and disposes only
+the Pi session, with no device cleanup
+
+Instructions require explicit platform and serial selectors on every device
+command, inspect existing CLI session state, and preserve current app state
+An existing matching session is inspected without reopening. A new session
+uses `open --foreground --no-test-ime` without relaunching the app. The bundled
+snapshot helper APK may be installed automatically only on the named emulator
+This is not approval for other installs. The worker does not boot devices,
+close sessions, force-stop apps, or shut down emulators as cleanup. Flutter apps
+and their development connections stay running. These are worker instructions,
+not an OS sandbox around the bash tool
+
+Progress shows command starts, not private reasoning. The final report is
+PASS, FAIL, or BLOCKED with observed vs expected results, target/package,
+artifact paths, blockers, and current app state. Reports use Pi's normal text
+truncation limit. Failed or cancelled calls retain usage and published evidence
+Usage is summed from session entries by `lib/worker-usage.ts`, also used by
+browser, including compaction and cache warming
+
+## Screenshot evidence for browser and device
+
+`lib/screenshot-artifacts.ts` provides the internal `screenshot_artifact` tool
+Each worker captures with its own CLI to a unique path, then explicitly
+publishes that existing file. The helper reads the file, detects its image
+format with the existing image helper, and records its absolute path. It does
+not capture, write, delete, or alter images
+
+The first published image gets a native Pi preview through `resizeImage`,
+capped at 1024 pixels per side and 1 MB. Original files remain unchanged
+Paths and that one preview reach both the worker and caller as native tool
+content, including after worker errors. Details retain the paths. Other images
+are path-only. Pi's normal image settings and terminal image support apply
+Capture must follow supplied task rules. Evidence can contain private app/page
+data and is sent to both model providers. A screenshot alone does not verify
+behavior, so reports must name the observed result and limits
 
 # Pi upgrade skill (`skills/pi-upgrade/SKILL.md`)
 
@@ -562,14 +618,14 @@ disposed or disabled
 
 # Model settings extension (`extensions/model-settings.ts`)
 
-`/model-settings` reads the subagent, browser, commit, and image settings through
+`/model-settings` reads the subagent, browser, device, commit, and image settings through
 `readWorkerModel` in `extensions/lib/worker-model.ts` on each invocation.
 It also reads `SettingsManager.getGlobalSettings()` for the saved pi default
 model and thinking level, excluding project and session overrides. Missing
 global defaults show as `not set`. It shows a notification table without model
 calls or configuration writes.
 Unset subagent settings inherit the session values. Unset commit settings use
-the session model and low thinking. Browser requires a saved model. The table
+the session model and low thinking. Browser and device require a saved model. The table
 marks each value's source, unavailable models, and thinking clamped to model
 support. Image settings check Pi's available image catalog and show that the
 native image API has no thinking control.
@@ -599,8 +655,8 @@ Model and thinking resolve independently: per-call override, saved default,
 then the caller's setting. `/subagent-model` and `/subagent-thinking` save
 `model` and `thinking` in `<agent_dir>/subagent-model.json`, read on each call.
 Select a model first. Its initial thinking level is `off`. Both commands share
-`extensions/lib/worker-model.ts` and `worker-picker.ts` with browser, commit,
-and image model selection, including filtering, validation, and queued
+`extensions/lib/worker-model.ts` and `worker-picker.ts` with browser, device,
+commit, and image model selection, including filtering, validation, and queued
 configuration writes. The shared code accepts a model catalog function and
 omits thinking commands and settings for image models
 

@@ -14,7 +14,7 @@ people and organizations I trust
 5. Merge the [personal pi settings](docs/pi-settings.md) into `~/.pi/agent/settings.json`
 
 See [environment and dependencies](docs/environment.md) for feature-specific API
-keys, browser and audio setup, external resources, and development tools
+keys, browser, device and audio setup, external resources, and development tools
 Optional feature dependencies are not required just to run Pi
 
 ## Layout
@@ -65,10 +65,46 @@ shared browser. It takes no arguments and does not start a browser if none is op
 /browser-close
 ```
 
+Reports use PASS, FAIL, or BLOCKED with observed evidence. For requested visual
+checks or screenshot evidence, include permission and any capture constraints in
+the task. The worker publishes saved screenshot paths and a preview of the first
+image, capped at 1024 pixels per side and 1 MB. Original files stay unchanged
+
 Worker usage counts toward pi's session totals, including failed and cancelled
-runs. Task inputs and page data go to the selected model's provider
+runs. Task inputs and page data go to the selected model's provider. Published
+screenshot previews also go to the worker and main model providers
 
 Browser setup is adapted from [Vercel's agent-browser skill](https://github.com/vercel-labs/agent-browser/tree/main/skill-data/core)
+
+### device - delegated Android emulator tasks
+
+Use `/device-model` or `/device-model provider/model`, then `/device-thinking`
+or `/device-thinking level`. These settings persist across sessions, separate
+from the browser worker and main model. `/model-settings` includes this worker
+
+`device` takes an explicit `target` emulator ADB serial and a complete `task`
+with the app package, inputs, authorization, applicable user/project rules,
+and expected results. Only dedicated Android emulators are supported, not
+physical phones. The worker uses [Callstack's agent-device](https://github.com/callstack/agent-device)
+CLI, inspects current state, and returns a concise PASS, FAIL, or BLOCKED report
+It leaves the app, emulator, and CLI session running, including Flutter apps
+and their development connections. It does not boot or prepare devices
+
+```text
+device({target: "emulator-5554", task: "On this authorized dedicated emulator, inspect com.example.app and verify the sign-in screen. Leave it running"})
+```
+
+Snapshots can install or update agent-device's bundled helper APK on the
+specified emulator. This does not permit other software installs. The normal
+keyboard stays in use. Screenshots are available when task rules permit them
+Published screenshot paths and the first reduced preview return to the caller,
+using the same limits as browser evidence. Task data and previews go to the
+worker and main model providers. Usage counts toward session totals
+
+Install the shared CLI and prepare the emulator before use. See
+[environment dependencies](docs/environment.md). Run `/reload` after adding this
+extension, then select its model. The package's `./extensions` registration
+loads it without a separate settings entry
 
 ### commit - AI commit messages
 
@@ -113,7 +149,7 @@ on failure or early exit. Git commit time includes hooks and signing together
 selection is saved for all sessions and does not change your coding model
 `imagegen` uses Pi's native image API to generate images or edit local references,
 saves original files without overwrites, and returns a reduced preview
-The picker and settings writes are shared with subagent, browser, and commit
+The picker and settings writes are shared with subagent, browser, device, and commit
 
 Pi 1.4.0 still sends image-only OpenRouter models to Chat Completions. A small
 registered provider adapter sends them to OpenRouter's Images API and preserves
@@ -131,7 +167,7 @@ background, so you can browse commits and stage diffs
 ### model-settings - worker model overview
 
 `/model-settings` shows the global pi default model and thinking level, plus
-settings for subagent, browser, commit, and imagegen. The image row checks Pi's
+settings for subagent, browser, device, commit, and imagegen. The image row checks Pi's
 native image catalog and shows that thinking control is unavailable.
 Global defaults exclude project
 and current-session overrides. Unset global defaults show as `not set`. It marks saved, inherited, and default values, unavailable models,
