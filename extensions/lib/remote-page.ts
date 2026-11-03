@@ -7,7 +7,7 @@ export function remotePage(nonce: string) {
 <title>Pi remote</title>
 <style nonce="${nonce}">
 :root { color-scheme: light dark; font: 16px system-ui, sans-serif; --control-bg: light-dark(#fafbfc, #1c2026); --control-border: light-dark(#7d8997, #748292); --control-hover: light-dark(#edf1f5, #29313b); --accent-bg: light-dark(#eef4fc, #202f43); --accent-hover: light-dark(#e1ecfa, #2b405c); --accent-border: light-dark(#6b87aa, #6d8eb8); --accent-text: light-dark(#234f85, #b8d6ff) }
-body { max-width: 55rem; margin: auto; padding: 1rem; overflow-wrap: anywhere }
+body { --bottom-space: max(1rem, env(safe-area-inset-bottom)); max-width: 55rem; margin: auto; padding: 1rem 1rem var(--bottom-space); overflow-wrap: anywhere }
 header { position: sticky; top: 0; background: Canvas; padding: .125rem 0; border-bottom: 1px solid var(--control-border); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 1rem }
 h1 { font-size: 1.5rem; font-weight: 500; line-height: 1; margin: 0; white-space: nowrap }
 #status { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: .4rem; font-size: .875rem; text-align: right }
@@ -19,7 +19,7 @@ h1 { font-size: 1.5rem; font-weight: 500; line-height: 1; margin: 0; white-space
 article { margin: 1rem 0; border-left: 2px solid GrayText; padding-left: .75rem }
 pre { white-space: pre-wrap; font: inherit; margin: .3rem 0 }
 #live { border-color: Highlight }
-form { position: sticky; bottom: 0; background: Canvas; padding-top: .5rem }
+form { position: sticky; bottom: var(--bottom-space); background: Canvas; padding-top: .5rem }
 textarea, input { box-sizing: border-box; width: 100%; font: inherit; padding: .5rem }
 textarea { display: block; line-height: 1.75rem; max-height: min(10rem, 30dvh); resize: none }
 button { -webkit-appearance: none; appearance: none; box-sizing: border-box; font: inherit; min-width: 2.75rem; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem .3rem .3rem 0; border: 1px solid var(--control-border); border-radius: .3rem; background: var(--control-bg); color: CanvasText }
@@ -488,7 +488,7 @@ function resizePrompt() {
   prompt.style.height = prompt.scrollHeight + prompt.offsetHeight - prompt.clientHeight + 'px';
 }
 function closeMenu() {
-  if (!menu.hidden) commandButton.focus();
+  if (!menu.hidden) commandButton.focus({ preventScroll: true });
   menu.hidden = true;
   menuMode = '';
   commandButton.setAttribute('aria-expanded', 'false');
@@ -520,7 +520,7 @@ async function openMenu(mode) {
   menuMode = mode;
   menu.hidden = false;
   commandButton.setAttribute('aria-expanded', 'true');
-  commandButton.focus();
+  commandButton.focus({ preventScroll: true });
   menuTitle.textContent = mode === 'sessions' ? 'Resume session' : 'Commands';
   sessionFilter.hidden = mode !== 'sessions';
   if (mode === 'sessions') sessionFilter.value = '';
