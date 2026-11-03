@@ -49,15 +49,18 @@ prompt files. Extension-injected messages and other commands are unchanged
 `/commit` stages all changes, asks the selected model for a Conventional Commit
 message, validates it, and creates the commit. It has no automatic trigger.
 The model-callable `commit` tool and both slash commands call one shared
-workflow. The tool accepts only an optional `intent` string with the same
-`[CAS-1234] [intent]` syntax. It never pushes. Prompt guidelines require an
+workflow. The tool accepts an optional `intent` string with the same
+`[CAS-1234] [intent]` syntax and an optional `split` boolean, false by default
+Both commands accept `[--split] [CAS-1234] [intent]`. The tool never pushes
+Prompt guidelines require an
 explicit user commit request, route natural-language commit requests to this
-tool, and require a check of the all-changes staging scope without removing
+tool with `split: true` for logical multiple commits, and require a check of
+the all-changes staging scope without removing
 blocking files to bypass the safeguard
 
 `/commit-and-push` shares the same workflow and arguments, then runs plain
-`git push` only after a successful commit. It adds a Push timing phase and
-reports push errors without undoing the local commit.
+`git push` only after the complete commit sequence succeeds. It adds a Push
+timing phase and reports push errors without undoing local commits.
 It is inspired by tmonk/pi-committer
 
 `/commit-model` and `/commit-thinking` use the shared worker settings helper
@@ -68,6 +71,8 @@ must be available or the command stops before staging. Both message attempts
 use the same model and supported thinking level
 
 ## Flow and behavior
+
+The default workflow still stages everything and creates one commit
 
 1. Resolve the repository root and stop if root-level `goal.md` or
    `handoff.md` exists
@@ -84,7 +89,42 @@ use the same model and supported thinking level
    the tree used for analysis
 7. Run `git commit -F -`, then report the short hash and header
 
-The prompt can include `/commit` arguments as intent, capped at 2 KiB, and the
+### Split mode
+
+`--split` or tool `split: true` first runs the same all-changes analysis
+Staged and unstaged changes, deletions, renames, and untracked files are included
+The planner uses the same selected model and thinking level in a no-tool session
+with a separate planning system prompt. It gets the complete available diff
+and context, not the message digest, plus user intent, ticket prefix, and session
+context. Git output limits still apply. Model context-limit failures stop the
+sequence rather than silently omit files or diff content
+
+A NUL-delimited cached name-status list supplies numbered whole-file units
+Rename source and destination paths form one unit. The model returns an ordered
+JSON array of group intents and unit IDs. Validation requires nonempty groups
+with intent strings, known integer IDs, and exact coverage without duplicates
+One group is valid. The staged tree and working files are checked after planning
+
+`git read-tree` resets only the index to the starting HEAD, or an empty index
+for an unborn branch. Working files stay in place. Each group is then staged
+with literal path arguments, analyzed without `git add -A`, and passed through
+the same message generation, retry, validation, tree check, hooks, and signing
+The original user intent and exact ticket prefix apply to every message
+Original staged versus unstaged selections are not preserved. Files are never
+split into hunks
+
+After each commit, the committed paths must match its planned group. Hooks may
+format and restage those files. Remaining status must contain only unstaged or
+untracked work in later groups. An altered commit scope, staged leftovers,
+changes outside later groups, or any other failure stops the sequence
+Hooks that require all changes together can require a single group
+
+Failures report actual commits since the starting HEAD, unattempted groups,
+and current Git status, even after cancellation. No commits, files, or index
+changes are rolled back. A commit made before a hook-scope check fails is kept
+No push starts until all groups and remaining-work checks succeed
+
+The message prompt can include `/commit` arguments as intent, capped at 2 KiB, and the
 last 12 user or assistant session entries, capped at 4 KiB. The complete prompt
 is capped at 24 KiB and reserves room for both forms of intent before it trims
 the diff context. The diff remains the source of truth
@@ -133,13 +173,14 @@ and notifications safely
 
 The shared workflow uses `ExtensionContext`, with no command-only session
 controls or blocking UI dialogs. The tool runs sequentially and returns the
-short hash and header, or `nothing to commit`, as text. Workflow errors throw
+short hashes and headers, or `nothing to commit`, as text. Workflow errors throw
 so Pi marks the tool result as failed, rather than returning success after an
 error notification. Slash commands still report errors through notifications
 
 There is no fallback message and no confirmation prompt. A second invalid
-message reports the validation problems and the last attempt. One invocation
-creates one commit, and inferred intent can still be wrong
+message reports the validation problems and the last attempt. Without split
+mode, one invocation creates one commit. Logical grouping and inferred intent
+can still be wrong
 
 # Image generation extension (`extensions/imagegen.ts`)
 

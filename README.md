@@ -117,13 +117,32 @@ refuses to commit if the staged snapshot changes while it writes the message
 The `commit` tool uses this same workflow when you ask Pi to commit, including
 requests such as "do the work then commit". It never commits without a user
 request and never pushes. Its optional `intent` string accepts the same
-`[CAS-1234] [intent]` arguments as `/commit`. It stages all changes, so Pi must
+`[CAS-1234] [intent]` arguments as `/commit`. Set its optional `split` boolean
+for requests such as "make logical separate commits". It stages all changes, so Pi must
 check that scope first and must not remove blocking files just to bypass it.
 The result reports the short commit hash and header, or that nothing changed
 
-Use `/commit-and-push [CAS-1234] [intent]` for the same workflow followed by
-plain `git push`. It pushes only after a successful commit. Push failures leave
-the local commit in place
+Use `/commit [--split] [CAS-1234] [intent]` or
+`/commit-and-push [--split] [CAS-1234] [intent]`. Without `--split`, each command
+stages everything and makes one commit. `/commit-and-push` then runs plain
+`git push`. The tool never pushes
+
+With `--split`, the model plans ordered logical whole-file groups from the
+complete change set and full diff. Each file is assigned once, with rename
+pairs kept together. One group is allowed. Each group uses the same message
+rules, ticket prefix, user intent, hooks, and signing as a normal commit
+There is no partial-file staging. Related changes within one file stay together
+
+Split mode stages all changes for planning, then stages one group at a time
+It does not preserve the original staged versus unstaged selection. Hooks can
+format files in the current group. If a hook changes the committed file scope
+or leaves staged changes or work outside the remaining plan, the sequence stops
+Hooks that need all changes together can require one group instead
+
+On failure, split mode stops and reports completed commits and remaining work
+It keeps completed commits and current files/index in place, with no rollback
+`/commit-and-push --split` pushes only after the complete sequence succeeds
+It never pushes a partial sequence. A push failure keeps all local commits
 
 Use `/commit CAS-1234` to require an exact ticket prefix, for example
 `CAS-1234 fix: handle expired sessions`. You can add intent after the ticket.
