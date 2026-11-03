@@ -621,6 +621,17 @@ prompts, thinking blocks, or image bytes. Message events retain the current
 assistant snapshot for live text. Compaction events update status without
 closing the listener. Tree navigation refreshes history on the next poll
 
+Tool-result and terminal-command history views carry `collapsible: true` and
+an `id` from the session entry, with `toolCallId` as the tool-result fallback
+The browser uses this flag, not role text or a tool-name list, to render native
+`details`/`summary` rows. The summary keeps the tool name and error or cancellation
+label visible. Output still uses `textContent` with no additional truncation
+Assistant text and tool-call markers remain ordinary visible messages
+An in-memory set of open result IDs preserves expansion across history rebuilds
+and tree navigation. Rebuilds also restore summary keyboard focus. The set resets
+when the runtime's `workspace` changes or the page refreshes, not on a temporary
+network disconnect. New results start collapsed
+
 Each authenticated `/state` request also reads the footer extension through
 `lib/footer-state.ts`. A synchronous event-bus request returns only formatted
 path, branch, Git counters, context usage, and context color, or null when the

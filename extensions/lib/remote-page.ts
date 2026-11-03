@@ -18,6 +18,9 @@ h1 { font-size: 1.5rem; font-weight: 500; line-height: 1; margin: 0; white-space
 @media (prefers-reduced-motion: reduce) { #status[data-state="Working"]::before { animation: none } }
 article { margin: 1rem 0; border-left: 2px solid GrayText; padding-left: .75rem }
 pre { white-space: pre-wrap; font: inherit; margin: .3rem 0 }
+.tool-result summary { box-sizing: border-box; min-height: 44px; padding: .6rem 0; cursor: pointer }
+.tool-result summary:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
+@media (hover: hover) { .tool-result summary:hover { background: var(--control-hover) } }
 #live { border-color: Highlight }
 form { position: sticky; bottom: var(--bottom-space); background: Canvas; padding-top: .5rem }
 textarea, input { box-sizing: border-box; width: 100%; font: inherit; padding: .5rem }
@@ -352,6 +355,8 @@ changes.addEventListener('close', () => {
 diffButton.onclick = () => { changeView = 'diff'; if (changePathValue) loadChange(changePathValue); };
 sourceButton.onclick = () => { changeView = 'source'; if (changePathValue) loadChange(changePathValue); };
 let pendingImages = [];
+const expandedResults = new Set();
+let historyWorkspace = '';
 let version = '', leaf = '', timer, submitting = false, accessToken = '';
 let connected = false, stateName = '', recovering = false, menuMode = '', items = [], selected = 0;
 function presentNotice() {
@@ -600,17 +605,40 @@ async function poll() {
         workspace = state.workspace || '';
         if (changes.open) refreshChanges();
       }
+      if (state.workspace && historyWorkspace !== state.workspace) {
+        historyWorkspace = state.workspace;
+        expandedResults.clear();
+        for (const details of history.querySelectorAll('details.tool-result')) details.open = false;
+      }
       if (state.history) {
+        // Read open state directly so a toggle just before a poll is retained too
+        for (const details of history.querySelectorAll('details.tool-result')) {
+          if (details.open) expandedResults.add(details.dataset.messageId);
+          else expandedResults.delete(details.dataset.messageId);
+        }
+        const focusedId = document.activeElement.closest('details.tool-result')?.dataset.messageId;
+        let focusTarget;
         const nodes = state.history.map(message => {
           const article = document.createElement('article');
           const role = document.createElement('strong');
           const content = document.createElement('pre');
           role.textContent = message.role;
           content.textContent = message.text;
-          article.append(role, content);
+          if (message.collapsible) {
+            const details = document.createElement('details');
+            const summary = document.createElement('summary');
+            details.className = 'tool-result';
+            details.dataset.messageId = message.id;
+            details.open = expandedResults.has(message.id);
+            summary.append(role);
+            details.append(summary, content);
+            article.append(details);
+            if (message.id === focusedId) focusTarget = summary;
+          } else article.append(role, content);
           return article;
         });
         history.replaceChildren(...nodes);
+        focusTarget?.focus({ preventScroll: true });
       }
       footer.hidden = !state.footer;
       if (state.footer) {

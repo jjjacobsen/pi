@@ -80,18 +80,22 @@ function text(content) {
   }).filter(Boolean).join("\n");
 }
 
-function messageView(message: AgentMessage) {
+function messageView(message: AgentMessage, entryId?: string) {
   switch (message.role) {
     case "user":
       return { role: "You", text: text(message.content) };
     case "assistant":
       return { role: "Pi", text: [text(message.content), message.errorMessage].filter(Boolean).join("\n") };
     case "toolResult":
-      return { role: `${message.toolName}${message.isError ? " (error)" : ""}`, text: text(message.content) };
+      return { id: entryId ?? message.toolCallId, collapsible: true, role: `${message.toolName}${message.isError ? " (error)" : ""}`, text: text(message.content) };
     case "custom":
       return message.display ? { role: message.customType, text: text(message.content) } : undefined;
     case "bashExecution":
-      return { role: "Terminal command", text: `${message.command}\n${message.output}` };
+      return {
+        id: entryId, collapsible: true,
+        role: `Terminal command (bash)${message.cancelled ? " (cancelled)" : message.exitCode !== undefined && message.exitCode !== 0 ? " (error)" : ""}`,
+        text: `${message.command}\n${message.output}`,
+      };
     case "branchSummary":
       return { role: "Branch summary", text: message.summary };
     default:
@@ -402,7 +406,7 @@ export default function (pi: ExtensionAPI) {
         if (leaf !== historyLeaf) {
           // Raw active-branch history retains old messages across compaction, unlike model context
           history = ctx.sessionManager.getBranch().map((entry) => {
-            if (entry.type === "message") return messageView(entry.message);
+            if (entry.type === "message") return messageView(entry.message, entry.id);
             if (entry.type === "custom_message" && entry.display) return { role: entry.customType, text: text(entry.content) };
             if (entry.type === "compaction") return { role: "Compaction", text: "Model context compacted. Earlier messages remain in this history" };
             if (entry.type === "branch_summary") return { role: "Branch summary", text: entry.summary };

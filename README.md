@@ -238,7 +238,12 @@ stopping access. Run `/remote off` to stop access and invalidate the link
 Repeating `/remote` shows the same link and QR code
 
 The mobile page shows active-branch history and live text, queues prompts
-while Pi is busy, and has a Stop button. Press Image to choose PNG, JPEG,
+while Pi is busy, and has a Stop button. All tool results and terminal-command
+outputs start collapsed. Tap the tool name or use Enter or Space to show the
+full output. Errors remain labeled when collapsed. Assistant text and short
+tool-call markers stay visible. Open results stay open during polling and
+history updates, but reset on page refresh or session replacement
+Press Image to choose PNG, JPEG,
 or WebP images, or paste images when the clipboard exposes them. Attach up to
 five images per message. The browser resizes each image over 10 MiB before
 upload. Each image has a preview and Remove button. Images can be sent with
