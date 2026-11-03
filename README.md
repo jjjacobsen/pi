@@ -238,13 +238,15 @@ stopping access. Run `/remote off` to stop access and invalidate the link
 Repeating `/remote` shows the same link and QR code
 
 The mobile page shows active-branch history and live text, queues prompts
-while Pi is busy, and has a Stop button. Press Image to choose one PNG, JPEG,
-or WebP image, or paste an image when the clipboard exposes it. The browser
-resizes images over 10 MiB before upload. Wait for preparation, then preview
-or remove it before sending. Images can be sent without text
-The server resizes it to the selected model's image limits before submission
+while Pi is busy, and has a Stop button. Press Image to choose PNG, JPEG,
+or WebP images, or paste images when the clipboard exposes them. Attach up to
+five images per message. The browser resizes each image over 10 MiB before
+upload. Each image has a preview and Remove button. Images can be sent with
+normal message text or without text
+The server resizes each image to the selected model's limits before submission
 The selected model must accept images and `images.blockImages` must be false
-Slash commands reject attachments. Failed sends keep the image for retry
+Slash commands reject attachments. Failed sends keep images for retry
+Successful sends remove only submitted images, not additions made during sending
 Unsent images stay only in the page and are lost on refresh or page exit
 
 On HTTPS, press 🎙 Record to use the phone microphone. Stop recording uploads

@@ -29,8 +29,8 @@ button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #footer-context[data-color="error"] { color: light-dark(#b00020, #ff8797) }
 #composer { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem }
 #composer button { margin: .3rem 0; flex: 0 0 auto }
-#attachment:not([hidden]) { display: flex; align-items: center; gap: .5rem; padding: .3rem 0 }
-#preview { max-width: 6rem; max-height: 6rem; object-fit: contain }
+.attachment { display: flex; align-items: center; gap: .5rem; padding: .3rem 0 }
+.attachment img { max-width: 6rem; max-height: 6rem; object-fit: contain }
 #menu { border: 1px solid GrayText; padding: .5rem; margin-bottom: .5rem }
 #menu-heading { display: flex; align-items: center; justify-content: space-between }
 #choices { max-height: 30dvh; overflow-y: auto }
@@ -83,11 +83,11 @@ small { display: block; color: GrayText }
 <div id="choices" role="listbox" aria-label="Commands"></div>
 </section>
 <div id="footer" hidden aria-label="Workspace and context status"><span id="footer-cwd"></span><span id="footer-branch"></span><span id="footer-git" aria-label="Git ahead, behind, changed, untracked, and staged counts"></span><span id="footer-context" aria-label="Context tokens used and window"></span></div>
-<div id="attachment" hidden><img id="preview" alt="Pending image"><span id="image-name"></span><button id="remove-image" type="button">Remove</button></div>
-<input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+<div id="attachments" aria-label="Pending images"></div>
+<input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
 <textarea id="prompt" aria-label="Message Pi or type a command" rows="1" maxlength="60000" placeholder="Message Pi or type a command…"></textarea>
 <div id="voice-controls"><button id="record" type="button" aria-label="Record a voice message" disabled>🎙 Record</button><button id="voice-stop" type="button" hidden>Stop recording</button><button id="voice-cancel" type="button" hidden>Cancel voice</button><small id="voice-status" role="status"></small></div>
-<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop Pi</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
+<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach up to five images" title="Up to five PNG, JPEG, or WebP images. Large images are resized before upload">Image</button><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop Pi</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
 <div id="notice" role="status"></div>
 </form>
 <script nonce="${nonce}">
@@ -195,9 +195,7 @@ const menuTitle = document.getElementById('menu-title');
 const sessionFilter = document.getElementById('session-filter');
 const choices = document.getElementById('choices');
 const imageFile = document.getElementById('image-file');
-const attachment = document.getElementById('attachment');
-const preview = document.getElementById('preview');
-const imageName = document.getElementById('image-name');
+const attachments = document.getElementById('attachments');
 const changes = document.getElementById('changes');
 const changesButton = document.getElementById('open-changes');
 const changesSummary = document.getElementById('changes-summary');
@@ -317,7 +315,7 @@ changes.addEventListener('close', () => {
 });
 diffButton.onclick = () => { changeView = 'diff'; if (changePathValue) loadChange(changePathValue); };
 sourceButton.onclick = () => { changeView = 'source'; if (changePathValue) loadChange(changePathValue); };
-let pendingImage = null;
+let pendingImages = [];
 let version = '', leaf = '', timer, noticeTimer, busy = false, submitting = false, accessToken = '';
 let connected = false, stateName = '', recovering = false, menuMode = '', items = [], selected = 0;
 function showNotice(message, temporary = false) {
@@ -325,11 +323,11 @@ function showNotice(message, temporary = false) {
   notice.textContent = message;
   if (temporary) noticeTimer = setTimeout(() => { notice.textContent = ''; }, 2000);
 }
-function removeImage() {
-  if (pendingImage) URL.revokeObjectURL(pendingImage.url);
-  pendingImage = null;
-  preview.removeAttribute('src');
-  attachment.hidden = true;
+function removeImage(image) {
+  if (!pendingImages.includes(image)) return;
+  pendingImages = pendingImages.filter(item => item !== image);
+  URL.revokeObjectURL(image.url);
+  image.row.remove();
   controls();
 }
 async function prepareImage(file, url) {
@@ -353,20 +351,29 @@ async function prepareImage(file, url) {
   throw new Error('Image remains too large');
 }
 async function attachImage(file) {
-  removeImage();
-  const image = pendingImage = { file, url: URL.createObjectURL(file), ready: false };
-  const name = file.name || 'Pasted image';
+  const row = document.createElement('div');
+  row.className = 'attachment';
+  const preview = document.createElement('img');
+  preview.alt = 'Pending image';
   preview.hidden = true;
-  imageName.textContent = name + ' · Preparing…';
-  attachment.hidden = false;
+  const label = document.createElement('span');
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.textContent = 'Remove';
+  row.append(preview, label, remove);
+  attachments.append(row);
+  const image = { file, url: URL.createObjectURL(file), ready: false, row };
+  pendingImages.push(image);
+  remove.onclick = () => removeImage(image);
+  const name = file.name || 'Pasted image';
+  label.textContent = name + ' · Preparing…';
   controls();
   let error = !file.size ? 'This image file is empty. Choose another image'
-    : !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) ? 'Choose one PNG, JPEG, or WebP image' : '';
+    : !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) ? 'Choose PNG, JPEG, or WebP images' : '';
   if (!error) {
-    showNotice('Preparing image…');
     try {
       const prepared = await prepareImage(file, image.url);
-      if (pendingImage !== image) return;
+      if (!pendingImages.includes(image)) return;
       if (prepared !== file) {
         URL.revokeObjectURL(image.url);
         image.url = URL.createObjectURL(prepared);
@@ -375,36 +382,42 @@ async function attachImage(file) {
       image.ready = true;
       preview.src = image.url;
       preview.hidden = false;
-      imageName.textContent = name + (prepared !== file ? ' · Resized' : '');
-      showNotice('Image attached', true);
+      label.textContent = name + (prepared !== file ? ' · Resized' : '');
     } catch {
       error = 'Cannot process this image or resize it below 10 MiB. Choose another PNG, JPEG, or WebP image';
     }
   }
-  if (pendingImage !== image) return;
+  if (!pendingImages.includes(image)) return;
   if (error) {
-    imageName.textContent = name + ' · Not ready. Choose another image or remove it';
+    label.textContent = name + ' · Not ready. Remove it and choose another image';
     showNotice(error);
   }
   controls();
 }
+function attachImages(files) {
+  if (!files.length) return;
+  if (pendingImages.length + files.length > 5) {
+    showNotice('Attach up to five images per message. Remove images or choose fewer files');
+    return;
+  }
+  showNotice('');
+  files.forEach(file => attachImage(file));
+}
 document.getElementById('attach').onclick = () => imageFile.click();
-document.getElementById('remove-image').onclick = removeImage;
 imageFile.onchange = () => {
-  const file = imageFile.files[0];
+  const files = Array.from(imageFile.files);
   imageFile.value = '';
-  if (file) attachImage(file);
+  attachImages(files);
 };
 prompt.addEventListener('paste', event => {
   const images = Array.from(event.clipboardData?.items || []).filter(item => item.kind === 'file' && item.type.startsWith('image/'));
   if (!images.length) return;
   event.preventDefault();
-  if (images.length !== 1) { showNotice('Paste one image at a time'); return; }
-  const file = images[0].getAsFile();
-  if (file) attachImage(file);
-  else showNotice('Cannot read this clipboard image. Use the Image button');
+  const files = images.map(item => item.getAsFile());
+  if (files.some(file => !file)) { showNotice('Cannot read these clipboard images. Use the Image button'); return; }
+  attachImages(files);
 });
-window.addEventListener('pagehide', removeImage);
+window.addEventListener('pagehide', () => pendingImages.slice().forEach(removeImage));
 function readImage(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -415,7 +428,7 @@ function readImage(file) {
 }
 function controls() {
   const changing = stateName === 'Reloading' || stateName === 'Switching session';
-  send.disabled = !connected || submitting || changing || !!voice || stateName === 'Compacting' || !!(pendingImage && !pendingImage.ready);
+  send.disabled = !connected || submitting || changing || !!voice || stateName === 'Compacting' || pendingImages.some(image => !image.ready);
   recordButton.disabled = !connected || !workspace || submitting || changing || !!voice || !voiceMime;
   recordButton.hidden = !!voice;
   voiceStop.hidden = !voice?.recorder || voice.send;
@@ -581,28 +594,28 @@ async function poll() {
 }
 form.onsubmit = async event => {
   event.preventDefault();
-  if ((!prompt.value.trim() && !pendingImage) || (pendingImage && !pendingImage.ready) || submitting || !connected || voice) return;
+  if ((!prompt.value.trim() && !pendingImages.length) || pendingImages.some(image => !image.ready) || submitting || !connected || voice) return;
   const text = prompt.value;
   const value = text.trim();
-  const image = pendingImage;
+  const images = pendingImages.slice();
   const command = value.startsWith('/');
   closeMenu();
-  if (command && image) { showNotice('Images cannot be attached to slash commands. Remove the image first'); return; }
+  if (command && images.length) { showNotice('Images cannot be attached to slash commands. Remove the images first'); return; }
   if (new TextEncoder().encode(text).length > 64 * 1024) { showNotice('Text is too large (64 KiB limit)'); return; }
   if (value === '/resume') { await openMenu('sessions'); return; }
   submitting = true;
   controls();
   const queued = busy;
   try {
-    if (image) showNotice('Sending image…');
-    const body = { text: command ? value : text, ...(image ? { image: await readImage(image.file) } : {}) };
+    if (images.length) showNotice('Sending images…');
+    const body = { text: command ? value : text, ...(images.length ? { images: await Promise.all(images.map(image => readImage(image.file))) } : {}) };
     const response = await request(command ? '/command' : '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(image ? 60000 : 15000) });
+      body: JSON.stringify(body), signal: AbortSignal.timeout(images.length ? 60000 : 15000) });
     if (prompt.value === text) {
       prompt.value = '';
       resizePrompt();
     }
-    if (pendingImage === image) removeImage();
+    images.forEach(removeImage);
     showNotice(command ? await response.text() : queued ? 'Queued' : 'Sent', true);
   } catch (error) { showNotice(error.message + (command ? '. Check the current session before trying again' : '')); }
   finally { submitting = false; version = ''; controls(); }

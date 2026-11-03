@@ -604,8 +604,8 @@ API calls require a bearer header, with no cookies or CORS support. The static p
 has no external resources, uses nonce-based CSP, cannot be framed, disables
 caching and referrers, and renders conversation data only with `textContent`.
 Text-only and command JSON bodies are limited to 64 KiB. Image prompt JSON
-bodies are limited to 15 MiB, uploaded images to 10 MiB, and decoded text to
-64 KiB UTF-8. Non-voice request uploads have a per-request 60-second deadline
+bodies are limited to 70 MiB, with up to five images at 10 MiB each, and decoded
+text to 64 KiB UTF-8. Non-voice request uploads have a per-request 60-second deadline
 Authenticated voice uploads are exempt. Node's shared requestTimeout is disabled
 because it cannot exempt one request. Header timeout stays at 10 seconds
 CSP permits only blob URLs for images, for the local pending-image preview
@@ -659,11 +659,12 @@ on workspace changes or connection loss and discards superseded responses
 Refresh cannot reuse data from an old repository after session replacement
 The existing process-owned listener and authentication are unchanged
 
-`POST /prompt` accepts JSON `{ text, image?: { data, mimeType } }`, with one
-base64 PNG, JPEG, or WebP image. Image-only prompts use
-empty text. The server validates base64, source size, format, selected model
-image input support, and `images.blockImages`. It calls public `resizeImage`
-with the selected model's `inputLimits.images.resize`, or Pi's default limits
+`POST /prompt` accepts JSON `{ text, images?: [{ data, mimeType }] }`, with up to
+five base64 PNG, JPEG, or WebP images. Image-only prompts use empty text
+The server validates the array and count, each image's base64, source size and
+format, selected model image input support, and `images.blockImages`
+It calls public `resizeImage` for each image with the selected model's
+`inputLimits.images.resize`, or Pi's default limits
 This runs even with automatic resizing disabled because queued follow-ups can
 skip Pi's prompt resize path. Decode or resize failures reject the request
 Session replacement, compaction, and model changes during resize require retry
@@ -674,20 +675,21 @@ expansion disabled. `/command` also rejects attachments, never discards them
 Pi's normal input hooks still apply. During compaction, prompts receive an
 explicit retry message. `POST /stop` requests `ctx.abort()`
 
-The composer uses a native file picker without forced camera capture and
-intercepts paste only when the clipboard exposes an image. Both paths use the
-same native browser image preparation. Valid images up to 10 MiB keep their
-original bytes. Larger originals are drawn to canvas with a maximum edge of
+The composer uses a native file picker with multiple selection and no forced
+camera capture, and intercepts paste only when the clipboard exposes images
+Both paths add to one pending list with the same native browser image preparation
+A batch that would exceed five images is rejected in full with a clear error
+Valid images up to 10 MiB keep their original bytes. Larger originals are drawn to canvas with a maximum edge of
 2560 pixels, then 1920 or 1440 if needed to fit 10 MiB, without enlargement
 PNG stays lossless, JPEG and WebP use quality 0.9, and PNG/WebP retain transparency
 The server still validates and resizes uploads. Send is blocked during preparation
 or after a preparation error. Failed preparation keeps the selected file visible
-for replacement or removal. An earlier conversion cannot replace a newer selection
-A single pending file has a blob URL preview and Remove button. Replacing, removing, successfully
-submitting an unchanged attachment, or leaving the page revokes its URL
-Failed sends retain the attachment. A changed attachment or message is not
-cleared by an earlier successful request. Image uploads get a 60-second browser
-deadline, ordinary requests 15 seconds. No upload retry is automatic. Pending
+for removal. Each pending image has its own preparation state, blob URL preview,
+and Remove button. Removed images cannot return when preparation completes
+Removing, successfully submitting, or leaving the page revokes the image's URL
+Failed sends retain attachments. Success removes only the submitted images,
+preserving additions during sending and any changed message. Image uploads get
+a 60-second browser deadline, ordinary requests 15 seconds. No upload retry is automatic. Pending
 images are not stored across page exits. History still uses `[Image omitted]`
 
 `POST /transcribe?workspace=<id>` accepts authenticated WebM or MP4 audio,

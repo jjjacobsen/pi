@@ -86,10 +86,12 @@ source, symbolic links, and size limits show messages instead of content
 Image input uses Pi's built-in resize helper. Select a model with image input
 and keep `images.blockImages` false. The Image button uses the native file
 picker, without forced camera capture. Image paste depends on what the browser
-and OS expose in the clipboard. PNG, JPEG, and WebP are supported. Native browser
-image and canvas APIs resize originals over 10 MiB before upload, without extra
-dependencies. The uploaded image must fit the server's 10 MiB limit. Images that
-the browser cannot decode or resize stay unsent with an error
+and OS expose in the clipboard. PNG, JPEG, and WebP are supported, with up to
+five images per message from multiple selection or paste. Native browser image
+and canvas APIs resize originals over 10 MiB before upload, without extra
+dependencies. Each uploaded image must fit the server's 10 MiB limit. Image
+prompt JSON has a 70 MiB limit, including base64 and up to 64 KiB of text
+Images that the browser cannot decode or resize stay unsent with an error
 Submitted images go to the model provider and normal Pi session storage
 After updating an already-running remote listener, use `/remote off`, then
 `/remote` to apply the image-preview CSP and upload timeout if not already done
