@@ -241,7 +241,7 @@ The mobile page shows active-branch history and live text, queues prompts
 while Pi is busy, and has a Stop button. Press Image to choose one PNG, JPEG,
 or WebP image, or paste an image when the clipboard exposes it. The browser
 resizes images over 10 MiB before upload. Wait for preparation, then preview
-or remove it before sending, with an optional caption or no text
+or remove it before sending. Images can be sent without text
 The server resizes it to the selected model's image limits before submission
 The selected model must accept images and `images.blockImages` must be false
 Slash commands reject attachments. Failed sends keep the image for retry

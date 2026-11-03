@@ -83,7 +83,7 @@ small { display: block; color: GrayText }
 <div id="footer" hidden aria-label="Workspace and context status"><span id="footer-cwd"></span><span id="footer-branch"></span><span id="footer-git" aria-label="Git ahead, behind, changed, untracked, and staged counts"></span><span id="footer-context" aria-label="Context tokens used and window"></span></div>
 <div id="attachment" hidden><img id="preview" alt="Pending image"><span id="image-name"></span><button id="remove-image" type="button">Remove</button></div>
 <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><textarea id="prompt" aria-label="Message Pi, add an optional image caption, or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea></div>
+<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><textarea id="prompt" aria-label="Message Pi or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea></div>
 <div><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
 <div id="notice" role="status"></div>
 </form>
@@ -290,7 +290,7 @@ async function attachImage(file) {
       preview.src = image.url;
       preview.hidden = false;
       imageName.textContent = name + (prepared !== file ? ' · Resized' : '');
-      showNotice('Image attached. Add a caption or send the image alone');
+      showNotice('Image attached', true);
     } catch {
       error = 'Cannot process this image or resize it below 10 MiB. Choose another PNG, JPEG, or WebP image';
     }

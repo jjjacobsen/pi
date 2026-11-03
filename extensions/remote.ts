@@ -385,7 +385,7 @@ export default function (pi: ExtensionAPI) {
         if (access.handle !== handle) return reply(response, 409, "Session changed. Check the current session, then send again");
         if (compacting) return reply(response, 409, "Wait for compaction to finish, then send again");
         const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if (typeof input?.text !== "string") return reply(response, 400, "Expected prompt text, or an empty caption with one image");
+        if (typeof input?.text !== "string") return reply(response, 400, "Expected message text or an image");
         if (Buffer.byteLength(input.text, "utf8") > maxTextBytes) return reply(response, 413, "Text is too large (64 KiB limit)");
         const hasImage = input.image !== undefined;
         if (!hasImage && bytes > maxTextBytes) return reply(response, 413, "Text request is too large (64 KiB limit)");

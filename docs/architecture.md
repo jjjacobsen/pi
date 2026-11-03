@@ -658,7 +658,7 @@ Refresh cannot reuse data from an old repository after session replacement
 The existing process-owned listener and authentication are unchanged
 
 `POST /prompt` accepts JSON `{ text, image?: { data, mimeType } }`, with one
-base64 PNG, JPEG, or WebP image and an optional caption. Image-only prompts use
+base64 PNG, JPEG, or WebP image. Image-only prompts use
 empty text. The server validates base64, source size, format, selected model
 image input support, and `images.blockImages`. It calls public `resizeImage`
 with the selected model's `inputLimits.images.resize`, or Pi's default limits
@@ -683,7 +683,7 @@ or after a preparation error. Failed preparation keeps the selected file visible
 for replacement or removal. An earlier conversion cannot replace a newer selection
 A single pending file has a blob URL preview and Remove button. Replacing, removing, successfully
 submitting an unchanged attachment, or leaving the page revokes its URL
-Failed sends retain the attachment. A changed attachment or caption is not
+Failed sends retain the attachment. A changed attachment or message is not
 cleared by an earlier successful request. Image uploads get a 60-second browser
 deadline, ordinary requests 15 seconds. No upload retry is automatic. Pending
 images are not stored across page exits. History still uses `[Image omitted]`
