@@ -77,6 +77,16 @@ The non-blocking QR widget needs enough terminal space for the whole code and
 editor. `/remote hide` hides it without stopping access. Browser connection
 also hides it
 No extra npm package, API key, environment variable, or system service is needed
+Image input uses Pi's built-in resize helper. Select a model with image input
+and keep `images.blockImages` false. The Image button uses the native file
+picker, without forced camera capture. Image paste depends on what the browser
+and OS expose in the clipboard. PNG, JPEG, and WebP are supported. Native browser
+image and canvas APIs resize originals over 10 MiB before upload, without extra
+dependencies. The uploaded image must fit the server's 10 MiB limit. Images that
+the browser cannot decode or resize stay unsent with an error
+Submitted images go to the model provider and normal Pi session storage
+After updating an already-running remote listener, use `/remote off`, then
+`/remote` to apply the new image-preview CSP and upload timeout
 Load this extension globally to keep access working when a terminal session
 switch enters another working directory. If the replacement runtime does not
 load it, the listener cannot bind to that session and shows a transition status

@@ -237,8 +237,17 @@ input and hides when the browser connects. `/remote hide` hides it without
 stopping access. Run `/remote off` to stop access and invalidate the link
 Repeating `/remote` shows the same link and QR code
 
-The mobile page shows active-branch history and live text, queues plain prompts
-while Pi is busy, and has a Stop button. A compact strip above the composer
+The mobile page shows active-branch history and live text, queues prompts
+while Pi is busy, and has a Stop button. Press Image to choose one PNG, JPEG,
+or WebP image, or paste an image when the clipboard exposes it. The browser
+resizes images over 10 MiB before upload. Wait for preparation, then preview
+or remove it before sending, with an optional caption or no text
+The server resizes it to the selected model's image limits before submission
+The selected model must accept images and `images.blockImages` must be false
+Slash commands reject attachments. Failed sends keep the image for retry
+Unsent images stay only in the page and are lost on refresh or page exit
+
+A compact strip above the composer
 shows the footer extension's path, branch, Git counters, and context usage
 with the same formatting and warning levels. It is hidden when the footer
 extension is absent or disabled. `/footer` toggles both displays
@@ -265,10 +274,12 @@ Funnel, a service, or public/LAN access. See [setup and limits](docs/environment
 
 Keep the link private. Anyone with it and tailnet network access can read the
 conversation and control Pi with its full permissions. No extra session files
-are written. Thinking, images, and custom dialogs are not shown. Stop requests
+are written. Thinking and custom dialogs are not shown. History shows
+`[Image omitted]`, not image previews. Submitted images go to the selected model
+provider and normal Pi session storage. Stop requests
 an abort but does not promise to clear queued prompts or close terminal dialogs
 The page polls while connected. Use Reconnect after a network interruption
-Refreshing the page requires the private terminal link again
+Same-tab refresh keeps access but clears unsent text and images
 
 ### search - web search via the Exa API
 

@@ -5,12 +5,16 @@ import { createServer as createHttpServer, type Server, type IncomingMessage, ty
 import { createServer as createHttpsServer } from "node:https";
 import { isIP, type Socket } from "node:net";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { resizeImage, SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { remotePage } from "./lib/remote-page";
 import { readFooterState } from "./lib/footer-state";
+import { imageFormat } from "./lib/image-providers";
 
 const exec = promisify(execFile);
+const maxTextBytes = 64 * 1024;
+const maxImageBytes = 10 * 1024 * 1024;
+const maxPromptBytes = 15 * 1024 * 1024;
 
 // The transport belongs to this Pi process, not to a replaceable extension runtime
 const accessKey = Symbol.for("jonah.pi.remote");
@@ -133,7 +137,7 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("X-Frame-Options", "DENY");
-    response.setHeader("Content-Security-Policy", `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
+    response.setHeader("Content-Security-Policy", `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
     if (signal.aborted) return reply(response, 410, "Remote access is off");
     if (request.headers.host !== host || (request.headers.origin && request.headers.origin !== origin)) {
       return reply(response, 403, "Invalid host or origin");
@@ -172,7 +176,7 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
     access.connections.add(socket);
     socket.on("close", () => access.connections.delete(socket));
   });
-  next.requestTimeout = 10_000;
+  next.requestTimeout = 60_000;
   next.headersTimeout = 10_000;
   access.server = next;
   await new Promise<void>((resolve, reject) => {
@@ -345,18 +349,26 @@ export default function (pi: ExtensionAPI) {
       }
       if (request.method === "POST" && (url.pathname === "/prompt" || url.pathname === "/command")) {
         if (request.headers["content-type"] !== "application/json") return reply(response, 415, "Expected application/json");
+        const limit = url.pathname === "/prompt" ? maxPromptBytes : maxTextBytes;
         const chunks = [];
         let bytes = 0;
         for await (const chunk of request) {
           bytes += chunk.length;
-          if (bytes > 64 * 1024) return reply(response, 413, "Prompt is too large (64 KiB limit)");
+          if (bytes > limit) return reply(response, 413, url.pathname === "/prompt" ? "Request is too large (15 MiB limit)" : "Command is too large (64 KiB limit)");
           chunks.push(chunk);
         }
         // Do not submit a body to a session that was replaced while it arrived
         if (access.handle !== handle) return reply(response, 409, "Session changed. Check the current session, then send again");
         if (compacting) return reply(response, 409, "Wait for compaction to finish, then send again");
         const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if (typeof input?.text !== "string" || !input.text.trim()) return reply(response, 400, "Enter a plain text prompt");
+        if (typeof input?.text !== "string") return reply(response, 400, "Expected prompt text, or an empty caption with one image");
+        if (Buffer.byteLength(input.text, "utf8") > maxTextBytes) return reply(response, 413, "Text is too large (64 KiB limit)");
+        const hasImage = input.image !== undefined;
+        if (!hasImage && bytes > maxTextBytes) return reply(response, 413, "Text request is too large (64 KiB limit)");
+        if (hasImage && (url.pathname === "/command" || input.text.trimStart().startsWith("/"))) {
+          return reply(response, 400, "Images cannot be attached to slash commands. Remove the image first");
+        }
+        if (!input.text.trim() && !hasImage) return reply(response, 400, "Enter a prompt or attach one image");
         if (url.pathname === "/command") {
           const value = input.text.trim();
           const name = value.split(/\s+/, 1)[0].slice(1);
@@ -376,7 +388,35 @@ export default function (pi: ExtensionAPI) {
           } finally { commandRunning = false; }
         }
         if (input.text.trimStart().startsWith("/")) return reply(response, 400, "Use the command menu for slash commands");
-        pi.sendUserMessage(input.text, { deliverAs: "followUp", expandPromptTemplates: false });
+        let image;
+        if (hasImage) {
+          if (pi.getSettings().images?.blockImages) return reply(response, 400, "Images are blocked by Pi's images.blockImages setting");
+          const model = ctx.model;
+          if (!model?.input.includes("image")) return reply(response, 400, "The selected model does not support image input. Select an image-capable model in the terminal");
+          const source = input.image;
+          if (!["image/png", "image/jpeg", "image/webp"].includes(source?.mimeType)) return reply(response, 400, "Attach one PNG, JPEG, or WebP image");
+          if (typeof source.data !== "string" || !source.data.length) return reply(response, 400, "Expected base64 image data");
+          if (source.data.length > Math.ceil(maxImageBytes / 3) * 4) return reply(response, 413, "Image is too large (10 MiB limit)");
+          const data = Buffer.from(source.data, "base64");
+          if (data.toString("base64") !== source.data) return reply(response, 400, "Invalid base64 image data");
+          if (data.length > maxImageBytes) return reply(response, 413, "Image is too large (10 MiB limit)");
+          try {
+            if (imageFormat(data).mimeType !== source.mimeType) return reply(response, 400, "Image data does not match its PNG, JPEG, or WebP media type");
+            // Queued follow-ups can skip Pi's automatic image resizing
+            image = await resizeImage(data, source.mimeType, model.inputLimits?.images?.resize);
+          } catch {
+            return reply(response, 400, "Cannot read this image as PNG, JPEG, or WebP. Choose another image");
+          }
+          if (!image) return reply(response, 400, "Cannot decode or resize this image. Choose a valid PNG, JPEG, or WebP image");
+          if (access.handle !== handle) return reply(response, 409, "Session changed. Check the current session, then send again");
+          if (compacting) return reply(response, 409, "Wait for compaction to finish, then send again");
+          if (ctx.model !== model) return reply(response, 409, "Model changed. Check the selected model, then send again");
+          if (pi.getSettings().images?.blockImages) return reply(response, 400, "Images are blocked by Pi's images.blockImages setting");
+        }
+        pi.sendUserMessage(image ? [
+          ...(input.text.trim() ? [{ type: "text" as const, text: input.text }] : []),
+          { type: "image", data: image.data, mimeType: image.mimeType },
+        ] : input.text, { deliverAs: "followUp", expandPromptTemplates: false });
         return reply(response, 202, "Submitted to Pi. If busy, Pi queues it as a follow-up");
       }
       return reply(response, 404, "Not found");

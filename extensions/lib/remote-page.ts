@@ -26,7 +26,9 @@ button { font: inherit; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem
 #footer-context[data-color="warning"] { color: light-dark(#805500, #ffc857) }
 #footer-context[data-color="error"] { color: light-dark(#b00020, #ff8797) }
 #composer { display: flex; align-items: end; gap: .4rem }
-#commands { margin: 0; flex: 0 0 auto }
+#commands, #attach { margin: 0; flex: 0 0 auto }
+#attachment:not([hidden]) { display: flex; align-items: center; gap: .5rem; padding: .3rem 0 }
+#preview { max-width: 6rem; max-height: 6rem; object-fit: contain }
 #menu { border: 1px solid GrayText; padding: .5rem; margin-bottom: .5rem }
 #menu-heading { display: flex; align-items: center; justify-content: space-between }
 #choices { max-height: 30dvh; overflow-y: auto }
@@ -45,7 +47,9 @@ small { display: block; color: GrayText }
 <div id="choices" role="listbox" aria-label="Commands"></div>
 </section>
 <div id="footer" hidden aria-label="Workspace and context status"><span id="footer-cwd"></span><span id="footer-branch"></span><span id="footer-git" aria-label="Git ahead, behind, changed, untracked, and staged counts"></span><span id="footer-context" aria-label="Context tokens used and window"></span></div>
-<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><textarea id="prompt" aria-label="Message Pi or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea></div>
+<div id="attachment" hidden><img id="preview" alt="Pending image"><span id="image-name"></span><button id="remove-image" type="button">Remove</button></div>
+<input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><textarea id="prompt" aria-label="Message Pi, add an optional image caption, or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea></div>
 <div><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
 <div id="notice" role="status"></div>
 </form>
@@ -70,6 +74,11 @@ const menu = document.getElementById('menu');
 const menuTitle = document.getElementById('menu-title');
 const sessionFilter = document.getElementById('session-filter');
 const choices = document.getElementById('choices');
+const imageFile = document.getElementById('image-file');
+const attachment = document.getElementById('attachment');
+const preview = document.getElementById('preview');
+const imageName = document.getElementById('image-name');
+let pendingImage = null;
 let version = '', leaf = '', timer, noticeTimer, busy = false, submitting = false, accessToken = '';
 let connected = false, stateName = '', recovering = false, menuMode = '', items = [], selected = 0;
 function showNotice(message, temporary = false) {
@@ -77,9 +86,97 @@ function showNotice(message, temporary = false) {
   notice.textContent = message;
   if (temporary) noticeTimer = setTimeout(() => { notice.textContent = ''; }, 2000);
 }
+function removeImage() {
+  if (pendingImage) URL.revokeObjectURL(pendingImage.url);
+  pendingImage = null;
+  preview.removeAttribute('src');
+  attachment.hidden = true;
+  controls();
+}
+async function prepareImage(file, url) {
+  const image = new Image();
+  image.src = url;
+  await image.decode();
+  if (file.size <= 10 * 1024 * 1024) return file;
+  const canvas = document.createElement('canvas');
+  // Keep PNG lossless and retain PNG/WebP transparency. Never enlarge an image
+  for (const edge of [2560, 1920, 1440]) {
+    const scale = Math.min(1, edge / Math.max(image.naturalWidth, image.naturalHeight));
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext('2d');
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, file.type, 0.9));
+    if (!blob) throw new Error('Image encoding failed');
+    if (blob.size <= 10 * 1024 * 1024) return blob;
+  }
+  throw new Error('Image remains too large');
+}
+async function attachImage(file) {
+  removeImage();
+  const image = pendingImage = { file, url: URL.createObjectURL(file), ready: false };
+  const name = file.name || 'Pasted image';
+  preview.hidden = true;
+  imageName.textContent = name + ' · Preparing…';
+  attachment.hidden = false;
+  controls();
+  let error = !file.size ? 'This image file is empty. Choose another image'
+    : !['image/png', 'image/jpeg', 'image/webp'].includes(file.type) ? 'Choose one PNG, JPEG, or WebP image' : '';
+  if (!error) {
+    showNotice('Preparing image…');
+    try {
+      const prepared = await prepareImage(file, image.url);
+      if (pendingImage !== image) return;
+      if (prepared !== file) {
+        URL.revokeObjectURL(image.url);
+        image.url = URL.createObjectURL(prepared);
+      }
+      image.file = prepared;
+      image.ready = true;
+      preview.src = image.url;
+      preview.hidden = false;
+      imageName.textContent = name + (prepared !== file ? ' · Resized' : '');
+      showNotice('Image attached. Add a caption or send the image alone');
+    } catch {
+      error = 'Cannot process this image or resize it below 10 MiB. Choose another PNG, JPEG, or WebP image';
+    }
+  }
+  if (pendingImage !== image) return;
+  if (error) {
+    imageName.textContent = name + ' · Not ready. Choose another image or remove it';
+    showNotice(error);
+  }
+  controls();
+}
+document.getElementById('attach').onclick = () => imageFile.click();
+document.getElementById('remove-image').onclick = removeImage;
+imageFile.onchange = () => {
+  const file = imageFile.files[0];
+  imageFile.value = '';
+  if (file) attachImage(file);
+};
+prompt.addEventListener('paste', event => {
+  const images = Array.from(event.clipboardData?.items || []).filter(item => item.kind === 'file' && item.type.startsWith('image/'));
+  if (!images.length) return;
+  event.preventDefault();
+  if (images.length !== 1) { showNotice('Paste one image at a time'); return; }
+  const file = images[0].getAsFile();
+  if (file) attachImage(file);
+  else showNotice('Cannot read this clipboard image. Use the Image button');
+});
+window.addEventListener('pagehide', removeImage);
+function readImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ mimeType: file.type, data: reader.result.slice(reader.result.indexOf(',') + 1) });
+    reader.onerror = () => reject(new Error('Cannot read this image. Choose it again'));
+    reader.readAsDataURL(file);
+  });
+}
 function controls() {
   const changing = stateName === 'Reloading' || stateName === 'Switching session';
-  send.disabled = !connected || submitting || changing || stateName === 'Compacting';
+  send.disabled = !connected || submitting || changing || stateName === 'Compacting' || !!(pendingImage && !pendingImage.ready);
   stop.disabled = !connected || changing;
   commandButton.disabled = !connected || submitting || changing;
 }
@@ -167,7 +264,7 @@ form.addEventListener('keydown', event => {
 window.addEventListener('resize', resizePrompt);
 resizePrompt();
 async function request(path, options = {}) {
-  const response = await fetch(path, { ...options, cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(15000),
+  const response = await fetch(path, { ...options, cache: 'no-store', credentials: 'omit', signal: options.signal || AbortSignal.timeout(15000),
     headers: { Authorization: 'Bearer ' + accessToken, ...options.headers } });
   if (response.status === 401) {
     sessionStorage.removeItem('pi-remote-access');
@@ -234,20 +331,28 @@ async function poll() {
 }
 form.onsubmit = async event => {
   event.preventDefault();
-  if (!prompt.value.trim() || submitting || !connected) return;
-  const value = prompt.value.trim();
+  if ((!prompt.value.trim() && !pendingImage) || (pendingImage && !pendingImage.ready) || submitting || !connected) return;
+  const text = prompt.value;
+  const value = text.trim();
+  const image = pendingImage;
+  const command = value.startsWith('/');
   closeMenu();
+  if (command && image) { showNotice('Images cannot be attached to slash commands. Remove the image first'); return; }
+  if (new TextEncoder().encode(text).length > 64 * 1024) { showNotice('Text is too large (64 KiB limit)'); return; }
   if (value === '/resume') { await openMenu('sessions'); return; }
   submitting = true;
   controls();
-  const command = value.startsWith('/');
   const queued = busy;
   try {
-    const response = await request(command ? '/command' : '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: command ? value : prompt.value }) });
-    if (prompt.value.trim() === value) {
+    if (image) showNotice('Sending image…');
+    const body = { text: command ? value : text, ...(image ? { image: await readImage(image.file) } : {}) };
+    const response = await request(command ? '/command' : '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(image ? 60000 : 15000) });
+    if (prompt.value === text) {
       prompt.value = '';
       resizePrompt();
     }
+    if (pendingImage === image) removeImage();
     showNotice(command ? await response.text() : queued ? 'Queued' : 'Sent', true);
   } catch (error) { showNotice(error.message + (command ? '. Check the current session before trying again' : '')); }
   finally { submitting = false; version = ''; controls(); }

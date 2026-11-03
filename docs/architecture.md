@@ -603,7 +603,10 @@ the exact Origin. API requests reject cross-site fetch metadata. Authenticated
 API calls require a bearer header, with no cookies or CORS support. The static page
 has no external resources, uses nonce-based CSP, cannot be framed, disables
 caching and referrers, and renders conversation data only with `textContent`.
-Prompt bodies are limited to 64 KiB. Request and header timeouts are 10 seconds
+Text-only and command JSON bodies are limited to 64 KiB. Image prompt JSON
+bodies are limited to 15 MiB, uploaded images to 10 MiB, and decoded text to
+64 KiB UTF-8. Request upload timeout is 60 seconds, header timeout 10 seconds
+CSP permits only blob URLs for images, for the local pending-image preview
 The extension adds no file-serving, tool-execution, or shell endpoint
 
 `extensions/lib/remote-page.ts` provides the mobile page. It polls `/state` at
@@ -625,10 +628,36 @@ footer is part of the version marker, so footer-only changes cannot return 204
 The page renders the data with `textContent` in a compact strip above the
 composer. Transition responses and connection failures hide the strip
 
-`POST /prompt` rejects leading slash commands and submits literal text through
-`pi.sendUserMessage` with `deliverAs: "followUp"` and expansion disabled. Pi's
-normal input hooks still apply. During compaction, prompts receive an explicit
-retry message. `POST /stop` requests `ctx.abort()`
+`POST /prompt` accepts JSON `{ text, image?: { data, mimeType } }`, with one
+base64 PNG, JPEG, or WebP image and an optional caption. Image-only prompts use
+empty text. The server validates base64, source size, format, selected model
+image input support, and `images.blockImages`. It calls public `resizeImage`
+with the selected model's `inputLimits.images.resize`, or Pi's default limits
+This runs even with automatic resizing disabled because queued follow-ups can
+skip Pi's prompt resize path. Decode or resize failures reject the request
+Session replacement, compaction, and model changes during resize require retry
+
+The endpoint rejects leading slash commands and submits literal text or native
+text/image blocks through `pi.sendUserMessage` with `deliverAs: "followUp"` and
+expansion disabled. `/command` also rejects attachments, never discards them
+Pi's normal input hooks still apply. During compaction, prompts receive an
+explicit retry message. `POST /stop` requests `ctx.abort()`
+
+The composer uses a native file picker without forced camera capture and
+intercepts paste only when the clipboard exposes an image. Both paths use the
+same native browser image preparation. Valid images up to 10 MiB keep their
+original bytes. Larger originals are drawn to canvas with a maximum edge of
+2560 pixels, then 1920 or 1440 if needed to fit 10 MiB, without enlargement
+PNG stays lossless, JPEG and WebP use quality 0.9, and PNG/WebP retain transparency
+The server still validates and resizes uploads. Send is blocked during preparation
+or after a preparation error. Failed preparation keeps the selected file visible
+for replacement or removal. An earlier conversion cannot replace a newer selection
+A single pending file has a blob URL preview and Remove button. Replacing, removing, successfully
+submitting an unchanged attachment, or leaving the page revokes its URL
+Failed sends retain the attachment. A changed attachment or caption is not
+cleared by an earlier successful request. Image uploads get a 60-second browser
+deadline, ordinary requests 15 seconds. No upload retry is automatic. Pending
+images are not stored across page exits. History still uses `[Image omitted]`
 
 Typing `/` or pressing the adjacent `/` button opens the same filterable menu
 `GET /commands` returns names and descriptions from `pi.getCommands()` plus
