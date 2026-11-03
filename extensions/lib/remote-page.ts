@@ -8,9 +8,8 @@ export function remotePage(nonce: string) {
 <style nonce="${nonce}">
 :root { color-scheme: light dark; font: 16px system-ui, sans-serif; --control-bg: light-dark(#fafbfc, #1c2026); --control-border: light-dark(#7d8997, #748292); --control-hover: light-dark(#edf1f5, #29313b); --accent-bg: light-dark(#eef4fc, #202f43); --accent-hover: light-dark(#e1ecfa, #2b405c); --accent-border: light-dark(#6b87aa, #6d8eb8); --accent-text: light-dark(#234f85, #b8d6ff) }
 body { max-width: 55rem; margin: auto; padding: 1rem; overflow-wrap: anywhere }
-header { position: sticky; top: 0; background: Canvas; padding: .125rem 0; border-bottom: 1px solid var(--control-border); display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 1rem }
+header { position: sticky; top: 0; background: Canvas; padding: .125rem 0; border-bottom: 1px solid var(--control-border); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 1rem }
 h1 { font-size: 1.5rem; font-weight: 500; line-height: 1; margin: 0; white-space: nowrap }
-#open-changes { margin: 0; padding: .25rem .5rem; font-size: .875rem }
 #status { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: .4rem; font-size: .875rem; text-align: right }
 #status::before { box-sizing: border-box; flex: 0 0 auto; width: .5rem; height: .5rem; border-radius: 50% }
 #status[data-state="Idle"]::before { content: ''; background: GrayText }
@@ -39,19 +38,13 @@ button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #footer-context { margin-left: auto }
 #footer-context[data-color="warning"] { color: light-dark(#805500, #ffc857) }
 #footer-context[data-color="error"] { color: light-dark(#b00020, #ff8797) }
-#composer { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem }
-#composer button { margin: .3rem 0; flex: 0 0 auto }
-#composer #record { margin-left: auto; width: 2.75rem; padding: 0 }
+#composer { display: flex; align-items: center; gap: .25rem }
+#composer button { margin: .3rem 0; flex: 0 0 auto; width: 2.75rem; padding: 0 }
+#composer #record { margin-left: auto }
 #composer svg { width: 1.4rem; height: 1.4rem; vertical-align: middle }
-#voice-cancel { width: 2.75rem; padding: 0 }
 #voice-status { flex: 1; min-width: 0; text-align: center; font-size: .875rem }
 #composer:not([data-voice]) #voice-status, #composer:not([data-voice]) .voice-square, #composer[data-voice] .voice-mic, #composer[data-voice] .idle-action { display: none }
 #composer[data-recording] #voice-status::before { content: ''; display: inline-block; width: .5rem; height: .5rem; margin-right: .5rem; border-radius: 50%; background: light-dark(#b00020, #ff8797) }
-@media (max-width: 400px) {
-  #composer { gap: .25rem }
-  #composer button { padding: .4rem .45rem }
-  #stop .stop-label { display: none }
-}
 .attachment { display: flex; align-items: center; gap: .5rem; padding: .3rem 0 }
 .attachment img { max-width: 6rem; max-height: 6rem; object-fit: contain }
 #menu { border: 1px solid GrayText; padding: .5rem; margin-bottom: .5rem }
@@ -90,7 +83,7 @@ small { display: block; color: GrayText }
   #change-files { flex: 0 1 auto; max-height: 25dvh; border-right: 0; border-bottom: 1px solid GrayText; padding-right: 0 }
 }
 </style>
-<header><h1 aria-label="Pi remote">π</h1><button id="open-changes" type="button" disabled>Changes</button><div id="status" role="status">Connecting</div></header>
+<header><h1 aria-label="Pi remote">π</h1><div id="status" role="status">Connecting</div></header>
 <dialog id="changes" aria-labelledby="changes-title">
 <div id="changes-heading"><h2 id="changes-title">Changes · read-only</h2><button id="refresh-changes" type="button">Refresh</button><button id="close-changes" type="button">Close</button></div>
 <p id="changes-summary" role="status"></p>
@@ -113,7 +106,11 @@ small { display: block; color: GrayText }
 <textarea id="prompt" aria-label="Message Pi or type a command" rows="1" maxlength="60000" placeholder="Message Pi or type a command…"></textarea>
 <div id="composer">
 <button id="voice-cancel" type="button" aria-label="Cancel voice" title="Cancel voice and discard audio" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
-<button id="attach" class="idle-action" type="button" aria-label="Attach up to five images" title="Up to five PNG, JPEG, or WebP images. Large images are resized before upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg></button><button id="stop" class="idle-action" type="button" aria-label="Stop Pi" title="Stop Pi" disabled>Stop<span class="stop-label"> Pi</span></button><button id="commands" class="idle-action" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="send" class="idle-action" disabled>Send</button>
+<button id="attach" class="idle-action" type="button" aria-label="Attach up to five images" title="Up to five PNG, JPEG, or WebP images. Large images are resized before upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg></button>
+<button id="stop" class="idle-action" type="button" aria-label="Stop Pi" title="Stop Pi" disabled><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+<button id="open-changes" class="idle-action" type="button" aria-label="Changes" title="Changes" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M5 7h8M9 3v8M11 17h8"/></svg></button>
+<button id="commands" class="idle-action" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button>
+<button id="send" class="idle-action" aria-label="Send" title="Send" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
 <small id="voice-status" role="status"></small>
 <button id="record" type="button" aria-label="Record a voice message" title="Record a voice message" disabled><svg class="voice-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></svg><svg class="voice-square" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
 </div>
