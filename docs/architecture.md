@@ -688,13 +688,18 @@ cleared by an earlier successful request. Image uploads get a 60-second browser
 deadline, ordinary requests 15 seconds. No upload retry is automatic. Pending
 images are not stored across page exits. History still uses `[Image omitted]`
 
-Typing `/` or pressing the adjacent `/` button opens the same filterable menu
+Only the adjacent `/` button opens the command menu. It lists all commands,
+without filtering from the textarea. Each choice submits immediately without
+focusing the textarea. Typed commands remain manually sendable with arguments
+Opening or closing the menu does not focus a text field
 `GET /commands` returns names and descriptions from `pi.getCommands()` plus
 three supported built-ins: new, reload, and resume. It does not expose source
 paths or system-prompt data. `GET /sessions` uses `SessionManager.list()` for
 the current working directory and active storage directory. It returns IDs,
 display names, modification times, message counts, and the current-session flag
-The browser uses these entries in a searchable resume picker
+The browser uses these entries in a searchable resume picker, opened by choosing
+Resume or sending `/resume`. Search is not focused automatically, and choosing a
+session submits immediately without opening the keyboard
 
 `POST /command` accepts only listed command names while Pi is idle and not
 waiting on a dialog or another remote command. A one-use in-memory request ID

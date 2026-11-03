@@ -85,7 +85,7 @@ small { display: block; color: GrayText }
 <div id="footer" hidden aria-label="Workspace and context status"><span id="footer-cwd"></span><span id="footer-branch"></span><span id="footer-git" aria-label="Git ahead, behind, changed, untracked, and staged counts"></span><span id="footer-context" aria-label="Context tokens used and window"></span></div>
 <div id="attachment" hidden><img id="preview" alt="Pending image"><span id="image-name"></span><button id="remove-image" type="button">Remove</button></div>
 <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-<textarea id="prompt" aria-label="Message Pi or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea>
+<textarea id="prompt" aria-label="Message Pi or type a command" rows="1" maxlength="60000" placeholder="Message Pi or type a command…"></textarea>
 <div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
 <div id="notice" role="status"></div>
 </form>
@@ -341,12 +341,13 @@ function resizePrompt() {
   prompt.style.height = prompt.scrollHeight + prompt.offsetHeight - prompt.clientHeight + 'px';
 }
 function closeMenu() {
+  if (!menu.hidden) commandButton.focus();
   menu.hidden = true;
   menuMode = '';
   commandButton.setAttribute('aria-expanded', 'false');
 }
 function renderChoices() {
-  const query = (menuMode === 'sessions' ? sessionFilter.value : prompt.value.trim().slice(1)).toLowerCase();
+  const query = menuMode === 'sessions' ? sessionFilter.value.toLowerCase() : '';
   const filtered = items.filter(item => (item.label + ' ' + item.description).toLowerCase().includes(query));
   selected = Math.min(selected, Math.max(0, filtered.length - 1));
   choices.replaceChildren(...filtered.map((item, index) => {
@@ -362,8 +363,7 @@ function renderChoices() {
       closeMenu();
       prompt.value = item.value;
       resizePrompt();
-      prompt.focus();
-      if (item.run) form.requestSubmit();
+      form.requestSubmit();
     };
     return button;
   }));
@@ -373,9 +373,10 @@ async function openMenu(mode) {
   menuMode = mode;
   menu.hidden = false;
   commandButton.setAttribute('aria-expanded', 'true');
-  menuTitle.textContent = mode === 'sessions' ? 'Resume session' : 'Commands · type to filter';
+  commandButton.focus();
+  menuTitle.textContent = mode === 'sessions' ? 'Resume session' : 'Commands';
   sessionFilter.hidden = mode !== 'sessions';
-  if (mode === 'sessions') { sessionFilter.value = ''; sessionFilter.focus(); }
+  if (mode === 'sessions') sessionFilter.value = '';
   choices.textContent = 'Loading…';
   selected = 0;
   try {
@@ -384,38 +385,35 @@ async function openMenu(mode) {
     items = mode === 'sessions'
       ? data.filter(item => !item.current).map(item => ({ label: item.name,
           description: new Date(item.modified).toLocaleString() + ' · ' + item.messageCount + ' messages · ' + item.id.slice(0, 8),
-          value: '/resume ' + item.id, run: true }))
+          value: '/resume ' + item.id }))
       : data.map(item => ({ label: '/' + item.name, description: item.description || '',
-          value: '/' + item.name, run: ['new', 'reload', 'resume'].includes(item.name) }));
+          value: '/' + item.name }));
     renderChoices();
   } catch (error) { if (menuMode === mode) choices.textContent = error.message; }
 }
-prompt.addEventListener('input', () => {
-  resizePrompt();
-  if (/^\\/[^\\s]*$/.test(prompt.value.trim())) {
-    selected = 0;
-    if (menuMode === 'commands') renderChoices();
-    else openMenu('commands');
-  } else closeMenu();
-});
+prompt.addEventListener('input', resizePrompt);
 commandButton.onclick = () => {
+  prompt.blur();
   prompt.value = '/';
   resizePrompt();
-  prompt.focus();
   openMenu('commands');
 };
-document.getElementById('close-menu').onclick = () => { closeMenu(); prompt.focus(); };
+document.getElementById('close-menu').onclick = closeMenu;
 sessionFilter.oninput = () => { selected = 0; renderChoices(); };
 form.addEventListener('keydown', event => {
-  if (event.key === 'Escape') { closeMenu(); prompt.focus(); event.preventDefault(); }
-  if (menu.hidden || !['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key) || event.shiftKey) return;
+  if (menu.hidden) return;
+  if (event.key === 'Escape') { closeMenu(); event.preventDefault(); return; }
+  if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key) || event.shiftKey) return;
+  if (event.key === 'Enter' && event.target.tagName === 'BUTTON') return;
   const buttons = choices.querySelectorAll('button');
   if (!buttons.length) return;
   event.preventDefault();
   if (event.key === 'Enter') { buttons[selected].click(); return; }
   selected = (selected + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
   renderChoices();
-  choices.querySelectorAll('button')[selected].scrollIntoView({ block: 'nearest' });
+  const button = choices.querySelectorAll('button')[selected];
+  button.focus({ preventScroll: true });
+  button.scrollIntoView({ block: 'nearest' });
 });
 window.addEventListener('resize', resizePrompt);
 resizePrompt();

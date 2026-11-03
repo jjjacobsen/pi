@@ -262,11 +262,13 @@ A compact strip above the composer
 shows the footer extension's path, branch, Git counters, and context usage
 with the same formatting and warning levels. It is hidden when the footer
 extension is absent or disabled. `/footer` toggles both displays
-Type `/` or press `/` beside the
-composer for the same filterable command menu. `/new`, `/reload`, and `/resume`
-work remotely. Resume opens a searchable list of saved sessions for the current
-working directory. Loaded extension, skill, and template commands are also
-available. Commands require idle Pi. Other built-ins and dialogs need the terminal
+Press `/` beside the composer to open the command menu without the keyboard
+Tap any command to send it immediately. Type commands with flags or arguments
+and press Send without opening the menu. `/new`, `/reload`, and `/resume`
+work remotely. Resume opens saved sessions for the current working directory
+without focusing search. Tap search to filter, or tap a session to resume it
+Loaded extension, skill, and template commands are also available
+Commands require idle Pi. Other built-ins and dialogs need the terminal
 
 The same link follows this Pi process across new, resume, fork, clone, tree
 navigation, compaction, and reload, including changes made in the terminal
