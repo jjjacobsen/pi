@@ -549,7 +549,7 @@ on the connected Tailscale IPv4 address returned by `tailscale status --json`.
 Port zero selects an available port. Nothing starts in the extension factory
 The command shows the current link and QR code if already running. A
 `globalThis` slot keyed by `Symbol.for("jonah.pi.remote")` holds the process-owned
-listener, connection set, startup controller, link, and current API handler
+listener, connection set, startup controller, link, page renderer, and current API handler
 The transport callbacks live outside the extension factory and capture no SDK
 context. `session_shutdown` detaches the session-bound handler and QR widget. For new,
 resume, fork, clone, and reload, the listener and its credentials stay alive,
@@ -557,6 +557,11 @@ with a transition state until `session_start` binds a fresh handler and resets
 live-message, compaction, and dialog state. Old SDK contexts are not used after replacement. This also follows changes initiated
 in the terminal. The extension must load in each replacement runtime, including
 when the working directory changes. Loading it globally meets that requirement
+Each page request calls the current renderer with the listener's original CSP
+nonce. `session_start` binds the newly loaded `remotePage` implementation, so
+browser refresh after reload gets the updated UI without changing the listener,
+link, or credentials. The previous pure renderer stays available during the
+transition and retains no SDK context
 
 `/remote off` and shutdown with reason `quit` abort startup, close the listener
 and all connections, and invalidate the in-memory credentials. Raw sockets are

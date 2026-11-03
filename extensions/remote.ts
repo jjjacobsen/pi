@@ -18,6 +18,7 @@ interface RemoteAccess {
   controller?: AbortController;
   link?: string;
   connections: Set<Socket>;
+  renderPage: typeof remotePage;
   handle?: (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<unknown>;
   hideQr?: () => void;
   transition?: string;
@@ -123,7 +124,6 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
   const token = randomBytes(32).toString("hex");
   const accessToken = randomBytes(32).toString("hex");
   const nonce = randomBytes(16).toString("hex");
-  const page = remotePage(nonce);
   let host: string;
   let origin: string;
 
@@ -140,7 +140,7 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
     const url = new URL(request.url, origin);
     if (request.method === "GET" && url.pathname === "/" && !url.search) {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      return response.end(page);
+      return response.end(access.renderPage(nonce));
     }
     if (request.headers["sec-fetch-site"] === "cross-site") return reply(response, 403, "Cross-site requests are not allowed");
     if (request.method === "POST" && request.headers.origin !== origin) return reply(response, 403, "A same-origin request is required");
@@ -191,7 +191,7 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
 }
 
 export default function (pi: ExtensionAPI) {
-  const access = processState[accessKey] ??= { connections: new Set() };
+  const access = processState[accessKey] ??= { connections: new Set(), renderPage: remotePage };
   const commands = new Map<string, { text: string; resolve: (message: string) => void; reject: (error: Error) => void }>();
   let commandRunning = false;
   let live: AgentMessage;
@@ -298,6 +298,7 @@ export default function (pi: ExtensionAPI) {
     let historyLeaf: string;
     let history = [];
     access.transition = undefined;
+    access.renderPage = remotePage;
     access.hideQr = hideQr;
     const handle = async (request: IncomingMessage, response: ServerResponse, url: URL) => {
       if (request.method === "GET" && url.pathname === "/commands") {
