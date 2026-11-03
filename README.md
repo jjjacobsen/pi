@@ -277,8 +277,10 @@ Binary files, symbolic links, and content over 256 KiB or 5,000 lines are not
 shown. More than 300 changed files requires review in the terminal
 
 A compact strip above the composer
-shows the footer extension's path, branch, Git counters, and context usage
-with the same formatting and warning levels. It is hidden when the footer
+shows the footer extension's path, branch, Git counters, context usage, current
+model, and reasoning level with the same formatting and warning levels
+Long model labels are shortened to fit, with reasoning kept visible
+It is hidden when the footer
 extension is absent or disabled. `/footer` toggles both displays
 Press `/` beside the composer to open the command menu without the keyboard
 Tap any command to send it immediately. Type commands with flags or arguments

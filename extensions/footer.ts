@@ -323,7 +323,12 @@ function footerState(ctx: ExtensionContext, footerData: FooterData): FooterState
 	const contextUsage = ctx.getContextUsage();
 	const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 	const contextTokens = contextUsage?.tokens ?? null;
+	const model = ctx.model;
+	const level = ctx.thinkingLevel || "off";
 	return {
+		model: model?.id || "no-model",
+		modelProvider: model && footerData.getAvailableProviderCount() > 1 ? `(${model.provider})` : "",
+		reasoning: model?.reasoning ? (level === "off" ? "thinking off" : level) : "",
 		cwd: formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE || ""),
 		branch: footerData.getGitBranch(),
 		gitStatus: gitStatus ? gitStatusSuffix(gitStatus).trim() : "",
@@ -375,15 +380,10 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	const left = parts.join("  ");
 
 	// Line 2 right: model + reasoning level
-	const model = ctx.model;
-	const modelName = model?.id || "no-model";
 	let right = "";
-	if (model && footerData.getAvailableProviderCount() > 1) right += theme.fg("dim", `(${model.provider}) `);
-	right += theme.fg("accent", modelName);
-	if (model?.reasoning) {
-		const level = ctx.thinkingLevel || "off";
-		right += theme.fg("dim", ` • ${level === "off" ? "thinking off" : level}`);
-	}
+	if (state.modelProvider) right += theme.fg("dim", `${state.modelProvider} `);
+	right += theme.fg("accent", state.model);
+	if (state.reasoning) right += theme.fg("dim", ` • ${state.reasoning}`);
 	lines.push(justify(left, right, width));
 
 	// Line 3: extension statuses (only when set), same as built-in footer

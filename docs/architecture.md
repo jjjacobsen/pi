@@ -634,9 +634,11 @@ network disconnect. New results start collapsed
 
 Each authenticated `/state` request also reads the footer extension through
 `lib/footer-state.ts`. A synchronous event-bus request returns only formatted
-path, branch, Git counters, context usage, and context color, or null when the
-footer is absent or disabled. The same footer function supplies both displays
-There is no separate Git poll or context calculation in remote. The serialized
+path, branch, Git counters, context usage and color, model ID, provider label,
+and reasoning label, or null when the footer is absent or disabled. The same
+footer function supplies both displays, including provider visibility and
+`thinking off` for reasoning models with thinking disabled
+There is no separate Git poll, context calculation, or model lookup in remote. The serialized
 footer is part of the version marker, so footer-only changes cannot return 204
 The page renders the data with `textContent` in a compact strip above the
 composer. Transition responses and connection failures hide the strip
@@ -881,7 +883,10 @@ before updating, starts at `0.0` for each session, updates during streaming,
 and freezes the last value when idle. A short stream uses its overall average
 
 The model and thinking level are right-aligned. The provider is shown when
-more than one provider is available. Extension statuses use a third line
+more than one provider is available. These display strings also supply the
+remote strip's model row, which shortens long model labels and keeps reasoning
+visible. Non-reasoning models have no reasoning label
+Extension statuses use a third line
 
 The footer starts automatically for TUI sessions. `/footer` switches between
 it and the built-in footer and toggles the remote browser strip. Only the

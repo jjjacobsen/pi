@@ -41,6 +41,9 @@ button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #footer-context { margin-left: auto }
 #footer-context[data-color="warning"] { color: light-dark(#805500, #ffc857) }
 #footer-context[data-color="error"] { color: light-dark(#b00020, #ff8797) }
+#footer-model-status { display: flex; flex: 0 0 100%; min-width: 0; gap: .7rem }
+#footer-model { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+#footer-reasoning { flex-shrink: 0; white-space: nowrap }
 #composer { display: flex; align-items: center; gap: .25rem }
 #composer button { margin: .3rem 0; flex: 0 0 auto; width: 2.75rem; padding: 0 }
 #composer #record { margin-left: auto }
@@ -103,7 +106,7 @@ small { display: block; color: GrayText }
 <input id="session-filter" hidden aria-label="Filter saved sessions" placeholder="Search sessions…">
 <div id="choices" role="listbox" aria-label="Commands"></div>
 </section>
-<div id="footer" hidden aria-label="Workspace and context status"><span id="footer-cwd"></span><span id="footer-branch"></span><span id="footer-git" aria-label="Git ahead, behind, changed, untracked, and staged counts"></span><span id="footer-context" aria-label="Context tokens used and window"></span></div>
+<div id="footer" hidden aria-label="Workspace, context, model, and reasoning status"><span id="footer-cwd"></span><span id="footer-branch"></span><span id="footer-git" aria-label="Git ahead, behind, changed, untracked, and staged counts"></span><span id="footer-context" aria-label="Context tokens used and window"></span><span id="footer-model-status"><span id="footer-model" aria-label="Current model"></span><span id="footer-reasoning" aria-label="Reasoning level"></span></span></div>
 <div id="attachments" aria-label="Pending images"></div>
 <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
 <textarea id="prompt" aria-label="Message Pi or type a command" rows="1" maxlength="60000" placeholder="Message Pi or type a command…"></textarea>
@@ -226,6 +229,8 @@ const footerCwd = document.getElementById('footer-cwd');
 const footerBranch = document.getElementById('footer-branch');
 const footerGit = document.getElementById('footer-git');
 const footerContext = document.getElementById('footer-context');
+const footerModel = document.getElementById('footer-model');
+const footerReasoning = document.getElementById('footer-reasoning');
 const commandButton = document.getElementById('commands');
 const menu = document.getElementById('menu');
 const menuTitle = document.getElementById('menu-title');
@@ -648,6 +653,9 @@ async function poll() {
         footerGit.textContent = state.footer.branch ? state.footer.gitStatus : '';
         footerContext.textContent = state.footer.context;
         footerContext.dataset.color = state.footer.contextColor;
+        footerModel.textContent = footerModel.title = [state.footer.modelProvider, state.footer.model].filter(Boolean).join(' ');
+        footerReasoning.textContent = state.footer.reasoning ? '• ' + state.footer.reasoning : '';
+        footerReasoning.hidden = !state.footer.reasoning;
       }
       stream.textContent = state.live ? state.live.text : '';
       live.hidden = !state.live;

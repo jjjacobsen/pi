@@ -6,6 +6,9 @@ export interface FooterState {
   gitStatus: string;
   context: string;
   contextColor: "dim" | "warning" | "error";
+  model: string;
+  modelProvider: string;
+  reasoning: string;
 }
 
 // The footer answers synchronously with plain display data, never SDK objects
