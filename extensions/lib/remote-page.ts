@@ -16,7 +16,7 @@ pre { white-space: pre-wrap; font: inherit; margin: .3rem 0 }
 #live { border-color: Highlight }
 form { position: sticky; bottom: 0; background: Canvas; padding-top: .5rem }
 textarea, input { box-sizing: border-box; width: 100%; font: inherit; padding: .5rem }
-textarea { display: block; min-height: 2.75rem; max-height: min(10rem, 30dvh); resize: none }
+textarea { display: block; line-height: 1.75rem; max-height: min(10rem, 30dvh); resize: none }
 button { -webkit-appearance: none; appearance: none; box-sizing: border-box; font: inherit; min-width: 2.75rem; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem .3rem .3rem 0; border: 1px solid GrayText; border-radius: .3rem; background: ButtonFace; color: ButtonText }
 button:disabled { color: GrayText }
 button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
@@ -32,9 +32,8 @@ button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #composer #record { margin-left: auto; width: 2.75rem; padding: 0 }
 #composer svg { width: 1.4rem; height: 1.4rem; vertical-align: middle }
 #voice-cancel { width: 2.75rem; padding: 0 }
-#voice-status { flex: 1 1 100%; order: 1; font-size: .875rem }
-#voice-status:empty, #composer:not([data-voice]) .voice-square, #composer[data-voice] .voice-mic, #composer[data-voice] .idle-action { display: none }
-#composer[data-voice] #voice-status { flex: 1; min-width: 0; order: 0; text-align: center }
+#voice-status { flex: 1; min-width: 0; text-align: center; font-size: .875rem }
+#composer:not([data-voice]) #voice-status, #composer:not([data-voice]) .voice-square, #composer[data-voice] .voice-mic, #composer[data-voice] .idle-action { display: none }
 #composer[data-recording] #voice-status::before { content: ''; display: inline-block; width: .5rem; height: .5rem; margin-right: .5rem; border-radius: 50%; background: light-dark(#b00020, #ff8797) }
 @media (max-width: 400px) {
   #composer { gap: .25rem }
@@ -49,7 +48,10 @@ button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #choices button { display: block; width: 100%; text-align: left; margin: .2rem 0 }
 #choices button[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px }
 small { display: block; color: GrayText }
-#notice { min-height: 1.5rem }
+#notice { box-sizing: border-box; position: fixed; inset: calc(5.5rem + env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) auto max(1rem, env(safe-area-inset-left)); max-width: 32rem; max-height: calc(100dvh - 6.5rem - env(safe-area-inset-top) - env(safe-area-inset-bottom)); margin: 0 auto; padding: .5rem .5rem .5rem 1rem; border: 1px solid light-dark(#b00020, #ff8797); border-radius: .3rem; background: Canvas; color: CanvasText; box-shadow: 0 .25rem 1rem #0004; overflow: auto }
+#notice:popover-open { display: flex; align-items: center; gap: .75rem }
+#notice-message { flex: 1; min-width: 0; white-space: pre-wrap }
+#dismiss-notice { flex: 0 0 auto; margin: 0 }
 #changes { box-sizing: border-box; position: fixed; inset: 0; width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: .75rem; border: 0; background: Canvas; color: CanvasText }
 #changes[open] { display: flex; flex-direction: column; gap: .5rem }
 #changes-heading, #change-toolbar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap }
@@ -105,8 +107,8 @@ small { display: block; color: GrayText }
 <button id="record" type="button" aria-label="Record a voice message" title="Record a voice message" disabled><svg class="voice-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></svg><svg class="voice-square" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
 </div>
 <button id="reconnect" type="button" hidden>Reconnect</button>
-<div id="notice" role="status"></div>
 </form>
+<div id="notice" popover="manual"><span id="notice-message" role="alert" aria-live="assertive" aria-atomic="true"></span><button id="dismiss-notice" type="button" aria-label="Dismiss notification">×</button></div>
 <script nonce="${nonce}">
 const status = document.getElementById('status');
 const history = document.getElementById('history');
@@ -123,19 +125,19 @@ const voiceStatus = document.getElementById('voice-status');
 let voice = null;
 const voiceSupported = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined';
 const voiceMime = voiceSupported ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find(type => MediaRecorder.isTypeSupported(type)) : '';
-voiceStatus.textContent = !window.isSecureContext ? 'Voice requires HTTPS' : !voiceMime ? 'Voice is not supported in this browser' : '';
 function releaseMicrophone(job) {
   if (job.recorder && job.recorder.state !== 'inactive') job.recorder.stop();
   job.stream?.getTracks().forEach(track => track.stop());
 }
-function cancelVoice(message = 'Voice cancelled') {
+function cancelVoice(message) {
   if (!voice) return;
   const job = voice;
   voice = null;
   job.controller.abort();
   job.chunks = [];
   releaseMicrophone(job);
-  voiceStatus.textContent = message;
+  voiceStatus.textContent = '';
+  if (message) showError(message);
   controls();
 }
 async function transcribeVoice(job) {
@@ -153,11 +155,10 @@ async function transcribeVoice(job) {
     if (data.text) {
       prompt.value += (prompt.value && !/\\s$/.test(prompt.value) ? ' ' : '') + data.text;
       resizePrompt();
-      voiceStatus.textContent = 'Transcript added. Review, then Send';
-    } else voiceStatus.textContent = 'No speech found. Record again';
-  } catch (error) { if (voice === job) voiceStatus.textContent = error.message; }
+    } else showError('No speech found. Record again');
+  } catch (error) { if (voice === job) showError(error.message); }
   finally {
-    if (voice === job) { voice = null; controls(); }
+    if (voice === job) { voice = null; voiceStatus.textContent = ''; controls(); }
   }
 }
 recordButton.onclick = async () => {
@@ -188,7 +189,7 @@ recordButton.onclick = async () => {
       if (voice !== job) return;
       releaseMicrophone(job);
       if (job.send) transcribeVoice(job);
-      else cancelVoice('Recording discarded');
+      else cancelVoice('Recording stopped. Record again');
     };
     recorder.start(1000);
     voiceStatus.textContent = 'Recording';
@@ -202,6 +203,12 @@ recordButton.onclick = async () => {
 voiceCancel.onclick = () => cancelVoice();
 window.addEventListener('pagehide', () => cancelVoice());
 const notice = document.getElementById('notice');
+const noticeMessage = document.getElementById('notice-message');
+function dismissNotice() {
+  notice.hidePopover();
+  noticeMessage.textContent = '';
+}
+document.getElementById('dismiss-notice').onclick = dismissNotice;
 const form = document.getElementById('form');
 const footer = document.getElementById('footer');
 const footerCwd = document.getElementById('footer-cwd');
@@ -323,11 +330,13 @@ changesButton.onclick = () => {
   chatScroll = window.scrollY;
   changes.showModal();
   document.body.style.overflow = 'hidden';
+  if (notice.matches(':popover-open')) presentNotice();
   refreshChanges();
 };
 document.getElementById('refresh-changes').onclick = refreshChanges;
 document.getElementById('close-changes').onclick = () => changes.close();
 changes.addEventListener('close', () => {
+  if (notice.matches(':popover-open')) presentNotice();
   clearChanges('');
   document.body.style.overflow = '';
   window.scrollTo(0, chatScroll);
@@ -335,12 +344,17 @@ changes.addEventListener('close', () => {
 diffButton.onclick = () => { changeView = 'diff'; if (changePathValue) loadChange(changePathValue); };
 sourceButton.onclick = () => { changeView = 'source'; if (changePathValue) loadChange(changePathValue); };
 let pendingImages = [];
-let version = '', leaf = '', timer, noticeTimer, busy = false, submitting = false, accessToken = '';
+let version = '', leaf = '', timer, submitting = false, accessToken = '';
 let connected = false, stateName = '', recovering = false, menuMode = '', items = [], selected = 0;
-function showNotice(message, temporary = false) {
-  clearTimeout(noticeTimer);
-  notice.textContent = message;
-  if (temporary) noticeTimer = setTimeout(() => { notice.textContent = ''; }, 2000);
+function presentNotice() {
+  // Keep the toast above, and interactive inside, the modal Changes dialog
+  notice.hidePopover();
+  (changes.open ? changes : document.body).append(notice);
+  notice.showPopover();
+}
+function showError(message) {
+  noticeMessage.textContent = message;
+  presentNotice();
 }
 function removeImage(image) {
   if (!pendingImages.includes(image)) return;
@@ -409,17 +423,16 @@ async function attachImage(file) {
   if (!pendingImages.includes(image)) return;
   if (error) {
     label.textContent = name + ' · Not ready. Remove it and choose another image';
-    showNotice(error);
+    showError(error);
   }
   controls();
 }
 function attachImages(files) {
   if (!files.length) return;
   if (pendingImages.length + files.length > 5) {
-    showNotice('Attach up to five images per message. Remove images or choose fewer files');
+    showError('Attach up to five images per message. Remove images or choose fewer files');
     return;
   }
-  showNotice('');
   files.forEach(file => attachImage(file));
 }
 document.getElementById('attach').onclick = () => imageFile.click();
@@ -433,7 +446,7 @@ prompt.addEventListener('paste', event => {
   if (!images.length) return;
   event.preventDefault();
   const files = images.map(item => item.getAsFile());
-  if (files.some(file => !file)) { showNotice('Cannot read these clipboard images. Use the Image button'); return; }
+  if (files.some(file => !file)) { showError('Cannot read these clipboard images. Use the Image button'); return; }
   attachImages(files);
 });
 window.addEventListener('pagehide', () => pendingImages.slice().forEach(removeImage));
@@ -453,7 +466,8 @@ function controls() {
   composer.toggleAttribute('data-voice', !!voice);
   composer.toggleAttribute('data-recording', !!recording);
   recordButton.disabled = voice ? !recording : !connected || !workspace || submitting || changing || !voiceMime;
-  recordButton.title = voice ? (recording ? 'Stop recording and transcribe' : voice.send ? 'Transcribing' : 'Waiting for microphone permission') : 'Record a voice message';
+  recordButton.title = voice ? (recording ? 'Stop recording and transcribe' : voice.send ? 'Transcribing' : 'Waiting for microphone permission')
+    : !window.isSecureContext ? 'Voice requires HTTPS' : !voiceMime ? 'Voice is not supported in this browser' : 'Record a voice message';
   recordButton.setAttribute('aria-label', recordButton.title);
   voiceCancel.hidden = !voice;
   if (!voice && voiceFocused) recordButton.focus();
@@ -462,7 +476,7 @@ function controls() {
   changesButton.disabled = !connected || changing || !workspace;
 }
 function resizePrompt() {
-  prompt.style.height = 'auto';
+  prompt.style.height = '0';
   prompt.style.height = prompt.scrollHeight + prompt.offsetHeight - prompt.clientHeight + 'px';
 }
 function closeMenu() {
@@ -559,10 +573,10 @@ function disconnected(error) {
   workspace = '';
   if (changes.open) clearChanges('Disconnected. Reconnect, then refresh Changes');
   footer.hidden = true;
+  if (!recovering) showError(error.message);
   recovering = true;
   version = '';
   status.textContent = accessToken ? 'Reconnecting…' : 'Disconnected. Open the private /remote link';
-  showNotice(error.message);
   controls();
   reconnect.hidden = false;
   if (accessToken) timer = setTimeout(poll, 1500);
@@ -604,14 +618,13 @@ async function poll() {
       live.hidden = !state.live;
       stateName = state.state;
       status.textContent = stateName + (state.pending ? ' (queued prompts)' : '');
-      busy = stateName !== 'Idle';
       version = state.version;
       if (state.leaf) leaf = state.leaf;
       if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
     }
     connected = true;
     controls();
-    if (recovering) { recovering = false; showNotice(''); }
+    recovering = false;
     reconnect.hidden = true;
     timer = setTimeout(poll, 700);
   } catch (error) { disconnected(error); }
@@ -624,28 +637,25 @@ form.onsubmit = async event => {
   const images = pendingImages.slice();
   const command = value.startsWith('/');
   closeMenu();
-  if (command && images.length) { showNotice('Images cannot be attached to slash commands. Remove the images first'); return; }
-  if (new TextEncoder().encode(text).length > 64 * 1024) { showNotice('Text is too large (64 KiB limit)'); return; }
+  if (command && images.length) { showError('Images cannot be attached to slash commands. Remove the images first'); return; }
+  if (new TextEncoder().encode(text).length > 64 * 1024) { showError('Text is too large (64 KiB limit)'); return; }
   if (value === '/resume') { await openMenu('sessions'); return; }
   submitting = true;
   controls();
-  const queued = busy;
   try {
-    if (images.length) showNotice('Sending images…');
     const body = { text: command ? value : text, ...(images.length ? { images: await Promise.all(images.map(image => readImage(image.file))) } : {}) };
-    const response = await request(command ? '/command' : '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    await request(command ? '/command' : '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body), signal: AbortSignal.timeout(images.length ? 60000 : 15000) });
     if (prompt.value === text) {
       prompt.value = '';
       resizePrompt();
     }
     images.forEach(removeImage);
-    showNotice(command ? await response.text() : queued ? 'Queued' : 'Sent', true);
-  } catch (error) { showNotice(error.message + (command ? '. Check the current session before trying again' : '')); }
+  } catch (error) { showError(error.message + (command ? '. Check the current session before trying again' : '')); }
   finally { submitting = false; version = ''; controls(); }
 };
 stop.onclick = async () => {
-  try { showNotice(await (await request('/stop', { method: 'POST' })).text()); }
+  try { await request('/stop', { method: 'POST' }); }
   catch (error) { disconnected(error); }
 };
 reconnect.onclick = () => { reconnect.hidden = true; version = ''; poll(); };
