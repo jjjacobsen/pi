@@ -226,7 +226,7 @@ indicator. A failed status scan hides the icon
 The design takes inspiration from opencode and omp
 (can1357/oh-my-pi)
 
-### remote - this session in a private browser
+### remote - this Pi process in a private browser
 
 Run `/remote` in the Pi terminal, then scan its QR code with a phone on
 Tailscale or open the text link. QR display needs local `qrencode` and uses
@@ -236,14 +236,21 @@ input and hides when the browser connects. `/remote hide` hides it without
 stopping access. Run `/remote off` to stop access and invalidate the link
 Repeating `/remote` shows the same link and QR code
 
-The mobile page shows active-branch conversation history and live text, accepts
-plain prompts, queues follow-ups while Pi is busy, and has a Stop button. Slash
-commands and extension dialogs need the terminal. Compaction keeps access open
-and retains earlier conversation history. New, resume, fork, clone, reload,
-and shutdown close access. Run `/remote` again in the new session
-Same-tab refresh keeps access through `sessionStorage`, not `localStorage`
-After phone sleep or a network change, use Reconnect or refresh. Closing the
-tab or mobile OS eviction can lose access and require the private link again
+The mobile page shows active-branch history and live text, queues plain prompts
+while Pi is busy, and has a Stop button. Type `/` or press `/` beside the
+composer for the same filterable command menu. `/new`, `/reload`, and `/resume`
+work remotely. Resume opens a searchable list of saved sessions for the current
+working directory. Loaded extension, skill, and template commands are also
+available. Commands require idle Pi. Other built-ins and dialogs need the terminal
+
+The same link follows this Pi process across new, resume, fork, clone, tree
+navigation, compaction, and reload, including changes made in the terminal
+Keep this extension loaded globally so it is available in each working directory
+Only `/remote off` or process exit closes access. Reload status clears when the
+replacement runtime is ready. Polling reconnects automatically after network
+errors, without resending prompts or commands. Same-tab refresh keeps access
+through `sessionStorage`, not `localStorage`. Closing the tab or mobile OS
+eviction can lose access and require the private link again
 
 The server binds only the local Tailscale IPv4 address on an available port.
 It uses browser HTTPS when Tailscale HTTPS certificates are already enabled

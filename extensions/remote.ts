@@ -5,11 +5,30 @@ import { createServer as createHttpServer, type Server, type IncomingMessage, ty
 import { createServer as createHttpsServer } from "node:https";
 import { isIP, type Socket } from "node:net";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { remotePage } from "./lib/remote-page";
 
 const exec = promisify(execFile);
+
+// The transport belongs to this Pi process, not to a replaceable extension runtime
+const accessKey = Symbol.for("jonah.pi.remote");
+interface RemoteAccess {
+  server?: Server;
+  controller?: AbortController;
+  link?: string;
+  connections: Set<Socket>;
+  handle?: (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<unknown>;
+  hideQr?: () => void;
+  transition?: string;
+}
+const processState = globalThis as typeof globalThis & { [accessKey]?: RemoteAccess };
+
+const builtins = [
+  { name: "new", description: "Start a new session" },
+  { name: "reload", description: "Reload Pi resources" },
+  { name: "resume", description: "Choose a saved session" },
+];
 
 async function showQr(ctx: ExtensionContext, link: string, signal: AbortSignal) {
   const helpText = `Scan with a phone on Tailscale. Keep this code and link private\n${link}\nKeep typing below. /remote hide hides this code, /remote off stops access`;
@@ -82,11 +101,99 @@ function reply(response: ServerResponse, status, body = "") {
   response.end(body);
 }
 
+// Listener callbacks retain only process-owned transport data, never an SDK context
+async function start(access: RemoteAccess, signal: AbortSignal) {
+  const status = await exec("tailscale", ["status", "--json"], { timeout: 10_000, signal, maxBuffer: 1024 * 1024 });
+  const tailnet = JSON.parse(status.stdout);
+  const ip = tailnet.Self?.TailscaleIPs?.find((address) => isIP(address) === 4);
+  const octets = ip?.split(".").map(Number);
+  if (tailnet.BackendState !== "Running" || !octets || octets[0] !== 100 || octets[1] < 64 || octets[1] > 127) {
+    throw new Error("A connected Tailscale IPv4 address is required");
+  }
+  const domain = tailnet.Self.DNSName?.replace(/\.$/, "");
+  const https = domain && tailnet.CertDomains?.includes(domain);
+  let pem: string;
+  if (https) {
+    const certificate = await exec("tailscale", ["cert", "--cert-file", "-", "--key-file", "-", domain], {
+      timeout: 60_000, signal, maxBuffer: 64 * 1024,
+    });
+    pem = certificate.stdout;
+  }
+  signal.throwIfAborted();
+  const token = randomBytes(32).toString("hex");
+  const accessToken = randomBytes(32).toString("hex");
+  const nonce = randomBytes(16).toString("hex");
+  const page = remotePage(nonce);
+  let host: string;
+  let origin: string;
+
+  async function handle(request: IncomingMessage, response: ServerResponse) {
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("Referrer-Policy", "no-referrer");
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("X-Frame-Options", "DENY");
+    response.setHeader("Content-Security-Policy", `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
+    if (signal.aborted) return reply(response, 410, "Remote access is off");
+    if (request.headers.host !== host || (request.headers.origin && request.headers.origin !== origin)) {
+      return reply(response, 403, "Invalid host or origin");
+    }
+    const url = new URL(request.url, origin);
+    if (request.method === "GET" && url.pathname === "/" && !url.search) {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      return response.end(page);
+    }
+    if (request.headers["sec-fetch-site"] === "cross-site") return reply(response, 403, "Cross-site requests are not allowed");
+    if (request.method === "POST" && request.headers.origin !== origin) return reply(response, 403, "A same-origin request is required");
+    if (request.method === "POST" && url.pathname === "/auth") {
+      if (!matches(request.headers.authorization, `Bearer ${token}`)) return reply(response, 401, "Invalid remote link");
+      access.hideQr?.();
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      return response.end(JSON.stringify({ accessToken }));
+    }
+    if (!matches(request.headers.authorization, `Bearer ${accessToken}`)) return reply(response, 401, "Open the link from /remote in the terminal");
+    if (access.handle) return access.handle(request, response, url);
+    if (request.method === "GET" && url.pathname === "/state") {
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      return response.end(JSON.stringify({ version: "", state: access.transition, pending: false, live: null }));
+    }
+    return reply(response, 503, access.transition);
+  }
+
+  const listener = (request, response) => {
+    handle(request, response).catch((error) => {
+      if (response.destroyed) return;
+      if (!response.headersSent) reply(response, error instanceof SyntaxError ? 400 : 500, error instanceof SyntaxError ? "Invalid JSON" : "Remote request failed. Check the Pi terminal");
+      else response.destroy();
+    });
+  };
+  const next = https ? createHttpsServer({ cert: pem, key: pem, maxHeaderSize: 8192 }, listener) : createHttpServer({ maxHeaderSize: 8192 }, listener);
+  next.on("connection", (socket) => {
+    access.connections.add(socket);
+    socket.on("close", () => access.connections.delete(socket));
+  });
+  next.requestTimeout = 10_000;
+  next.headersTimeout = 10_000;
+  access.server = next;
+  await new Promise<void>((resolve, reject) => {
+    next.once("error", reject);
+    next.listen(0, ip, () => {
+      next.removeListener("error", reject);
+      resolve();
+    });
+  });
+  signal.throwIfAborted();
+  const address = next.address();
+  if (typeof address !== "object" || !address) throw new Error("Remote listener has no address");
+  host = `${https ? domain : ip}:${address.port}`;
+  origin = `${https ? "https" : "http"}://${host}`;
+  access.link = `${origin}/#${token}`;
+  return https;
+}
+
 export default function (pi: ExtensionAPI) {
-  let server: Server;
-  const connections = new Set<Socket>();
-  let controller: AbortController;
-  let link: string;
+  const access = processState[accessKey] ??= { connections: new Set() };
+  const commands = new Map<string, { text: string; resolve: (message: string) => void; reject: (error: Error) => void }>();
+  let commandRunning = false;
   let live: AgentMessage;
   let liveVersion = 0;
   let compacting = false;
@@ -105,27 +212,34 @@ export default function (pi: ExtensionAPI) {
     hideQr();
     qrController = new AbortController();
     qrContext = ctx;
-    await showQr(ctx, link, qrController.signal);
+    await showQr(ctx, access.link, qrController.signal);
   }
 
   async function stop() {
     hideQr();
-    controller?.abort();
-    controller = undefined;
-    link = undefined;
+    access.controller?.abort();
+    access.controller = undefined;
+    access.link = undefined;
     live = undefined;
-    const previous = server;
-    server = undefined;
+    const previous = access.server;
+    access.server = undefined;
     if (previous) {
       await new Promise<void>((resolve) => {
         previous.close(() => resolve());
         // HTTP closeAllConnections does not close sockets still in the TLS handshake
-        for (const socket of connections) socket.destroy();
+        for (const socket of access.connections) socket.destroy();
       });
     }
   }
 
-  pi.on("session_shutdown", stop);
+  pi.on("session_shutdown", async (event) => {
+    hideQr();
+    // Never retain session-bound SDK objects after replacement
+    access.handle = undefined;
+    access.hideQr = undefined;
+    if (event.reason === "quit") await stop();
+    else access.transition = event.reason === "reload" ? "Reloading" : "Switching session";
+  });
   pi.on("message_start", (event) => {
     if (event.message.role === "assistant") {
       live = event.message;
@@ -149,60 +263,59 @@ export default function (pi: ExtensionAPI) {
   pi.on("ui_prompt_start", () => { waiting = true; });
   pi.on("ui_prompt_end", () => { waiting = false; });
 
-  async function start(ctx: ExtensionContext, signal: AbortSignal) {
-    const status = await exec("tailscale", ["status", "--json"], { timeout: 10_000, signal, maxBuffer: 1024 * 1024 });
-    const tailnet = JSON.parse(status.stdout);
-    const ip = tailnet.Self?.TailscaleIPs?.find((address) => isIP(address) === 4);
-    const octets = ip?.split(".").map(Number);
-    if (tailnet.BackendState !== "Running" || !octets || octets[0] !== 100 || octets[1] < 64 || octets[1] > 127) {
-      throw new Error("A connected Tailscale IPv4 address is required");
+  function commandList() {
+    // getCommands contains extension, prompt, and skill commands, not TUI built-ins
+    return [...builtins, ...pi.getCommands().filter((command) => !builtins.some(({ name }) => command.name === name))]
+      .map(({ name, description }) => ({ name, description }));
+  }
+
+  async function executeCommand(value: string, ctx: ExtensionCommandContext) {
+    const [name, ...args] = value.slice(1).split(/\s+/);
+    if (name === "new") {
+      if (args.length) throw new Error("Usage: /new");
+      return (await ctx.newSession()).cancelled ? "New session cancelled" : "New session started";
     }
-    const domain = tailnet.Self.DNSName?.replace(/\.$/, "");
-    const https = domain && tailnet.CertDomains?.includes(domain);
-    let pem: string;
-    if (https) {
-      const certificate = await exec("tailscale", ["cert", "--cert-file", "-", "--key-file", "-", domain], {
-        timeout: 60_000, signal, maxBuffer: 64 * 1024,
-      });
-      pem = certificate.stdout;
+    if (name === "reload") {
+      if (args.length) throw new Error("Usage: /reload");
+      await ctx.reload();
+      return "Reloaded";
     }
-    signal.throwIfAborted();
-    const token = randomBytes(32).toString("hex");
-    const accessToken = randomBytes(32).toString("hex");
-    const nonce = randomBytes(16).toString("hex");
-    const page = remotePage(nonce);
-    let host: string;
-    let origin: string;
+    if (name === "resume") {
+      const sessions = await SessionManager.list(ctx.cwd, ctx.sessionManager.getSessionDir());
+      const selected = sessions.find((session) => session.id === args[0]);
+      if (args.length !== 1 || !selected) throw new Error("Choose a saved session in the browser");
+      return (await ctx.switchSession(selected.path)).cancelled ? "Resume cancelled" : "Session resumed";
+    }
+    pi.sendUserMessage(value, { expandPromptTemplates: true });
+    return "Command submitted. Check the terminal for dialogs";
+  }
+
+  pi.on("session_start", (_event, ctx) => {
+    live = undefined;
+    liveVersion = 0;
+    compacting = false;
+    waiting = false;
     let historyLeaf: string;
     let history = [];
-
-    async function handle(request: IncomingMessage, response: ServerResponse) {
-      response.setHeader("Cache-Control", "no-store");
-      response.setHeader("Referrer-Policy", "no-referrer");
-      response.setHeader("X-Content-Type-Options", "nosniff");
-      response.setHeader("X-Frame-Options", "DENY");
-      response.setHeader("Content-Security-Policy", `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
-      if (signal.aborted) return reply(response, 410, "Remote access is off");
-      if (request.headers.host !== host || (request.headers.origin && request.headers.origin !== origin)) {
-        return reply(response, 403, "Invalid host or origin");
-      }
-      const url = new URL(request.url, origin);
-      if (request.method === "GET" && url.pathname === "/" && !url.search) {
-        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        return response.end(page);
-      }
-      if (request.headers["sec-fetch-site"] === "cross-site") return reply(response, 403, "Cross-site requests are not allowed");
-      if (request.method === "POST" && request.headers.origin !== origin) return reply(response, 403, "A same-origin request is required");
-      if (request.method === "POST" && url.pathname === "/auth") {
-        if (!matches(request.headers.authorization, `Bearer ${token}`)) return reply(response, 401, "Invalid remote link");
-        hideQr();
+    access.transition = undefined;
+    access.hideQr = hideQr;
+    const handle = async (request: IncomingMessage, response: ServerResponse, url: URL) => {
+      if (request.method === "GET" && url.pathname === "/commands") {
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        return response.end(JSON.stringify({ accessToken }));
+        return response.end(JSON.stringify(commandList()));
       }
-      if (!matches(request.headers.authorization, `Bearer ${accessToken}`)) return reply(response, 401, "Open the link from /remote in the terminal");
+      if (request.method === "GET" && url.pathname === "/sessions") {
+        const currentId = ctx.sessionManager.getSessionId();
+        const sessions = await SessionManager.list(ctx.cwd, ctx.sessionManager.getSessionDir());
+        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        return response.end(JSON.stringify(sessions.map(({ id, name, firstMessage, modified, messageCount }) => ({
+          id, name: name || firstMessage || "Empty session", modified, messageCount,
+          current: id === currentId,
+        }))));
+      }
       if (request.method === "GET" && url.pathname === "/state") {
         hideQr();
-        const leaf = ctx.sessionManager.getLeafId() ?? "root";
+        const leaf = `${ctx.sessionManager.getSessionId()}:${ctx.sessionManager.getLeafId() ?? "root"}`;
         const state = compacting ? "Compacting" : waiting ? "Waiting for a terminal dialog" : ctx.isIdle() ? "Idle" : "Working";
         const pending = ctx.hasPendingMessages();
         const version = `${leaf}:${liveVersion}:${state}:${pending}`;
@@ -227,7 +340,7 @@ export default function (pi: ExtensionAPI) {
         ctx.abort();
         return reply(response, 202, "Stop requested. Check the terminal for dialogs and queued prompts");
       }
-      if (request.method === "POST" && url.pathname === "/prompt") {
+      if (request.method === "POST" && (url.pathname === "/prompt" || url.pathname === "/command")) {
         if (request.headers["content-type"] !== "application/json") return reply(response, 415, "Expected application/json");
         const chunks = [];
         let bytes = 0;
@@ -236,52 +349,50 @@ export default function (pi: ExtensionAPI) {
           if (bytes > 64 * 1024) return reply(response, 413, "Prompt is too large (64 KiB limit)");
           chunks.push(chunk);
         }
-        // Session shutdown or /remote off can occur while the request body is arriving
-        if (signal.aborted) return reply(response, 410, "Remote access is off");
+        // Do not submit a body to a session that was replaced while it arrived
+        if (access.handle !== handle) return reply(response, 409, "Session changed. Check the current session, then send again");
         if (compacting) return reply(response, 409, "Wait for compaction to finish, then send again");
         const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         if (typeof input?.text !== "string" || !input.text.trim()) return reply(response, 400, "Enter a plain text prompt");
-        if (input.text.trimStart().startsWith("/")) return reply(response, 400, "Slash commands are not supported. Use the Pi terminal");
+        if (url.pathname === "/command") {
+          const value = input.text.trim();
+          const name = value.split(/\s+/, 1)[0].slice(1);
+          if (!value.startsWith("/") || !commandList().some((command) => command.name === name)) return reply(response, 400, "Command is not available remotely");
+          if (!ctx.isIdle() || compacting || waiting || commandRunning) return reply(response, 409, "Wait for Pi and any terminal dialog to finish");
+          commandRunning = true;
+          try {
+            // Only command handlers receive the supported session-control context
+            const result = await new Promise<string>((resolve, reject) => {
+              const id = randomBytes(16).toString("hex");
+              commands.set(id, { text: value, resolve, reject });
+              pi.sendUserMessage(`/remote run ${id}`, { expandPromptTemplates: true });
+            });
+            return reply(response, 200, result);
+          } catch (error) {
+            return reply(response, 400, error.message);
+          } finally { commandRunning = false; }
+        }
+        if (input.text.trimStart().startsWith("/")) return reply(response, 400, "Use the command menu for slash commands");
         pi.sendUserMessage(input.text, { deliverAs: "followUp", expandPromptTemplates: false });
         return reply(response, 202, "Submitted to Pi. If busy, Pi queues it as a follow-up");
       }
       return reply(response, 404, "Not found");
-    }
-
-    const listener = (request, response) => {
-      handle(request, response).catch((error) => {
-        if (response.destroyed) return;
-        if (!response.headersSent) reply(response, error instanceof SyntaxError ? 400 : 500, error instanceof SyntaxError ? "Invalid JSON" : "Remote request failed. Check the Pi terminal");
-        else response.destroy();
-      });
     };
-    const next = https ? createHttpsServer({ cert: pem, key: pem, maxHeaderSize: 8192 }, listener) : createHttpServer({ maxHeaderSize: 8192 }, listener);
-    next.on("connection", (socket) => {
-      connections.add(socket);
-      socket.on("close", () => connections.delete(socket));
-    });
-    next.requestTimeout = 10_000;
-    next.headersTimeout = 10_000;
-    server = next;
-    await new Promise<void>((resolve, reject) => {
-      next.once("error", reject);
-      next.listen(0, ip, () => {
-        next.removeListener("error", reject);
-        resolve();
-      });
-    });
-    signal.throwIfAborted();
-    const address = next.address();
-    if (typeof address !== "object" || !address) throw new Error("Remote listener has no address");
-    host = `${https ? domain : ip}:${address.port}`;
-    origin = `${https ? "https" : "http"}://${host}`;
-    link = `${origin}/#${token}`;
-    ctx.ui.notify(`Remote access controls this Pi session with its full permissions. Keep the link private\n${https ? "HTTPS on Tailscale" : "HTTP on Tailscale encrypted transport, NOT browser HTTPS"}`, "warning");
-  }
+
+    access.handle = handle;
+  });
 
   pi.registerCommand("remote", {
     description: "Open this session in a private Tailscale browser, /remote hide, or /remote off",
     handler: async (args, ctx) => {
+      const id = args.trim().slice(4);
+      const pending = args.startsWith("run ") ? commands.get(id) : undefined;
+      if (pending) {
+        commands.delete(id);
+        try { pending.resolve(await executeCommand(pending.text, ctx)); }
+        catch (error) { pending.reject(error); }
+        return;
+      }
       if (args.trim() === "hide") {
         hideQr();
         return;
@@ -293,15 +404,16 @@ export default function (pi: ExtensionAPI) {
       }
       if (args.trim()) return ctx.ui.notify("Usage: /remote [hide|off]", "warning");
       if (ctx.mode !== "tui") return ctx.ui.notify("/remote requires the Pi terminal", "warning");
-      if (controller) {
-        ctx.ui.notify(link ? "Remote access is on" : "Remote access is starting", "info");
-        if (link) await displayQr(ctx);
+      if (access.controller) {
+        ctx.ui.notify(access.link ? "Remote access is on" : "Remote access is starting", "info");
+        if (access.link) await displayQr(ctx);
         return;
       }
-      controller = new AbortController();
-      const signal = controller.signal;
+      access.controller = new AbortController();
+      const signal = access.controller.signal;
       try {
-        await start(ctx, signal);
+        const https = await start(access, signal);
+        ctx.ui.notify(`Remote access controls this Pi process with its full permissions. Keep the link private\n${https ? "HTTPS on Tailscale" : "HTTP on Tailscale encrypted transport, NOT browser HTTPS"}`, "warning");
       } catch (error) {
         if (signal.aborted) return;
         await stop();

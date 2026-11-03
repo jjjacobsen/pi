@@ -15,15 +15,29 @@ article { margin: 1rem 0; border-left: 2px solid GrayText; padding-left: .75rem 
 pre { white-space: pre-wrap; font: inherit; margin: .3rem 0 }
 #live { border-color: Highlight }
 form { position: sticky; bottom: 0; background: Canvas; padding-top: .5rem }
-textarea { box-sizing: border-box; width: 100%; min-height: 2.75rem; max-height: min(10rem, 30dvh); resize: none; font: inherit; padding: .5rem }
+textarea, input { box-sizing: border-box; width: 100%; font: inherit; padding: .5rem }
+textarea { min-height: 2.75rem; max-height: min(10rem, 30dvh); resize: none }
 button { font: inherit; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem .3rem .3rem 0 }
+#composer { display: flex; align-items: end; gap: .4rem }
+#commands { margin: 0; flex: 0 0 auto }
+#menu { border: 1px solid GrayText; padding: .5rem; margin-bottom: .5rem }
+#menu-heading { display: flex; align-items: center; justify-content: space-between }
+#choices { max-height: 30dvh; overflow-y: auto }
+#choices button { display: block; width: 100%; text-align: left; margin: .2rem 0 }
+#choices button[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px }
+small { display: block; color: GrayText }
 #notice { min-height: 1.5rem }
 </style>
 <header><h1>Pi remote</h1><div id="status" role="status">Connecting</div></header>
 <main id="history" aria-label="Conversation history"></main>
 <article id="live" hidden><strong>Pi (live)</strong><pre id="stream"></pre></article>
 <form id="form">
-<textarea id="prompt" aria-label="Message Pi" rows="1" maxlength="60000" placeholder="Message Pi…"></textarea>
+<section id="menu" hidden aria-label="Command menu">
+<div id="menu-heading"><strong id="menu-title">Commands</strong><button id="close-menu" type="button" aria-label="Close menu">Close</button></div>
+<input id="session-filter" hidden aria-label="Filter saved sessions" placeholder="Search sessions…">
+<div id="choices" role="listbox" aria-label="Commands"></div>
+</section>
+<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><textarea id="prompt" aria-label="Message Pi or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea></div>
 <div><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
 <div id="notice" role="status"></div>
 </form>
@@ -37,17 +51,106 @@ const send = document.getElementById('send');
 const stop = document.getElementById('stop');
 const reconnect = document.getElementById('reconnect');
 const notice = document.getElementById('notice');
+const form = document.getElementById('form');
+const commandButton = document.getElementById('commands');
+const menu = document.getElementById('menu');
+const menuTitle = document.getElementById('menu-title');
+const sessionFilter = document.getElementById('session-filter');
+const choices = document.getElementById('choices');
 let version = '', leaf = '', timer, noticeTimer, busy = false, submitting = false, accessToken = '';
+let connected = false, stateName = '', recovering = false, menuMode = '', items = [], selected = 0;
 function showNotice(message, temporary = false) {
   clearTimeout(noticeTimer);
   notice.textContent = message;
   if (temporary) noticeTimer = setTimeout(() => { notice.textContent = ''; }, 2000);
 }
+function controls() {
+  const changing = stateName === 'Reloading' || stateName === 'Switching session';
+  send.disabled = !connected || submitting || changing || stateName === 'Compacting';
+  stop.disabled = !connected || changing;
+  commandButton.disabled = !connected || submitting || changing;
+}
 function resizePrompt() {
   prompt.style.height = 'auto';
   prompt.style.height = prompt.scrollHeight + prompt.offsetHeight - prompt.clientHeight + 'px';
 }
-prompt.addEventListener('input', resizePrompt);
+function closeMenu() {
+  menu.hidden = true;
+  menuMode = '';
+  commandButton.setAttribute('aria-expanded', 'false');
+}
+function renderChoices() {
+  const query = (menuMode === 'sessions' ? sessionFilter.value : prompt.value.trim().slice(1)).toLowerCase();
+  const filtered = items.filter(item => (item.label + ' ' + item.description).toLowerCase().includes(query));
+  selected = Math.min(selected, Math.max(0, filtered.length - 1));
+  choices.replaceChildren(...filtered.map((item, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', String(index === selected));
+    button.textContent = item.label;
+    const description = document.createElement('small');
+    description.textContent = item.description;
+    button.append(description);
+    button.onclick = () => {
+      closeMenu();
+      prompt.value = item.value;
+      resizePrompt();
+      prompt.focus();
+      if (item.run) form.requestSubmit();
+    };
+    return button;
+  }));
+  if (!filtered.length) choices.textContent = menuMode === 'sessions' ? 'No saved sessions match' : 'No remote commands match';
+}
+async function openMenu(mode) {
+  menuMode = mode;
+  menu.hidden = false;
+  commandButton.setAttribute('aria-expanded', 'true');
+  menuTitle.textContent = mode === 'sessions' ? 'Resume session' : 'Commands · type to filter';
+  sessionFilter.hidden = mode !== 'sessions';
+  if (mode === 'sessions') { sessionFilter.value = ''; sessionFilter.focus(); }
+  choices.textContent = 'Loading…';
+  selected = 0;
+  try {
+    const data = await (await request(mode === 'sessions' ? '/sessions' : '/commands')).json();
+    if (menuMode !== mode) return;
+    items = mode === 'sessions'
+      ? data.filter(item => !item.current).map(item => ({ label: item.name,
+          description: new Date(item.modified).toLocaleString() + ' · ' + item.messageCount + ' messages · ' + item.id.slice(0, 8),
+          value: '/resume ' + item.id, run: true }))
+      : data.map(item => ({ label: '/' + item.name, description: item.description || '',
+          value: '/' + item.name, run: ['new', 'reload', 'resume'].includes(item.name) }));
+    renderChoices();
+  } catch (error) { if (menuMode === mode) choices.textContent = error.message; }
+}
+prompt.addEventListener('input', () => {
+  resizePrompt();
+  if (/^\\/[^\\s]*$/.test(prompt.value.trim())) {
+    selected = 0;
+    if (menuMode === 'commands') renderChoices();
+    else openMenu('commands');
+  } else closeMenu();
+});
+commandButton.onclick = () => {
+  prompt.value = '/';
+  resizePrompt();
+  prompt.focus();
+  openMenu('commands');
+};
+document.getElementById('close-menu').onclick = () => { closeMenu(); prompt.focus(); };
+sessionFilter.oninput = () => { selected = 0; renderChoices(); };
+form.addEventListener('keydown', event => {
+  if (event.key === 'Escape') { closeMenu(); prompt.focus(); event.preventDefault(); }
+  if (menu.hidden || !['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key) || event.shiftKey) return;
+  const buttons = choices.querySelectorAll('button');
+  if (!buttons.length) return;
+  event.preventDefault();
+  if (event.key === 'Enter') { buttons[selected].click(); return; }
+  selected = (selected + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+  renderChoices();
+  choices.querySelectorAll('button')[selected].scrollIntoView({ block: 'nearest' });
+});
 window.addEventListener('resize', resizePrompt);
 resizePrompt();
 async function request(path, options = {}) {
@@ -62,12 +165,17 @@ async function request(path, options = {}) {
 }
 function disconnected(error) {
   clearTimeout(timer);
-  status.textContent = 'Disconnected. Run /remote in the terminal if access is off';
+  connected = false;
+  recovering = true;
+  version = '';
+  status.textContent = accessToken ? 'Reconnecting…' : 'Disconnected. Open the private /remote link';
   showNotice(error.message);
-  send.disabled = stop.disabled = true;
+  controls();
   reconnect.hidden = false;
+  if (accessToken) timer = setTimeout(poll, 1500);
 }
 async function poll() {
+  clearTimeout(timer);
   try {
     const response = await request('/state?' + new URLSearchParams({ version, leaf }));
     if (response.status !== 204) {
@@ -87,34 +195,39 @@ async function poll() {
       }
       stream.textContent = state.live ? state.live.text : '';
       live.hidden = !state.live;
-      status.textContent = state.state + (state.pending ? ' (queued prompts)' : '');
-      busy = state.state !== 'Idle';
-      send.disabled = submitting || state.state === 'Compacting';
-      stop.disabled = false;
+      stateName = state.state;
+      status.textContent = stateName + (state.pending ? ' (queued prompts)' : '');
+      busy = stateName !== 'Idle';
       version = state.version;
-      leaf = state.leaf;
+      if (state.leaf) leaf = state.leaf;
       if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
     }
+    connected = true;
+    controls();
+    if (recovering) { recovering = false; showNotice(''); }
     reconnect.hidden = true;
     timer = setTimeout(poll, 700);
   } catch (error) { disconnected(error); }
 }
-document.getElementById('form').onsubmit = async event => {
+form.onsubmit = async event => {
   event.preventDefault();
-  if (!prompt.value.trim() || submitting) return;
+  if (!prompt.value.trim() || submitting || !connected) return;
+  const value = prompt.value.trim();
+  closeMenu();
+  if (value === '/resume') { await openMenu('sessions'); return; }
   submitting = true;
-  send.disabled = true;
-  const value = prompt.value;
+  controls();
+  const command = value.startsWith('/');
   const queued = busy;
   try {
-    await request('/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: value }) });
-    if (prompt.value === value) {
+    const response = await request(command ? '/command' : '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: command ? value : prompt.value }) });
+    if (prompt.value.trim() === value) {
       prompt.value = '';
       resizePrompt();
     }
-    showNotice(queued ? 'Queued' : 'Sent', true);
-  } catch (error) { showNotice(error.message); }
-  finally { submitting = false; version = ''; }
+    showNotice(command ? await response.text() : queued ? 'Queued' : 'Sent', true);
+  } catch (error) { showNotice(error.message + (command ? '. Check the current session before trying again' : '')); }
+  finally { submitting = false; version = ''; controls(); }
 };
 stop.onclick = async () => {
   try { showNotice(await (await request('/stop', { method: 'POST' })).text()); }

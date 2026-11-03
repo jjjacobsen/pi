@@ -67,7 +67,7 @@ go to both selected model providers
 
 ## Remote browser
 
-`/remote` needs Pi 1.5.0 or newer for session replacement cleanup, the Tailscale
+`/remote` needs Pi 1.5.0 or newer for session replacement lifecycle events, the Tailscale
 CLI in Pi's PATH, a connected local Tailscale daemon with an IPv4 address, and a
 browser device on the same tailnet. Tailnet ACLs or grants must permit that
 device to reach the host's selected port. Each start uses a new available port
@@ -77,6 +77,10 @@ The non-blocking QR widget needs enough terminal space for the whole code and
 editor. `/remote hide` hides it without stopping access. Browser connection
 also hides it
 No extra npm package, API key, environment variable, or system service is needed
+Load this extension globally to keep access working when a terminal session
+switch enters another working directory. If the replacement runtime does not
+load it, the listener cannot bind to that session and shows a transition status
+until the extension loads again or the process exits
 
 Private browser HTTPS works without Serve when Tailscale HTTPS certificates
 are already enabled and the current OS user can run `tailscale cert` for this
@@ -104,10 +108,21 @@ sandbox. The extension writes no extra session data or credentials to this repo
 Normal Pi session persistence is unchanged. The browser keeps its credential in
 same-tab `sessionStorage` so refresh restores access, with caching disabled and
 no cookies or `localStorage`. A new private link replaces the old credential
-Phone sleep or a network change can pause polling. Use Reconnect or refresh
-Neither resends prompts. Tab closure or mobile OS eviction can require the
-private terminal link again, but does not stop Pi or the listener. `/remote off`,
-session replacement, reload, and Pi shutdown close access
+Phone sleep or a network change can pause polling. Polling retries automatically
+Reconnect or refresh also works. None of these paths resend prompts or commands
+Tab closure or mobile OS eviction can require the private terminal link again,
+but does not stop Pi or the listener. Session replacement and reload keep the
+same listener, link, and browser credential. `/remote off` and process exit close
+access and invalidate the link
+
+Type `/` or use the `/` button beside the composer for remote commands. New,
+reload, and resume use Pi's supported command-context methods. Resume lists
+saved sessions in the current working directory and honors the active session
+storage directory. Other listed commands come from loaded extensions, skills,
+and templates. Commands require idle Pi. Other terminal built-ins and extension
+dialogs are not implemented in the browser. A command can still need terminal
+confirmation. Do not retry a command after a timeout until you check the current
+session, since it can have completed
 
 ## Local resources
 

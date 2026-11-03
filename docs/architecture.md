@@ -547,11 +547,21 @@ refreshes are ignored, and results that arrive after close are discarded
 `/remote` starts one Node HTTP(S) listener inside the existing Pi process, only
 on the connected Tailscale IPv4 address returned by `tailscale status --json`.
 Port zero selects an available port. Nothing starts in the extension factory
-The command shows the current link and QR code if already running. `/remote off` and
-`session_shutdown` abort startup, close the listener and all connections, and
-invalidate its in-memory credentials. Raw sockets are tracked so shutdown also
-closes connections that have not completed a TLS handshake. Pi 1.5 session replacement closes access
-for new, resume, fork, clone, and reload as well as exit. No system service or
+The command shows the current link and QR code if already running. A
+`globalThis` slot keyed by `Symbol.for("jonah.pi.remote")` holds the process-owned
+listener, connection set, startup controller, link, and current API handler
+The transport callbacks live outside the extension factory and capture no SDK
+context. `session_shutdown` detaches the session-bound handler and QR widget. For new,
+resume, fork, clone, and reload, the listener and its credentials stay alive,
+with a transition state until `session_start` binds a fresh handler and resets
+live-message, compaction, and dialog state. Old SDK contexts are not used after replacement. This also follows changes initiated
+in the terminal. The extension must load in each replacement runtime, including
+when the working directory changes. Loading it globally meets that requirement
+
+`/remote off` and shutdown with reason `quit` abort startup, close the listener
+and all connections, and invalidate the in-memory credentials. Raw sockets are
+tracked so shutdown also closes connections still in the TLS handshake. Actual
+process exit also removes the listener and its memory. No system service or
 additional session-data files are created
 
 If the node's DNS name is in Tailscale's enabled certificate domains, the
@@ -592,8 +602,9 @@ Prompt bodies are limited to 64 KiB. Request and header timeouts are 10 seconds
 The extension adds no file-serving, tool-execution, or shell endpoint
 
 `extensions/lib/remote-page.ts` provides the mobile page. It polls `/state` at
-700 ms with version and leaf markers. Unchanged state returns 204, and history
-is sent only when the leaf changes. Raw `getBranch()` entries supply the active
+700 ms with version and leaf markers. The leaf marker includes the session ID
+so two empty sessions cannot share a marker. Unchanged state returns 204, and
+history is sent only when the marker changes. Raw `getBranch()` entries supply the active
 branch history, including old messages and markers after compaction. It does
 not use the compacted model projection or include abandoned branches, system
 prompts, thinking blocks, or image bytes. Message events retain the current
@@ -603,12 +614,36 @@ closing the listener. Tree navigation refreshes history on the next poll
 `POST /prompt` rejects leading slash commands and submits literal text through
 `pi.sendUserMessage` with `deliverAs: "followUp"` and expansion disabled. Pi's
 normal input hooks still apply. During compaction, prompts receive an explicit
-retry message. `POST /stop` requests `ctx.abort()`. The page reports terminal
-UI waits but does not implement dialogs. Submission acknowledges dispatch, not
-model completion. Asynchronous SDK or model errors remain in the terminal or
-conversation. A network error stops polling until Reconnect is pressed or the
-page is refreshed. Neither recovery path resends prompts. Tab closure or mobile
-OS eviction can require the private link again. Phone sleep does not stop Pi
+retry message. `POST /stop` requests `ctx.abort()`
+
+Typing `/` or pressing the adjacent `/` button opens the same filterable menu
+`GET /commands` returns names and descriptions from `pi.getCommands()` plus
+three supported built-ins: new, reload, and resume. It does not expose source
+paths or system-prompt data. `GET /sessions` uses `SessionManager.list()` for
+the current working directory and active storage directory. It returns IDs,
+display names, modification times, message counts, and the current-session flag
+The browser uses these entries in a searchable resume picker
+
+`POST /command` accepts only listed command names while Pi is idle and not
+waiting on a dialog or another remote command. A one-use in-memory request ID
+routes through `/remote run <id>` via `pi.sendUserMessage` with expansion enabled
+This obtains a supported `ExtensionCommandContext`, rather than pretending
+that prompt text can execute terminal built-ins. The handler calls
+`ctx.newSession()`, `ctx.reload()`, or `ctx.switchSession()` for the three
+built-ins. Resume resolves a listed session ID to its path on the server
+Cancellation and synchronous command errors return to the browser. Other listed
+commands dispatch through Pi's normal extension, skill, and template handling
+No unsupported built-in is sent to the model as a fallback. Request bodies that
+span session replacement are rejected instead of using stale SDK objects
+
+The page reports terminal UI waits but does not implement dialogs. Prompt and
+resource-command submission acknowledges dispatch, not model completion
+Asynchronous SDK or model errors remain in the terminal or conversation
+Polling retries network failures automatically with the same credential and
+resets transition status from fresh state. Authentication failure clears the
+credential and requires the private link again. Recovery never resends prompts
+or commands. A timed-out command can still finish. Tab closure or mobile OS
+eviction can require the private link again. Phone sleep does not stop Pi
 
 # Search extension (`extensions/search.ts`)
 
