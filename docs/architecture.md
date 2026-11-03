@@ -605,7 +605,9 @@ has no external resources, uses nonce-based CSP, cannot be framed, disables
 caching and referrers, and renders conversation data only with `textContent`.
 Text-only and command JSON bodies are limited to 64 KiB. Image prompt JSON
 bodies are limited to 15 MiB, uploaded images to 10 MiB, and decoded text to
-64 KiB UTF-8. Request upload timeout is 60 seconds, header timeout 10 seconds
+64 KiB UTF-8. Non-voice request uploads have a per-request 60-second deadline
+Authenticated voice uploads are exempt. Node's shared requestTimeout is disabled
+because it cannot exempt one request. Header timeout stays at 10 seconds
 CSP permits only blob URLs for images, for the local pending-image preview
 The extension adds no general file-serving, tool-execution, or shell endpoint
 
@@ -687,6 +689,51 @@ Failed sends retain the attachment. A changed attachment or message is not
 cleared by an earlier successful request. Image uploads get a 60-second browser
 deadline, ordinary requests 15 seconds. No upload retry is automatic. Pending
 images are not stored across page exits. History still uses `[Image omitted]`
+
+`POST /transcribe?workspace=<id>` accepts authenticated WebM or MP4 audio,
+never a prompt. `lib/remote-voice.ts` reads the version-1 Pi Voice settings at
+`~/.pi/agent/pi-voice.json` and dynamically imports the public
+`~/.pi/agent/npm/node_modules/transcribe-cpp/dist/index.js` entry
+It does not import Pi Voice source or share its
+model. The configured backend must be transcribe-cpp. Model path and language
+are read on each request, with `auto` mapped to library language detection
+The public `TranscribeModel.load`, `model.transcribe` with `timestamps: none`
+and an abort signal, and `model.dispose` handle inference without downloads
+
+One process-owned voice slot holds only an abort controller and completion
+promise. Concurrent requests are refused, not queued. Shutdown, reload,
+session replacement, remote off, and client disconnect abort the request
+Shutdown waits for cleanup, so replacement cannot start another model load. Native load has no cancellation parameter, so it must finish
+before disposal. Native inference cancellation is cooperative
+Uploads stream to a private temporary file with backpressure, without a size or
+upload deadline. Spawned `/usr/bin/ffmpeg` decodes the full recording to a temporary
+mono 16 kHz f32le file, without a duration cap, process deadline, or exec output
+buffer. It retains file/pipe protocols only and no shell. Cancellation kills
+FFmpeg and waits for close before cleanup. Both files are removed in `finally`
+The decoded file streams into one full Float32Array, without readFile's fixed
+per-file ceiling or a second full PCM copy
+The model is disposed after every transcription, including errors and aborts
+There is no imposed voice processing deadline. Browser recording memory, host
+disk and RAM, runtime buffer limits, and the selected model remain practical limits
+The configured Parakeet Unified model reports maxAudioMs and effectiveMaxAudioMs
+as zero, meaning no model audio-length cap. Its offline call uses full attention
+in one pass, not an automatic long-form chunker, so compute memory grows with audio
+Other models can reject long input or report output truncation
+
+The HTTPS page detects MediaRecorder WebM/Opus or MP4 support and requests the
+phone microphone only on Record. Stop recording uploads once. Cancel voice
+during recording clears local chunks without upload or inference. There is no
+recording duration or byte cap, auto-stop timer, or transcription fetch deadline
+Recording chunks stay in browser memory until Stop recording or cancellation
+All finish, cancel, error, and pagehide paths stop microphone tracks, including
+late permission grants
+A separate voice status and Stop recording/Cancel voice buttons avoid confusion
+with Stop Pi. Cancel also aborts a pending upload or inference request
+The returned transcript is appended to the latest textarea text with a separator,
+without submission, input events, focus changes, or automatic command menus
+Workspace markers and handler identity reject stale work. Browser workspace
+changes and disconnects cancel voice, so an old response cannot alter a new
+session's composer. No audio is persisted in browser storage or Pi sessions
 
 Only the adjacent `/` button opens the command menu. It lists all commands,
 without filtering from the textarea. Each choice submits immediately without

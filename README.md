@@ -247,6 +247,16 @@ The selected model must accept images and `images.blockImages` must be false
 Slash commands reject attachments. Failed sends keep the image for retry
 Unsent images stay only in the page and are lost on refresh or page exit
 
+On HTTPS, press 🎙 Record to use the phone microphone. Stop recording uploads
+and transcribes on the Pi host, then appends text to the editable composer
+It never sends the text automatically. Cancel voice discards recording locally
+without upload, or cancels a pending transcription. Stop Pi only stops the agent
+Voice has no imposed recording duration, audio size, upload, or processing timeout
+Browser memory, host disk/RAM, and the selected model still limit recording length
+Voice uses the current Pi Voice transcribe-cpp model and language through the public
+[transcribe-cpp API](https://github.com/handy-computer/transcribe.cpp), with a
+separate model instance that is unloaded after each request. Pi Voice is unchanged
+
 Press Changes in the header for a full-screen, read-only review of the current
 repository. It lists staged, unstaged, and untracked files with combined line
 counts against HEAD. Select a file for a red/green unified diff with line

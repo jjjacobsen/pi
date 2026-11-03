@@ -76,7 +76,8 @@ the text link still works. No QR data goes to a network service or file
 The non-blocking QR widget needs enough terminal space for the whole code and
 editor. `/remote hide` hides it without stopping access. Browser connection
 also hides it
-No extra npm package, API key, environment variable, or system service is needed
+Text, images, and Changes need no extra npm package, API key, environment
+variable, or system service
 The read-only Changes viewer needs Git in Pi's PATH and a repository in the
 current session directory. It uses the same authenticated listener and reads
 only changed files in that repository. No GitHub service or credentials are
@@ -91,7 +92,41 @@ dependencies. The uploaded image must fit the server's 10 MiB limit. Images that
 the browser cannot decode or resize stay unsent with an error
 Submitted images go to the model provider and normal Pi session storage
 After updating an already-running remote listener, use `/remote off`, then
-`/remote` to apply the new image-preview CSP and upload timeout
+`/remote` to apply the image-preview CSP and upload timeout if not already done
+For uncapped voice, run `/reload`, `/remote off`, then `/remote` and open the new
+link. Refresh the phone page. The listener must restart to replace the shared
+upload timeout with a per-request deadline that exempts authenticated voice
+
+Voice needs browser HTTPS, microphone permission, and MediaRecorder support
+for WebM/Opus or MP4, including Safari's MP4 recording. HTTP over Tailscale is
+not a secure browser context and cannot use the microphone
+The host needs `/usr/bin/ffmpeg`, the installed public module at
+`~/.pi/agent/npm/node_modules/transcribe-cpp/dist/index.js`, its native runtime, and
+`~/.pi/agent/pi-voice.json` version 1 with `backend.type: transcribe-cpp`, a
+readable local `model.path`, and `transcriptionLanguage`. Select and download
+the model through `/voice-settings` first. Settings are read for each request
+No Pi Voice source is imported or changed, and no model is downloaded by remote
+Other backends fail with an error. The separate remote model adds memory use
+and load time, with one remote request at a time and disposal after each request
+Voice has no imposed recording duration, audio byte cap, upload deadline, FFmpeg
+deadline, or processing timeout. Encoded uploads stream to disk, and FFmpeg writes
+the full decoded PCM to disk before inference. Allow disk space for both files
+Browser recording memory, host RAM/disk, runtime buffer limits, and model limits
+still apply. PCM needs 64,000 bytes per second, about 38.4 MB for ten minutes,
+plus native model compute memory. The native call borrows a full Float32Array
+The current Parakeet Unified model reports no audio-length cap through the public
+API, but its offline full-attention pass can exhaust memory on long recordings
+Other models can have input or output limits. See the upstream
+[audio input limits](https://github.com/handy-computer/transcribe.cpp/blob/main/docs/input-limits.md)
+Native model loading has no abort API. Cancellation waits for load to finish,
+then disposes the model before another request can start
+Cancel voice during recording discards audio without upload. Leaving the page,
+connection loss, or session replacement also discards recording
+Stop recording uploads once, appends the transcript to current typed text, and
+never sends it. Temporary host audio files are removed after processing
+Audio never enters Pi history. Transcript text enters normal Pi history only
+when the user presses Send
+
 Load this extension globally to keep access working when a terminal session
 switch enters another working directory. If the replacement runtime does not
 load it, the listener cannot bind to that session and shows a transition status

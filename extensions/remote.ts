@@ -8,6 +8,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { resizeImage, SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { remotePage } from "./lib/remote-page";
+import { transcribeRemoteAudio } from "./lib/remote-voice";
 import { readChange, readChanges } from "./lib/remote-changes";
 import { readFooterState } from "./lib/footer-state";
 import { imageFormat } from "./lib/image-providers";
@@ -28,6 +29,7 @@ interface RemoteAccess {
   handle?: (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<unknown>;
   hideQr?: () => void;
   transition?: string;
+  voice?: { controller: AbortController; done: Promise<string> };
 }
 const processState = globalThis as typeof globalThis & { [accessKey]?: RemoteAccess };
 
@@ -134,6 +136,16 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
   let origin: string;
 
   async function handle(request: IncomingMessage, response: ServerResponse) {
+    // Node's server.requestTimeout cannot exempt one upload. Keep the existing
+    // deadline here, then remove it only for authenticated voice requests
+    const uploadTimeout = setTimeout(() => {
+      if (request.complete) return;
+      if (!response.headersSent) reply(response, 408, "Request upload timed out");
+      request.destroy();
+    }, 60_000);
+    const uploaded = () => clearTimeout(uploadTimeout);
+    request.once("end", uploaded);
+    request.once("close", uploaded);
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -157,7 +169,10 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
       return response.end(JSON.stringify({ accessToken }));
     }
     if (!matches(request.headers.authorization, `Bearer ${accessToken}`)) return reply(response, 401, "Open the link from /remote in the terminal");
-    if (access.handle) return access.handle(request, response, url);
+    if (access.handle) {
+      if (request.method === "POST" && url.pathname === "/transcribe") clearTimeout(uploadTimeout);
+      return access.handle(request, response, url);
+    }
     if (request.method === "GET" && url.pathname === "/state") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       return response.end(JSON.stringify({ version: "", state: access.transition, pending: false, live: null, footer: null }));
@@ -177,7 +192,7 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
     access.connections.add(socket);
     socket.on("close", () => access.connections.delete(socket));
   });
-  next.requestTimeout = 60_000;
+  next.requestTimeout = 0;
   next.headersTimeout = 10_000;
   access.server = next;
   await new Promise<void>((resolve, reject) => {
@@ -221,12 +236,20 @@ export default function (pi: ExtensionAPI) {
     await showQr(ctx, access.link, qrController.signal);
   }
 
+  async function stopVoice() {
+    const voice = access.voice;
+    voice?.controller.abort();
+    // Loading has no cancellation API. Keep the slot until cleanup finishes
+    if (voice) await voice.done.catch(() => {});
+  }
+
   async function stop() {
     hideQr();
     access.controller?.abort();
     access.controller = undefined;
     access.link = undefined;
     live = undefined;
+    await stopVoice();
     const previous = access.server;
     access.server = undefined;
     if (previous) {
@@ -243,8 +266,9 @@ export default function (pi: ExtensionAPI) {
     // Never retain session-bound SDK objects after replacement
     access.handle = undefined;
     access.hideQr = undefined;
+    access.transition = event.reason === "reload" ? "Reloading" : "Switching session";
+    await stopVoice();
     if (event.reason === "quit") await stop();
-    else access.transition = event.reason === "reload" ? "Reloading" : "Switching session";
   });
   pi.on("message_start", (event) => {
     if (event.message.role === "assistant") {
@@ -308,6 +332,29 @@ export default function (pi: ExtensionAPI) {
     access.hideQr = hideQr;
     const workspace = randomBytes(16).toString("hex");
     const handle = async (request: IncomingMessage, response: ServerResponse, url: URL) => {
+      if (request.method === "POST" && url.pathname === "/transcribe") {
+        if (url.searchParams.get("workspace") !== workspace) return reply(response, 409, "Session changed. Record again in the current session");
+        if (!/^audio\/(webm|mp4)(;|$)/i.test(request.headers["content-type"] || "")) return reply(response, 415, "Record WebM or MP4 audio");
+        if (access.voice) return reply(response, 409, "Another recording is being transcribed. Wait, then record again");
+        const controller = new AbortController();
+        const cancel = () => controller.abort(new Error("Voice request cancelled"));
+        response.once("close", cancel);
+        const voice = { controller, done: transcribeRemoteAudio(request, controller.signal) };
+        access.voice = voice;
+        try {
+          const text = await voice.done;
+          if (access.handle !== handle) return reply(response, 409, "Session changed. Record again in the current session");
+          if (response.destroyed) return;
+          response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          return response.end(JSON.stringify({ workspace, text }));
+        } catch (error) {
+          if (!response.destroyed) return reply(response, 400, controller.signal.aborted ? controller.signal.reason.message : error.message);
+        } finally {
+          response.removeListener("close", cancel);
+          if (access.voice === voice) access.voice = undefined;
+        }
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/changes") {
         if (url.searchParams.get("workspace") !== workspace) return reply(response, 409, "Session changed. Wait for the current session, then refresh Changes");
         const path = url.searchParams.get("path");

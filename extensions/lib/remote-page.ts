@@ -86,7 +86,8 @@ small { display: block; color: GrayText }
 <div id="attachment" hidden><img id="preview" alt="Pending image"><span id="image-name"></span><button id="remove-image" type="button">Remove</button></div>
 <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
 <textarea id="prompt" aria-label="Message Pi or type a command" rows="1" maxlength="60000" placeholder="Message Pi or type a command…"></textarea>
-<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
+<div id="voice-controls"><button id="record" type="button" aria-label="Record a voice message" disabled>🎙 Record</button><button id="voice-stop" type="button" hidden>Stop recording</button><button id="voice-cancel" type="button" hidden>Cancel voice</button><small id="voice-status" role="status"></small></div>
+<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop Pi</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
 <div id="notice" role="status"></div>
 </form>
 <script nonce="${nonce}">
@@ -98,6 +99,89 @@ const prompt = document.getElementById('prompt');
 const send = document.getElementById('send');
 const stop = document.getElementById('stop');
 const reconnect = document.getElementById('reconnect');
+const recordButton = document.getElementById('record');
+const voiceStop = document.getElementById('voice-stop');
+const voiceCancel = document.getElementById('voice-cancel');
+const voiceStatus = document.getElementById('voice-status');
+let voice = null;
+const voiceSupported = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined';
+const voiceMime = voiceSupported ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find(type => MediaRecorder.isTypeSupported(type)) : '';
+voiceStatus.textContent = !window.isSecureContext ? 'Voice requires HTTPS' : !voiceMime ? 'Voice recording is not supported in this browser' : '';
+function releaseMicrophone(job) {
+  if (job.recorder && job.recorder.state !== 'inactive') job.recorder.stop();
+  job.stream?.getTracks().forEach(track => track.stop());
+}
+function cancelVoice(message = 'Voice cancelled. Audio discarded') {
+  if (!voice) return;
+  const job = voice;
+  voice = null;
+  job.controller.abort();
+  job.chunks = [];
+  releaseMicrophone(job);
+  voiceStatus.textContent = message;
+  controls();
+}
+async function transcribeVoice(job) {
+  voiceStatus.textContent = 'Transcribing locally…';
+  controls();
+  try {
+    const audio = new Blob(job.chunks, { type: job.recorder.mimeType });
+    job.chunks = [];
+    if (!audio.size) throw new Error('Recording is empty. Record again');
+    const data = await (await request('/transcribe?' + new URLSearchParams({ workspace: job.workspace }), {
+      method: 'POST', headers: { 'Content-Type': audio.type }, body: audio,
+      signal: job.controller.signal,
+    })).json();
+    if (voice !== job || workspace !== job.workspace || data.workspace !== job.workspace) return;
+    if (data.text) {
+      prompt.value += (prompt.value && !/\\s$/.test(prompt.value) ? ' ' : '') + data.text;
+      resizePrompt();
+      voiceStatus.textContent = 'Transcript added. Edit it, then press Send';
+    } else voiceStatus.textContent = 'No speech found. Record again';
+  } catch (error) { if (voice === job) voiceStatus.textContent = error.message; }
+  finally {
+    if (voice === job) { voice = null; controls(); }
+  }
+}
+recordButton.onclick = async () => {
+  if (voice || !connected || !workspace || !voiceMime) return;
+  closeMenu();
+  const job = voice = { workspace, controller: new AbortController(), chunks: [], send: false };
+  voiceStatus.textContent = 'Waiting for microphone permission…';
+  controls();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (voice !== job) { stream.getTracks().forEach(track => track.stop()); return; }
+    job.stream = stream;
+    const recorder = job.recorder = new MediaRecorder(stream, { mimeType: voiceMime });
+    recorder.ondataavailable = event => {
+      if (voice !== job) return;
+      job.chunks.push(event.data);
+    };
+    recorder.onerror = () => { if (voice === job) cancelVoice('Microphone recording failed. Record again'); };
+    recorder.onstop = () => {
+      if (voice !== job) return;
+      releaseMicrophone(job);
+      if (job.send) transcribeVoice(job);
+      else cancelVoice('Recording stopped. Audio discarded');
+    };
+    recorder.start(1000);
+    voiceStatus.textContent = 'Recording · Stop recording to transcribe, or Cancel voice to discard';
+    controls();
+  } catch (error) {
+    if (voice !== job) return;
+    cancelVoice(error.name === 'NotAllowedError' ? 'Microphone permission denied. Allow microphone access in browser settings'
+      : error.name === 'NotFoundError' ? 'No microphone is available' : 'Cannot start microphone: ' + error.message);
+  }
+};
+voiceStop.onclick = () => {
+  if (!voice?.recorder || voice.recorder.state !== 'recording') return;
+  voice.send = true;
+  releaseMicrophone(voice);
+  controls();
+};
+voiceCancel.onclick = () => cancelVoice();
+window.addEventListener('pagehide', () => cancelVoice());
 const notice = document.getElementById('notice');
 const form = document.getElementById('form');
 const footer = document.getElementById('footer');
@@ -331,9 +415,13 @@ function readImage(file) {
 }
 function controls() {
   const changing = stateName === 'Reloading' || stateName === 'Switching session';
-  send.disabled = !connected || submitting || changing || stateName === 'Compacting' || !!(pendingImage && !pendingImage.ready);
+  send.disabled = !connected || submitting || changing || !!voice || stateName === 'Compacting' || !!(pendingImage && !pendingImage.ready);
+  recordButton.disabled = !connected || !workspace || submitting || changing || !!voice || !voiceMime;
+  recordButton.hidden = !!voice;
+  voiceStop.hidden = !voice?.recorder || voice.send;
+  voiceCancel.hidden = !voice;
   stop.disabled = !connected || changing;
-  commandButton.disabled = !connected || submitting || changing;
+  commandButton.disabled = !connected || submitting || changing || !!voice;
   changesButton.disabled = !connected || changing || !workspace;
 }
 function resizePrompt() {
@@ -430,6 +518,7 @@ async function request(path, options = {}) {
 function disconnected(error) {
   clearTimeout(timer);
   connected = false;
+  cancelVoice('Disconnected. Voice cancelled and audio discarded');
   workspace = '';
   if (changes.open) clearChanges('Disconnected. Reconnect, then refresh Changes');
   footer.hidden = true;
@@ -449,6 +538,7 @@ async function poll() {
       const state = await response.json();
       const nearBottom = !changes.open && (!leaf || window.innerHeight + window.scrollY >= document.body.scrollHeight - 180);
       if (workspace !== (state.workspace || '')) {
+        cancelVoice('Session changed. Voice cancelled and audio discarded');
         workspace = state.workspace || '';
         if (changes.open) refreshChanges();
       }
@@ -491,7 +581,7 @@ async function poll() {
 }
 form.onsubmit = async event => {
   event.preventDefault();
-  if ((!prompt.value.trim() && !pendingImage) || (pendingImage && !pendingImage.ready) || submitting || !connected) return;
+  if ((!prompt.value.trim() && !pendingImage) || (pendingImage && !pendingImage.ready) || submitting || !connected || voice) return;
   const text = prompt.value;
   const value = text.trim();
   const image = pendingImage;
