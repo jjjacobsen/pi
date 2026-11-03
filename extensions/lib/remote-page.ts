@@ -6,20 +6,32 @@ export function remotePage(nonce: string) {
 <meta name="referrer" content="no-referrer">
 <title>Pi remote</title>
 <style nonce="${nonce}">
-:root { color-scheme: light dark; font: 16px system-ui, sans-serif }
+:root { color-scheme: light dark; font: 16px system-ui, sans-serif; --control-bg: light-dark(#fafbfc, #1c2026); --control-border: light-dark(#7d8997, #748292); --control-hover: light-dark(#edf1f5, #29313b); --accent-bg: light-dark(#eef4fc, #202f43); --accent-hover: light-dark(#e1ecfa, #2b405c); --accent-border: light-dark(#6b87aa, #6d8eb8); --accent-text: light-dark(#234f85, #b8d6ff) }
 body { max-width: 55rem; margin: auto; padding: 1rem; overflow-wrap: anywhere }
-header { position: sticky; top: 0; background: Canvas; padding: .5rem 0; border-bottom: 1px solid GrayText; display: flex; align-items: center; justify-content: space-between; gap: 1rem }
-h1 { font-size: 1.2rem; margin: 0; white-space: nowrap }
-#status { text-align: right }
+header { position: sticky; top: 0; background: Canvas; padding: .125rem 0; border-bottom: 1px solid var(--control-border); display: flex; align-items: center; justify-content: space-between; gap: 1rem }
+h1 { font-size: 1.5rem; font-weight: 500; line-height: 1; margin: 0; white-space: nowrap }
+#open-changes { margin: 0; padding: .25rem .5rem; font-size: .875rem }
+#status { display: flex; align-items: center; justify-content: flex-end; gap: .4rem; font-size: .875rem; text-align: right }
+#status::before { box-sizing: border-box; flex: 0 0 auto; width: .5rem; height: .5rem; border-radius: 50% }
+#status[data-state="Idle"]::before { content: ''; background: GrayText }
+#status[data-state="Working"]::before { content: ''; width: .75rem; height: .75rem; border: 2px solid var(--control-border); border-top-color: var(--accent-text); animation: working-spin 1s linear infinite }
+@keyframes working-spin { to { transform: rotate(360deg) } }
+@media (prefers-reduced-motion: reduce) { #status[data-state="Working"]::before { animation: none } }
 article { margin: 1rem 0; border-left: 2px solid GrayText; padding-left: .75rem }
 pre { white-space: pre-wrap; font: inherit; margin: .3rem 0 }
 #live { border-color: Highlight }
 form { position: sticky; bottom: 0; background: Canvas; padding-top: .5rem }
 textarea, input { box-sizing: border-box; width: 100%; font: inherit; padding: .5rem }
 textarea { display: block; line-height: 1.75rem; max-height: min(10rem, 30dvh); resize: none }
-button { -webkit-appearance: none; appearance: none; box-sizing: border-box; font: inherit; min-width: 2.75rem; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem .3rem .3rem 0; border: 1px solid GrayText; border-radius: .3rem; background: ButtonFace; color: ButtonText }
-button:disabled { color: GrayText }
+button { -webkit-appearance: none; appearance: none; box-sizing: border-box; font: inherit; min-width: 2.75rem; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem .3rem .3rem 0; border: 1px solid var(--control-border); border-radius: .3rem; background: var(--control-bg); color: CanvasText }
+button:enabled { cursor: pointer }
+@media (hover: hover) { button:enabled:hover { background: var(--control-hover) } }
+button:enabled:active { background: var(--control-hover) }
+button:disabled { background: transparent; border-color: light-dark(#c4cad1, #3e4855); color: light-dark(#687381, #929caa) }
 button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
+#send, #record { --control-bg: var(--accent-bg); --control-hover: var(--accent-hover); --control-border: var(--accent-border) }
+#send:enabled, #record:enabled { color: var(--accent-text) }
+#composer[data-recording] #record:enabled { --control-bg: light-dark(#fff1f3, #3d232a); --control-hover: light-dark(#ffe3e8, #512c36); --control-border: light-dark(#b00020, #ff8797); color: light-dark(#b00020, #ff8797) }
 #footer:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .7rem; padding: .25rem 0 .5rem; color: GrayText; font: .75rem ui-monospace, monospace }
 #footer-cwd { flex: 1 1 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 #footer-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
@@ -46,7 +58,7 @@ button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #menu-heading { display: flex; align-items: center; justify-content: space-between }
 #choices { max-height: 30dvh; overflow-y: auto }
 #choices button { display: block; width: 100%; text-align: left; margin: .2rem 0 }
-#choices button[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px }
+#choices button[aria-selected="true"], #change-files button[aria-current="true"], #change-toolbar button[aria-pressed="true"] { --control-bg: var(--accent-bg); --control-hover: var(--accent-hover); --control-border: var(--accent-border); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent-border) }
 small { display: block; color: GrayText }
 #notice { box-sizing: border-box; position: fixed; inset: calc(5.5rem + env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) auto max(1rem, env(safe-area-inset-left)); max-width: 32rem; max-height: calc(100dvh - 6.5rem - env(safe-area-inset-top) - env(safe-area-inset-bottom)); margin: 0 auto; padding: .5rem .5rem .5rem 1rem; border: 1px solid light-dark(#b00020, #ff8797); border-radius: .3rem; background: Canvas; color: CanvasText; box-shadow: 0 .25rem 1rem #0004; overflow: auto }
 #notice:popover-open { display: flex; align-items: center; gap: .75rem }
@@ -61,7 +73,6 @@ small { display: block; color: GrayText }
 #changes-main { display: flex; flex: 1; min-height: 0; gap: .75rem }
 #change-files { flex: 0 0 16rem; overflow: auto; border-right: 1px solid GrayText; padding-right: .5rem }
 #change-files button { display: block; width: 100%; text-align: left; overflow-wrap: anywhere; white-space: pre-wrap; margin: 0 0 .3rem }
-#change-files button[aria-current="true"], #change-toolbar button[aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: -2px }
 #change-detail { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0 }
 #change-path { margin: 0; font-size: 1rem; white-space: pre-wrap }
 #change-content { overflow: auto; flex: 1; min-height: 0; overscroll-behavior: contain }
@@ -79,7 +90,7 @@ small { display: block; color: GrayText }
   #change-files { flex: 0 1 auto; max-height: 25dvh; border-right: 0; border-bottom: 1px solid GrayText; padding-right: 0 }
 }
 </style>
-<header><h1>Pi remote</h1><button id="open-changes" type="button" disabled>Changes</button><div id="status" role="status">Connecting</div></header>
+<header><h1 aria-label="Pi remote">π</h1><button id="open-changes" type="button" disabled>Changes</button><div id="status" role="status">Connecting</div></header>
 <dialog id="changes" aria-labelledby="changes-title">
 <div id="changes-heading"><h2 id="changes-title">Changes · read-only</h2><button id="refresh-changes" type="button">Refresh</button><button id="close-changes" type="button">Close</button></div>
 <p id="changes-summary" role="status"></p>
@@ -102,7 +113,7 @@ small { display: block; color: GrayText }
 <textarea id="prompt" aria-label="Message Pi or type a command" rows="1" maxlength="60000" placeholder="Message Pi or type a command…"></textarea>
 <div id="composer">
 <button id="voice-cancel" type="button" aria-label="Cancel voice" title="Cancel voice and discard audio" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
-<button id="commands" class="idle-action" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" class="idle-action" type="button" aria-label="Attach up to five images" title="Up to five PNG, JPEG, or WebP images. Large images are resized before upload">Image</button><button id="send" class="idle-action" disabled>Send</button><button id="stop" class="idle-action" type="button" aria-label="Stop Pi" title="Stop Pi" disabled>Stop<span class="stop-label"> Pi</span></button>
+<button id="attach" class="idle-action" type="button" aria-label="Attach up to five images" title="Up to five PNG, JPEG, or WebP images. Large images are resized before upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg></button><button id="stop" class="idle-action" type="button" aria-label="Stop Pi" title="Stop Pi" disabled>Stop<span class="stop-label"> Pi</span></button><button id="commands" class="idle-action" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="send" class="idle-action" disabled>Send</button>
 <small id="voice-status" role="status"></small>
 <button id="record" type="button" aria-label="Record a voice message" title="Record a voice message" disabled><svg class="voice-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></svg><svg class="voice-square" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
 </div>
@@ -577,6 +588,7 @@ function disconnected(error) {
   recovering = true;
   version = '';
   status.textContent = accessToken ? 'Reconnecting…' : 'Disconnected. Open the private /remote link';
+  delete status.dataset.state;
   controls();
   reconnect.hidden = false;
   if (accessToken) timer = setTimeout(poll, 1500);
@@ -618,6 +630,7 @@ async function poll() {
       live.hidden = !state.live;
       stateName = state.state;
       status.textContent = stateName + (state.pending ? ' (queued prompts)' : '');
+      status.dataset.state = stateName;
       version = state.version;
       if (state.leaf) leaf = state.leaf;
       if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
