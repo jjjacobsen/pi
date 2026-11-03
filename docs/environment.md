@@ -65,6 +65,42 @@ with image input and terminal image support for inline display. Saved image
 paths still work without inline display. Images can contain private data and
 go to both selected model providers
 
+## Remote browser
+
+`/remote` needs Pi 1.5.0 or newer for session replacement cleanup, the Tailscale
+CLI in Pi's PATH, a connected local Tailscale daemon with an IPv4 address, and a
+browser device on the same tailnet. Tailnet ACLs or grants must permit that
+device to reach the host's selected port. Each start uses a new available port
+No extra npm package, API key, environment variable, or system service is needed
+
+Private browser HTTPS works without Serve when Tailscale HTTPS certificates
+are already enabled and the current OS user can run `tailscale cert` for this
+node's MagicDNS name. The extension captures PEM output in memory, not files.
+The Tailscale daemon can issue and cache certificates in its own state directory
+It does not change MagicDNS, tailnet HTTPS settings, daemon permissions, Serve,
+or Funnel configuration. On the current host, certificate output to stdout was
+verified without configuring Serve
+
+If HTTPS is not enabled, `/remote` uses HTTP bound only to the Tailscale IP and
+warns that this is not browser HTTPS. Tailscale still encrypts transport between
+devices. Browsers show an insecure HTTP origin. Do not publish or proxy this
+listener to another network
+For browser HTTPS, the tailnet owner must explicitly enable MagicDNS and HTTPS
+certificates, then permit the local user to obtain the node's certificate.
+Certificate issuance publishes the node's DNS name in public certificate
+transparency logs. See [Tailscale HTTPS setup](https://tailscale.com/docs/how-to/set-up-https-certificates)
+If certificate retrieval fails on an enabled node, startup fails with no HTTP
+fallback. Long-running listeners do not renew certificates, so stop and restart
+before certificate expiry
+
+Keep the displayed link private and stop access when finished. Prompts and tool
+output can contain private data. The browser has full prompt control, not a
+sandbox. The extension writes no extra session data or credentials to this repo
+Normal Pi session persistence is unchanged. Browser state is held only in the
+page memory, with caching disabled and no cookies or browser storage. Refreshing
+the page requires the private terminal link again. Closing a tab does not stop
+the listener. Use `/remote off` or exit Pi
+
 ## Local resources
 
 - Obsidian vault: `~/Documents/obsidian`

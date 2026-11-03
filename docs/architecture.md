@@ -501,6 +501,61 @@ limits, and saved reset credits. Balances show dollars to two decimal places
 without percentage bars. `[r]` refreshes, `[q]` or Esc closes, duplicate
 refreshes are ignored, and results that arrive after close are discarded
 
+# Remote extension (`extensions/remote.ts`)
+
+`/remote` starts one Node HTTP(S) listener inside the existing Pi process, only
+on the connected Tailscale IPv4 address returned by `tailscale status --json`.
+Port zero selects an available port. Nothing starts in the extension factory
+The command shows the current link if already running. `/remote off` and
+`session_shutdown` abort startup, close the listener and all connections, and
+invalidate its in-memory credentials. Raw sockets are tracked so shutdown also
+closes connections that have not completed a TLS handshake. Pi 1.5 session replacement closes access
+for new, resume, fork, clone, and reload as well as exit. No system service or
+additional session-data files are created
+
+If the node's DNS name is in Tailscale's enabled certificate domains, the
+extension runs `tailscale cert --cert-file - --key-file - <domain>` and loads
+the certificate and key directly from captured stdout. It binds HTTPS to the
+Tailscale IP, with the DNS name in the link. It does not change tailnet settings,
+Serve, or Funnel. The daemon owns its normal certificate cache. If HTTPS is
+not enabled, it explicitly reports HTTP over encrypted tailnet transport.
+Certificate errors stop startup rather than downgrade an HTTPS-capable node
+Certificates are obtained on each start, not renewed within a running listener
+
+The 256-bit random bearer token is shown only in the terminal link's fragment.
+The page removes the fragment, exchanges it through `POST /auth`, and receives
+an independent random bearer credential held only in page memory. API calls
+send it in the Authorization header, not a cookie. Credentials last only until
+stop, and refreshing the page requires the original terminal link again
+No token is sent in request URLs, saved in browser storage, or added to Pi history
+Possession of the link plus network access grants the same agent control as
+terminal prompts, not a restricted or read-only role
+
+Every request must match the exact Host and any supplied Origin. POST requires
+the exact Origin. API requests reject cross-site fetch metadata. Authenticated
+API calls require a bearer header, with no cookies or CORS support. The static page
+has no external resources, uses nonce-based CSP, cannot be framed, disables
+caching and referrers, and renders conversation data only with `textContent`.
+Prompt bodies are limited to 64 KiB. Request and header timeouts are 10 seconds
+The extension adds no file-serving, tool-execution, or shell endpoint
+
+`extensions/lib/remote-page.ts` provides the mobile page. It polls `/state` at
+700 ms with version and leaf markers. Unchanged state returns 204, and history
+is sent only when the leaf changes. Raw `getBranch()` entries supply the active
+branch history, including old messages and markers after compaction. It does
+not use the compacted model projection or include abandoned branches, system
+prompts, thinking blocks, or image bytes. Message events retain the current
+assistant snapshot for live text. Compaction events update status without
+closing the listener. Tree navigation refreshes history on the next poll
+
+`POST /prompt` rejects leading slash commands and submits literal text through
+`pi.sendUserMessage` with `deliverAs: "followUp"` and expansion disabled. Pi's
+normal input hooks still apply. During compaction, prompts receive an explicit
+retry message. `POST /stop` requests `ctx.abort()`. The page reports terminal
+UI waits but does not implement dialogs. Submission acknowledges dispatch, not
+model completion. Asynchronous SDK or model errors remain in the terminal or
+conversation. A network error stops polling until Reconnect is pressed
+
 # Search extension (`extensions/search.ts`)
 
 ## Goal

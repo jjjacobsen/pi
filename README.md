@@ -207,6 +207,31 @@ indicator. A failed status scan hides the icon
 The design takes inspiration from opencode and omp
 (can1357/oh-my-pi)
 
+### remote - this session in a private browser
+
+Run `/remote` in the Pi terminal, then open its private link on a device in
+Tailscale. Run `/remote off` to stop access and invalidate the link. Repeating
+`/remote` shows the current link. The terminal remains usable
+
+The mobile page shows active-branch conversation history and live text, accepts
+plain prompts, queues follow-ups while Pi is busy, and has a Stop button. Slash
+commands and extension dialogs need the terminal. Compaction keeps access open
+and retains earlier conversation history. New, resume, fork, clone, reload,
+and shutdown close access. Run `/remote` again in the new session
+
+The server binds only the local Tailscale IPv4 address on an available port.
+It uses browser HTTPS when Tailscale HTTPS certificates are already enabled
+and the current user can obtain one. Otherwise it clearly reports HTTP over
+Tailscale encrypted transport, not browser HTTPS. It does not configure Serve,
+Funnel, a service, or public/LAN access. See [setup and limits](docs/environment.md#remote-browser)
+
+Keep the link private. Anyone with it and tailnet network access can read the
+conversation and control Pi with its full permissions. No extra session files
+are written. Thinking, images, and custom dialogs are not shown. Stop requests
+an abort but does not promise to clear queued prompts or close terminal dialogs
+The page polls while connected. Use Reconnect after a network interruption
+Refreshing the page requires the private terminal link again
+
 ### search - web search via the Exa API
 
 `web_search` queries Exa with your `EXA_API_KEY` and returns numbered sources
