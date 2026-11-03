@@ -237,10 +237,11 @@ input and hides when the browser connects. `/remote hide` hides it without
 stopping access. Run `/remote off` to stop access and invalidate the link
 Repeating `/remote` shows the same link and QR code
 
-The mobile page shows active-branch history and live text, queues prompts
-while Pi is busy, and has a Stop button. All tool results and terminal-command
-outputs start collapsed. Tap the tool name or use Enter or Space to show the
-full output. Errors remain labeled when collapsed. Assistant text and short
+The mobile page shows active-branch history and live text. The arrow beside `/`
+sends the composer while Pi is idle. During work, compaction, or a terminal dialog,
+it becomes Stop Pi and requests an abort without sending or clearing the draft
+or images. All tool results and terminal-command outputs start collapsed
+Tap the tool name or use Enter or Space to show the full output. Errors remain labeled when collapsed. Assistant text and short
 tool-call markers stay visible. Open results stay open during polling and
 history updates, but reset on page refresh or session replacement
 Press Image to choose PNG, JPEG,

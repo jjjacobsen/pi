@@ -744,7 +744,7 @@ Recording chunks stay in browser memory until Stop recording or cancellation
 All finish, cancel, error, and pagehide paths stop microphone tracks, including
 late permission grants
 During voice input, the button row shows a cancel X on the left, compact status,
-and the stop square on the right, separate from the idle Stop Pi action
+and the stop square on the right, with the normal Send/Stop Pi action hidden
 The square is disabled while permission or transcription is pending
 Cancel also aborts a pending upload or inference request
 The returned transcript is appended to the latest textarea text with a separator,
@@ -752,6 +752,12 @@ without submission, input events, or automatic command menus
 Workspace markers and handler identity reject stale work. Browser workspace
 changes and disconnects cancel voice, so an old response cannot alter a new
 session's composer. No audio is persisted in browser storage or Pi sessions
+
+The action button after `/` sends while idle and requests `/stop` during Working,
+Compacting, or Waiting for a terminal dialog. Stop ignores draft validation and
+submission state, leaves text and images unchanged, and never submits the form
+The action is disabled while disconnected or changing sessions. Explicit form
+submission still supports queued follow-ups. Abort does not promise to close dialogs
 
 Only the adjacent `/` button opens the command menu. It lists all commands,
 without filtering from the textarea. Each choice submits immediately without

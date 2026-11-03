@@ -33,6 +33,7 @@ button:disabled { background: transparent; border-color: light-dark(#c4cad1, #3e
 button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #send, #record { --control-bg: var(--accent-bg); --control-hover: var(--accent-hover); --control-border: var(--accent-border) }
 #send:enabled, #record:enabled { color: var(--accent-text) }
+#send:not([data-stop]) .send-square, #send[data-stop] .send-arrow { display: none }
 #composer[data-recording] #record:enabled { --control-bg: light-dark(#fff1f3, #3d232a); --control-hover: light-dark(#ffe3e8, #512c36); --control-border: light-dark(#b00020, #ff8797); color: light-dark(#b00020, #ff8797) }
 #footer:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .7rem; padding: .25rem 0 .5rem; color: GrayText; font: .75rem ui-monospace, monospace }
 #footer-cwd { flex: 1 1 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
@@ -113,10 +114,9 @@ small { display: block; color: GrayText }
 <div id="composer">
 <button id="voice-cancel" type="button" aria-label="Cancel voice" title="Cancel voice and discard audio" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
 <button id="attach" class="idle-action" type="button" aria-label="Attach up to five images" title="Up to five PNG, JPEG, or WebP images. Large images are resized before upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg></button>
-<button id="stop" class="idle-action" type="button" aria-label="Stop Pi" title="Stop Pi" disabled><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
 <button id="open-changes" class="idle-action" type="button" aria-label="Changes" title="Changes" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M5 7h8M9 3v8M11 17h8"/></svg></button>
 <button id="commands" class="idle-action" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button>
-<button id="send" class="idle-action" aria-label="Send" title="Send" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button>
+<button id="send" class="idle-action" type="button" aria-label="Send" title="Send" disabled><svg class="send-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 19V5m-6 6 6-6 6 6"/></svg><svg class="send-square" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
 <small id="voice-status" role="status"></small>
 <button id="record" type="button" aria-label="Record a voice message" title="Record a voice message" disabled><svg class="voice-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></svg><svg class="voice-square" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
 </div>
@@ -130,7 +130,6 @@ const live = document.getElementById('live');
 const stream = document.getElementById('stream');
 const prompt = document.getElementById('prompt');
 const send = document.getElementById('send');
-const stop = document.getElementById('stop');
 const reconnect = document.getElementById('reconnect');
 const composer = document.getElementById('composer');
 const recordButton = document.getElementById('record');
@@ -478,7 +477,11 @@ function readImage(file) {
 }
 function controls() {
   const changing = stateName === 'Reloading' || stateName === 'Switching session';
-  send.disabled = !connected || submitting || changing || !!voice || stateName === 'Compacting' || pendingImages.some(image => !image.ready);
+  const stopping = ['Working', 'Compacting', 'Waiting for a terminal dialog'].includes(stateName);
+  send.toggleAttribute('data-stop', stopping);
+  send.title = stopping ? 'Stop Pi' : 'Send';
+  send.setAttribute('aria-label', send.title);
+  send.disabled = !connected || changing || !!voice || (!stopping && (submitting || pendingImages.some(image => !image.ready)));
   const recording = voice?.recorder?.state === 'recording' && !voice.send;
   const voiceFocused = document.activeElement === voiceCancel;
   composer.toggleAttribute('data-voice', !!voice);
@@ -489,7 +492,6 @@ function controls() {
   recordButton.setAttribute('aria-label', recordButton.title);
   voiceCancel.hidden = !voice;
   if (!voice && voiceFocused) recordButton.focus();
-  stop.disabled = !connected || changing;
   commandButton.disabled = !connected || submitting || changing || !!voice;
   changesButton.disabled = !connected || changing || !workspace;
 }
@@ -698,7 +700,9 @@ form.onsubmit = async event => {
   } catch (error) { showError(error.message + (command ? '. Check the current session before trying again' : '')); }
   finally { submitting = false; version = ''; controls(); }
 };
-stop.onclick = async () => {
+send.onclick = async () => {
+  if (send.disabled) return;
+  if (!send.hasAttribute('data-stop')) { form.requestSubmit(); return; }
   try { await request('/stop', { method: 'POST' }); }
   catch (error) { disconnected(error); }
 };
