@@ -113,8 +113,16 @@ Rules:
 - Without an explicit prefix, add a ticket prefix only when repository guidance requires it and the current branch or session clearly identifies the current ticket. Ticket IDs use uppercase letters or digits followed by a hyphen and digits. Never invent a ticket or use an example ticket as the current ticket.
 - Output only the commit message, nothing else.`;
 
+const SPLIT_PROMPT = `Plan ordered logical Conventional Commits from the complete repository change set.
+Return only a JSON array of objects: [{"intent":"specific purpose and motivation","files":[1,2]}].
+Use the numbered file units supplied by the caller, not path strings. Cover every unit exactly once.
+Each group must contain at least one whole-file unit. Rename source and destination are one unit.
+Keep related implementation, tests, documentation, and generated files together. Order dependencies first.
+Do not split changes within a file. Use one group when the changes form one logical commit.
+Preserve the user's intent and required ticket prefix across the sequence. Never invent changes.`;
+
 let cachedRuntime;
-function resourceLoader() {
+function resourceLoader(systemPrompt = SYSTEM_PROMPT) {
   if (!cachedRuntime) cachedRuntime = createExtensionRuntime();
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: cachedRuntime }),
@@ -122,7 +130,7 @@ function resourceLoader() {
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => SYSTEM_PROMPT,
+    getSystemPrompt: () => systemPrompt,
     getAppendSystemPrompt: () => [],
     getSystemPromptSource: () => undefined,
     getAppendSystemPromptSources: () => [],
@@ -131,7 +139,7 @@ function resourceLoader() {
   };
 }
 
-async function askModel(model, thinkingLevel, prompt, cwd, signal, step, attempt) {
+async function askModel(model, thinkingLevel, prompt, cwd, signal, step, attempt, systemPrompt = SYSTEM_PROMPT) {
   step(`${attempt}: model session setup`);
   let session;
   try {
@@ -139,7 +147,7 @@ async function askModel(model, thinkingLevel, prompt, cwd, signal, step, attempt
       cwd,
       model,
       thinkingLevel,
-      resourceLoader: resourceLoader(),
+      resourceLoader: resourceLoader(systemPrompt),
       sessionManager: SessionManager.inMemory(cwd),
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
       tools: [],
@@ -325,7 +333,7 @@ function commitGuidance(root) {
   return out;
 }
 
-async function analyze(pi, cwd, signal, step) {
+async function analyze(pi, cwd, signal, step, stageAll = true) {
   step("analysis: repository lookup");
   const root = await gitRoot(pi, cwd, signal);
   if (!root) throw new Error("not a git repository");
@@ -341,9 +349,11 @@ async function analyze(pi, cwd, signal, step) {
     throw new Error(`${name} still exists; remove it before committing`);
   }
 
-  step("analysis: git add -A");
-  const add = await runGit(pi, root, ["add", "-A"], signal, 4096);
-  if (!add.ok) throw new Error("git add failed");
+  if (stageAll) {
+    step("analysis: git add -A");
+    const add = await runGit(pi, root, ["add", "-A"], signal, 4096);
+    if (!add.ok) throw new Error("git add failed");
+  }
   step("analysis: initial git write-tree");
   const initialTree = await runGit(pi, root, ["write-tree"], signal, 128);
   if (!initialTree.ok) throw new Error("git write-tree failed");
@@ -352,7 +362,7 @@ async function analyze(pi, cwd, signal, step) {
   const files = await runGit(pi, root, ["diff", "--cached", "-M", "--name-status"], signal, 64 * 1024);
   if (!files.ok) throw new Error("git diff --name-status failed");
   const names = trim(files.stdout);
-  if (!names) return "";
+  if (!names) return null;
 
   step("analysis: git diff --stat");
   const stat = await runGit(pi, root, ["diff", "--cached", "-M", "--stat"], signal, 64 * 1024);
@@ -378,8 +388,9 @@ async function analyze(pi, cwd, signal, step) {
   }
   if (stat.ok && trim(stat.stdout)) context += `\n## Diff stat\n${stat.stdout}\n`;
   const raw = diff.stdout.replace(/^\n+|\n+$/g, "");
+  const fullContext = `${context}\n## Diff\n${raw}\n`;
   context += `\n## Diff\n${byteLength(raw) <= RAW_DIFF_LIMIT ? raw : buildDigest(raw)}\n`;
-  return { context: byteSlice(context, CONTEXT_LIMIT), tree };
+  return { context: byteSlice(context, CONTEXT_LIMIT), fullContext, tree, root };
 }
 
 function isVagueDescription(description) {
@@ -553,6 +564,75 @@ function buildPrompt(context, intent, tail, requiredPrefix) {
   return byteSlice(`${prefix}${byteSlice(context, contextLimit)}${rest}`, CONTEXT_LIMIT);
 }
 
+async function planSplit(pi, analysis, model, thinkingLevel, intent, tail, requiredPrefix, signal, step) {
+  step("plan: collect whole-file units");
+  const result = await runGit(pi, analysis.root, ["diff", "--cached", "-M", "--name-status", "-z"], signal);
+  if (!result.ok) throw new Error("git diff --name-status failed");
+  const fields = result.stdout.split("\0").slice(0, -1);
+  const units = [];
+  for (let i = 0; i < fields.length;) {
+    const status = fields[i++];
+    const paths = [fields[i++]];
+    if (status.startsWith("R") || status.startsWith("C")) paths.push(fields[i++]);
+    units.push({ status, paths });
+  }
+  const prompt = [
+    `## Whole-file units\n${units.map((unit, i) => JSON.stringify({ id: i + 1, ...unit })).join("\n")}`,
+    `## Required ticket prefix\n${requiredPrefix || "None explicitly requested"}`,
+    `## User intent\n${intent}`,
+    `## Recent session context (intent only)\n${tail}`,
+    analysis.fullContext,
+  ].join("\n\n");
+  const output = await askModel(model, thinkingLevel, prompt, analysis.root, signal, step, "plan", SPLIT_PROMPT);
+  const groups = JSON.parse(stripFences(output));
+  if (!Array.isArray(groups) || !groups.length) throw new Error("split plan must be a nonempty JSON array");
+  const seen = new Set();
+  const plan = groups.map((group) => {
+    if (!group || typeof group.intent !== "string" || !group.intent.trim() || !Array.isArray(group.files) || !group.files.length) {
+      throw new Error("each split group must have an intent and nonempty files array");
+    }
+    const paths = group.files.flatMap((id) => {
+      if (!Number.isInteger(id) || id < 1 || id > units.length || seen.has(id)) {
+        throw new Error(`split plan has an invalid or repeated file unit: ${id}`);
+      }
+      seen.add(id);
+      return units[id - 1].paths;
+    });
+    return { intent: group.intent.trim(), paths };
+  });
+  if (seen.size !== units.length) throw new Error("split plan does not cover every changed file");
+  step("plan: verify complete snapshot");
+  const tree = await runGit(pi, analysis.root, ["write-tree"], signal, 128);
+  const worktree = await runGit(pi, analysis.root, ["diff", "--quiet"], signal, 4096);
+  if (!tree.ok || trim(tree.stdout) !== analysis.tree || !worktree.ok) {
+    throw new Error("changes changed during split planning; run /commit --split again");
+  }
+  return plan;
+}
+
+async function checkSplitProgress(pi, root, group, remaining, signal, step) {
+  step("commit: verify hook scope and remaining work");
+  const changed = await runGit(pi, root, ["diff-tree", "--root", "--no-commit-id", "--no-renames", "--name-only", "-r", "-z", "HEAD"], signal);
+  if (!changed.ok) throw new Error("cannot verify committed files");
+  const files = changed.stdout.split("\0").filter(Boolean);
+  const expected = new Set(group.paths);
+  if (files.length !== expected.size || files.some((file) => !expected.has(file))) {
+    throw new Error("a commit hook changed the planned file scope; inspect the completed commit before continuing");
+  }
+  const status = await runGit(pi, root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], signal);
+  if (!status.ok) throw new Error("cannot check remaining work");
+  const allowed = new Set(remaining.flatMap((item) => item.paths));
+  const entries = status.stdout.split("\0").slice(0, -1);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const paths = [entry.slice(3)];
+    if (/[RC]/.test(entry.slice(0, 2))) paths.push(entries[++i]);
+    if ((entry[0] !== " " && entry.slice(0, 2) !== "??") || paths.some((file) => !allowed.has(file))) {
+      throw new Error("hooks or other work left staged changes or changes outside the remaining split plan; inspect git status before continuing");
+    }
+  }
+}
+
 function sessionTail(ctx) {
   try {
     const entries = ctx.sessionManager?.getEntries?.() ?? [];
@@ -582,11 +662,33 @@ function notify(ctx, text, level = "info") {
   }
 }
 
+async function writeMessage(model, thinkingLevel, prompt, cwd, signal, step, requiredPrefix) {
+  let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, signal, step, "first attempt"));
+  step("validate message");
+  let problems = validate(message, requiredPrefix);
+  if (problems) {
+    const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
+    const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
+    const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, signal, step, "retry"));
+    step("validate retry");
+    problems = validate(retry, requiredPrefix);
+    if (problems) throw new Error(`message rejected after retry:\n${problems}Last attempt:\n${retry}`);
+    message = retry;
+  }
+  return message;
+}
+
 export default function (pi: ExtensionAPI) {
-  async function runCommit(args, ctx: ExtensionContext, signal, push = false) {
+  async function runCommit(args, ctx: ExtensionContext, signal, push = false, split = false) {
     const cwd = ctx.cwd;
     const timing = trackTiming(ctx);
     const { step } = timing;
+    let root;
+    let base;
+    let plan;
+    let nextGroup = 0;
+    let pushStarted = false;
+    const completed = [];
     try {
       timing.setMode(await readTiming());
       step("load settings and select model");
@@ -597,7 +699,7 @@ export default function (pi: ExtensionAPI) {
       if (!model) throw new Error(config ? `Commit model unavailable: ${config.model}. Run /commit-model` : "no model available");
       const thinkingLevel = clampThinkingLevel(model, config?.thinking ?? "low");
 
-      const analysis = await analyze(pi, cwd, signal, step);
+      let analysis = await analyze(pi, cwd, signal, step);
       if (!analysis) {
         notify(ctx, "nothing to commit", "info");
         return "nothing to commit";
@@ -606,30 +708,54 @@ export default function (pi: ExtensionAPI) {
       const input = (args ?? "").trim();
       const requiredPrefix = input.match(/^[A-Z][A-Z0-9]*-\d+(?=\s|$)/)?.[0] ?? "";
       const intent = input.slice(requiredPrefix.length).trim();
-      const prompt = buildPrompt(analysis.context, intent, sessionTail(ctx), requiredPrefix);
-
-      let message = stripFences(await askModel(model, thinkingLevel, prompt, cwd, signal, step, "first attempt"));
-      step("validate message");
-      let problems = validate(message, requiredPrefix);
-      if (problems) {
-        const correction = `\n\nYour previous message was rejected:\n${problems}Return only a corrected conventional commit message.`;
-        const retryPrompt = `${byteSlice(prompt, CONTEXT_LIMIT - byteLength(correction))}${correction}`;
-        const retry = stripFences(await askModel(model, thinkingLevel, retryPrompt, cwd, signal, step, "retry"));
-        step("validate retry");
-        problems = validate(retry, requiredPrefix);
-        if (problems) throw new Error(`message rejected after retry:\n${problems}Last attempt:\n${retry}`);
-        message = retry;
+      const tail = sessionTail(ctx);
+      if (split) {
+        root = analysis.root;
+        step("plan: record starting HEAD");
+        base = await runGit(pi, root, ["rev-parse", "--verify", "HEAD"], signal, 128);
+        plan = await planSplit(pi, analysis, model, thinkingLevel, intent, tail, requiredPrefix, signal, step);
+        notify(ctx, `Split plan (${plan.length} commits):\n${plan.map((group, i) => `${i + 1}. ${group.intent}\n${group.paths.map((file) => `  ${JSON.stringify(file)}`).join("\n")}`).join("\n")}`);
+        step("plan: unstage complete snapshot (keep working files)");
+        const reset = await runGit(pi, root, ["read-tree", ...(base.ok ? [trim(base.stdout)] : ["--empty"])], signal, 4096);
+        if (!reset.ok) throw new Error(`cannot prepare split index: ${trim(reset.stderr)}`);
       }
 
-      const summary = await commit(pi, cwd, message, signal, analysis.tree, step);
-      notify(ctx, summary, "success");
+      const groups = plan ?? [{ intent, paths: [] }];
+      for (const group of groups) {
+        if (split) {
+          step(`analysis: stage split group ${nextGroup + 1}/${groups.length}`);
+          const add = await runGit(pi, root, ["--literal-pathspecs", "add", "-A", "--", ...group.paths], signal, 4096);
+          if (!add.ok) throw new Error(`cannot stage split group: ${trim(add.stderr)}`);
+          analysis = await analyze(pi, root, signal, step, false);
+          if (!analysis) throw new Error("split group has no remaining changes; inspect the completed commits and plan");
+        }
+        const groupIntent = split ? `${intent}\n\nSplit group ${nextGroup + 1}/${groups.length}: ${group.intent}` : intent;
+        const prompt = buildPrompt(analysis.context, groupIntent, tail, requiredPrefix);
+        const message = await writeMessage(model, thinkingLevel, prompt, cwd, signal, step, requiredPrefix);
+        const summary = await commit(pi, cwd, message, signal, analysis.tree, step);
+        completed.push(summary);
+        notify(ctx, summary, "success");
+        nextGroup++;
+        if (split) await checkSplitProgress(pi, root, group, groups.slice(nextGroup), signal, step);
+      }
+
+      const summary = completed.join("\n");
       if (push) {
         step("push: git push");
+        pushStarted = true;
         const result = await runGit(pi, cwd, ["push"], signal);
         if (!result.ok) throw new Error(`commit created (${summary}), but git push failed: ${trim(result.stderr)}`);
         notify(ctx, "git push completed", "success");
       }
       return summary;
+    } catch (error) {
+      if (!split) throw error;
+      // Read recovery state without the cancelled signal. Never change it or roll back.
+      const history = base && await runGit(pi, root, ["log", "--reverse", "--format=%h %s", ...(base.ok ? [`${trim(base.stdout)}..HEAD`] : ["HEAD"])], undefined);
+      const status = root && await runGit(pi, root, ["status", "--short", "--untracked-files=all"], undefined);
+      const done = history?.ok ? trim(history.stdout) || "none" : completed.join("\n") || "none recorded (check git log)";
+      const remaining = plan ? plan.slice(nextGroup).map((group) => `${group.intent}: ${group.paths.map((file) => JSON.stringify(file)).join(", ")}`).join("\n") || "no unattempted groups" : "not planned";
+      throw new Error(`Split sequence stopped: ${error?.message ?? error}\nCompleted commits (retained):\n${done}\nRemaining plan:\n${remaining}\nRemaining work (git status):\n${status?.ok ? trim(status.stdout) || "clean" : "unavailable, inspect git status"}\n${pushStarted ? "Push was attempted only after all groups completed" : "No push was attempted"}. No rollback was made`);
     } finally {
       timing.finish();
     }
@@ -637,10 +763,12 @@ export default function (pi: ExtensionAPI) {
 
   for (const command of ["commit", "commit-and-push"]) {
     pi.registerCommand(command, {
-      description: `Stage all changes and write a Conventional Commit${command === "commit-and-push" ? ", then git push" : ""}: /${command} [CAS-1234] [intent]`,
+      description: `Stage all changes and write Conventional Commits${command === "commit-and-push" ? ", then git push" : ""}: /${command} [--split] [CAS-1234] [intent] (one commit by default)`,
       handler: async (args, ctx) => {
         try {
-          await runCommit(args, ctx, ctx.signal, command === "commit-and-push");
+          const split = /^--split(?:\s|$)/.test(args.trim());
+          const intent = split ? args.trim().slice("--split".length).trim() : args;
+          await runCommit(intent, ctx, ctx.signal, command === "commit-and-push", split);
         } catch (error) {
           notify(ctx, error?.message ?? String(error), "error");
         }
@@ -653,19 +781,21 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "commit",
     label: "Commit",
-    description: "Stage all repository changes and create one Conventional Commit through the /commit workflow, using /commit-model and /commit-thinking settings. Only use when the user explicitly requests a commit. Stops if root goal.md or handoff.md exists. Never pushes",
-    promptSnippet: "Create a user-requested commit through the shared /commit workflow",
+    description: "Stage all repository changes and create one Conventional Commit by default, or ordered logical whole-file commits with split: true, through the /commit workflow and its model/thinking settings. Only use when the user explicitly requests commits. Stops if root goal.md or handoff.md exists. Split failures retain completed commits and report remaining work. Never pushes",
+    promptSnippet: "Create user-requested commits through the shared /commit workflow, with optional logical whole-file splitting",
     promptGuidelines: [
       "Only commit when the user explicitly requests it. After work and checks are complete, use the commit tool for requests such as 'do the work then commit', not bash or a separate git workflow. Never make unsolicited commits",
       "The commit tool stages all repository changes, not a selected subset. Check the full change set first. If that scope conflicts with the user's request, ask the user rather than bypassing the workflow. Do not delete goal.md or handoff.md just to bypass the commit safeguard",
-      "Pass any requested ticket prefix and intent in commit's intent parameter, as with /commit [CAS-1234] [intent]. The tool never pushes. /commit-and-push is a separate user command for explicitly requested pushes",
+      "Use the commit tool with split: true when the user asks for logical multiple commits, separate commits, or splitting changes into commits. Do not use a separate bash workflow. Split covers all changed files exactly once in ordered whole-file groups and can select one group. It never stages part of a file. Stop on failure and report completed commits and remaining work, do not retry automatically or push a partial sequence",
+      "Pass any requested ticket prefix and intent in commit's intent parameter, as with /commit [--split] [CAS-1234] [intent]. Set the split parameter separately, not in intent. The tool never pushes. /commit-and-push is a separate user command for explicitly requested pushes",
     ],
     parameters: Type.Object({
-      intent: Type.Optional(Type.String({ description: "Optional /commit arguments: a leading ticket ID such as CAS-1234, followed by message intent" })),
+      intent: Type.Optional(Type.String({ description: "Optional /commit arguments: a leading ticket ID such as CAS-1234, followed by message intent, applied to every commit" })),
+      split: Type.Optional(Type.Boolean({ description: "Plan ordered logical whole-file commits from all changes. Default false creates one commit. One logical group is allowed" })),
     }),
     executionMode: "sequential",
     async execute(_id, params, signal, _onUpdate, ctx) {
-      const summary = await runCommit(params.intent, ctx, signal);
+      const summary = await runCommit(params.intent, ctx, signal, false, params.split);
       return { content: [{ type: "text", text: summary }], details: undefined };
     },
   });
