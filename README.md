@@ -249,10 +249,11 @@ Slash commands reject attachments. Failed sends keep images for retry
 Successful sends remove only submitted images, not additions made during sending
 Unsent images stay only in the page and are lost on refresh or page exit
 
-On HTTPS, press 🎙 Record to use the phone microphone. Stop recording uploads
-and transcribes on the Pi host, then appends text to the editable composer
-It never sends the text automatically. Cancel voice discards recording locally
-without upload, or cancels a pending transcription. Stop Pi only stops the agent
+On HTTPS, press the microphone at the right of the button row to record
+Press the square to stop and transcribe on the Pi host, then append text to the
+editable composer. It never sends the text automatically. The X on the left
+cancels recording without upload, or cancels a pending transcription
+Stop Pi only stops the agent
 Voice has no imposed recording duration, audio size, upload, or processing timeout
 Browser memory, host disk/RAM, and the selected model still limit recording length
 Voice uses the current Pi Voice transcribe-cpp model and language through the public

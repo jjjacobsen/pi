@@ -723,16 +723,19 @@ in one pass, not an automatic long-form chunker, so compute memory grows with au
 Other models can reject long input or report output truncation
 
 The HTTPS page detects MediaRecorder WebM/Opus or MP4 support and requests the
-phone microphone only on Record. Stop recording uploads once. Cancel voice
+phone microphone only when the rightmost microphone button is pressed
+The same button becomes a stop square and uploads once when pressed. Cancel voice
 during recording clears local chunks without upload or inference. There is no
 recording duration or byte cap, auto-stop timer, or transcription fetch deadline
 Recording chunks stay in browser memory until Stop recording or cancellation
 All finish, cancel, error, and pagehide paths stop microphone tracks, including
 late permission grants
-A separate voice status and Stop recording/Cancel voice buttons avoid confusion
-with Stop Pi. Cancel also aborts a pending upload or inference request
+During voice input, the button row shows a cancel X on the left, compact status,
+and the stop square on the right, separate from the idle Stop Pi action
+The square is disabled while permission or transcription is pending
+Cancel also aborts a pending upload or inference request
 The returned transcript is appended to the latest textarea text with a separator,
-without submission, input events, focus changes, or automatic command menus
+without submission, input events, or automatic command menus
 Workspace markers and handler identity reject stale work. Browser workspace
 changes and disconnects cancel voice, so an old response cannot alter a new
 session's composer. No audio is persisted in browser storage or Pi sessions

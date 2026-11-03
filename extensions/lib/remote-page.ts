@@ -29,6 +29,18 @@ button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #footer-context[data-color="error"] { color: light-dark(#b00020, #ff8797) }
 #composer { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem }
 #composer button { margin: .3rem 0; flex: 0 0 auto }
+#composer #record { margin-left: auto; width: 2.75rem; padding: 0 }
+#composer svg { width: 1.4rem; height: 1.4rem; vertical-align: middle }
+#voice-cancel { width: 2.75rem; padding: 0 }
+#voice-status { flex: 1 1 100%; order: 1; font-size: .875rem }
+#voice-status:empty, #composer:not([data-voice]) .voice-square, #composer[data-voice] .voice-mic, #composer[data-voice] .idle-action { display: none }
+#composer[data-voice] #voice-status { flex: 1; min-width: 0; order: 0; text-align: center }
+#composer[data-recording] #voice-status::before { content: ''; display: inline-block; width: .5rem; height: .5rem; margin-right: .5rem; border-radius: 50%; background: light-dark(#b00020, #ff8797) }
+@media (max-width: 400px) {
+  #composer { gap: .25rem }
+  #composer button { padding: .4rem .45rem }
+  #stop .stop-label { display: none }
+}
 .attachment { display: flex; align-items: center; gap: .5rem; padding: .3rem 0 }
 .attachment img { max-width: 6rem; max-height: 6rem; object-fit: contain }
 #menu { border: 1px solid GrayText; padding: .5rem; margin-bottom: .5rem }
@@ -86,8 +98,13 @@ small { display: block; color: GrayText }
 <div id="attachments" aria-label="Pending images"></div>
 <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
 <textarea id="prompt" aria-label="Message Pi or type a command" rows="1" maxlength="60000" placeholder="Message Pi or type a command…"></textarea>
-<div id="voice-controls"><button id="record" type="button" aria-label="Record a voice message" disabled>🎙 Record</button><button id="voice-stop" type="button" hidden>Stop recording</button><button id="voice-cancel" type="button" hidden>Cancel voice</button><small id="voice-status" role="status"></small></div>
-<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach up to five images" title="Up to five PNG, JPEG, or WebP images. Large images are resized before upload">Image</button><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop Pi</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
+<div id="composer">
+<button id="voice-cancel" type="button" aria-label="Cancel voice" title="Cancel voice and discard audio" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
+<button id="commands" class="idle-action" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" class="idle-action" type="button" aria-label="Attach up to five images" title="Up to five PNG, JPEG, or WebP images. Large images are resized before upload">Image</button><button id="send" class="idle-action" disabled>Send</button><button id="stop" class="idle-action" type="button" aria-label="Stop Pi" title="Stop Pi" disabled>Stop<span class="stop-label"> Pi</span></button>
+<small id="voice-status" role="status"></small>
+<button id="record" type="button" aria-label="Record a voice message" title="Record a voice message" disabled><svg class="voice-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></svg><svg class="voice-square" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+</div>
+<button id="reconnect" type="button" hidden>Reconnect</button>
 <div id="notice" role="status"></div>
 </form>
 <script nonce="${nonce}">
@@ -99,19 +116,19 @@ const prompt = document.getElementById('prompt');
 const send = document.getElementById('send');
 const stop = document.getElementById('stop');
 const reconnect = document.getElementById('reconnect');
+const composer = document.getElementById('composer');
 const recordButton = document.getElementById('record');
-const voiceStop = document.getElementById('voice-stop');
 const voiceCancel = document.getElementById('voice-cancel');
 const voiceStatus = document.getElementById('voice-status');
 let voice = null;
 const voiceSupported = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined';
 const voiceMime = voiceSupported ? ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find(type => MediaRecorder.isTypeSupported(type)) : '';
-voiceStatus.textContent = !window.isSecureContext ? 'Voice requires HTTPS' : !voiceMime ? 'Voice recording is not supported in this browser' : '';
+voiceStatus.textContent = !window.isSecureContext ? 'Voice requires HTTPS' : !voiceMime ? 'Voice is not supported in this browser' : '';
 function releaseMicrophone(job) {
   if (job.recorder && job.recorder.state !== 'inactive') job.recorder.stop();
   job.stream?.getTracks().forEach(track => track.stop());
 }
-function cancelVoice(message = 'Voice cancelled. Audio discarded') {
+function cancelVoice(message = 'Voice cancelled') {
   if (!voice) return;
   const job = voice;
   voice = null;
@@ -122,7 +139,7 @@ function cancelVoice(message = 'Voice cancelled. Audio discarded') {
   controls();
 }
 async function transcribeVoice(job) {
-  voiceStatus.textContent = 'Transcribing locally…';
+  voiceStatus.textContent = 'Transcribing…';
   controls();
   try {
     const audio = new Blob(job.chunks, { type: job.recorder.mimeType });
@@ -136,7 +153,7 @@ async function transcribeVoice(job) {
     if (data.text) {
       prompt.value += (prompt.value && !/\\s$/.test(prompt.value) ? ' ' : '') + data.text;
       resizePrompt();
-      voiceStatus.textContent = 'Transcript added. Edit it, then press Send';
+      voiceStatus.textContent = 'Transcript added. Review, then Send';
     } else voiceStatus.textContent = 'No speech found. Record again';
   } catch (error) { if (voice === job) voiceStatus.textContent = error.message; }
   finally {
@@ -144,11 +161,19 @@ async function transcribeVoice(job) {
   }
 }
 recordButton.onclick = async () => {
+  if (voice?.recorder?.state === 'recording' && !voice.send) {
+    voice.send = true;
+    voiceStatus.textContent = 'Transcribing…';
+    releaseMicrophone(voice);
+    controls();
+    return;
+  }
   if (voice || !connected || !workspace || !voiceMime) return;
   closeMenu();
   const job = voice = { workspace, controller: new AbortController(), chunks: [], send: false };
-  voiceStatus.textContent = 'Waiting for microphone permission…';
+  voiceStatus.textContent = 'Waiting for microphone…';
   controls();
+  voiceCancel.focus();
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     if (voice !== job) { stream.getTracks().forEach(track => track.stop()); return; }
@@ -158,27 +183,21 @@ recordButton.onclick = async () => {
       if (voice !== job) return;
       job.chunks.push(event.data);
     };
-    recorder.onerror = () => { if (voice === job) cancelVoice('Microphone recording failed. Record again'); };
+    recorder.onerror = () => { if (voice === job) cancelVoice('Recording failed. Try again'); };
     recorder.onstop = () => {
       if (voice !== job) return;
       releaseMicrophone(job);
       if (job.send) transcribeVoice(job);
-      else cancelVoice('Recording stopped. Audio discarded');
+      else cancelVoice('Recording discarded');
     };
     recorder.start(1000);
-    voiceStatus.textContent = 'Recording · Stop recording to transcribe, or Cancel voice to discard';
+    voiceStatus.textContent = 'Recording';
     controls();
   } catch (error) {
     if (voice !== job) return;
-    cancelVoice(error.name === 'NotAllowedError' ? 'Microphone permission denied. Allow microphone access in browser settings'
-      : error.name === 'NotFoundError' ? 'No microphone is available' : 'Cannot start microphone: ' + error.message);
+    cancelVoice(error.name === 'NotAllowedError' ? 'Microphone blocked. Allow it in browser settings'
+      : error.name === 'NotFoundError' ? 'No microphone found' : 'Cannot start microphone: ' + error.message);
   }
-};
-voiceStop.onclick = () => {
-  if (!voice?.recorder || voice.recorder.state !== 'recording') return;
-  voice.send = true;
-  releaseMicrophone(voice);
-  controls();
 };
 voiceCancel.onclick = () => cancelVoice();
 window.addEventListener('pagehide', () => cancelVoice());
@@ -429,10 +448,15 @@ function readImage(file) {
 function controls() {
   const changing = stateName === 'Reloading' || stateName === 'Switching session';
   send.disabled = !connected || submitting || changing || !!voice || stateName === 'Compacting' || pendingImages.some(image => !image.ready);
-  recordButton.disabled = !connected || !workspace || submitting || changing || !!voice || !voiceMime;
-  recordButton.hidden = !!voice;
-  voiceStop.hidden = !voice?.recorder || voice.send;
+  const recording = voice?.recorder?.state === 'recording' && !voice.send;
+  const voiceFocused = document.activeElement === voiceCancel;
+  composer.toggleAttribute('data-voice', !!voice);
+  composer.toggleAttribute('data-recording', !!recording);
+  recordButton.disabled = voice ? !recording : !connected || !workspace || submitting || changing || !voiceMime;
+  recordButton.title = voice ? (recording ? 'Stop recording and transcribe' : voice.send ? 'Transcribing' : 'Waiting for microphone permission') : 'Record a voice message';
+  recordButton.setAttribute('aria-label', recordButton.title);
   voiceCancel.hidden = !voice;
+  if (!voice && voiceFocused) recordButton.focus();
   stop.disabled = !connected || changing;
   commandButton.disabled = !connected || submitting || changing || !!voice;
   changesButton.disabled = !connected || changing || !workspace;
@@ -531,7 +555,7 @@ async function request(path, options = {}) {
 function disconnected(error) {
   clearTimeout(timer);
   connected = false;
-  cancelVoice('Disconnected. Voice cancelled and audio discarded');
+  cancelVoice('Disconnected. Voice cancelled');
   workspace = '';
   if (changes.open) clearChanges('Disconnected. Reconnect, then refresh Changes');
   footer.hidden = true;
@@ -551,7 +575,7 @@ async function poll() {
       const state = await response.json();
       const nearBottom = !changes.open && (!leaf || window.innerHeight + window.scrollY >= document.body.scrollHeight - 180);
       if (workspace !== (state.workspace || '')) {
-        cancelVoice('Session changed. Voice cancelled and audio discarded');
+        cancelVoice('Session changed. Voice cancelled');
         workspace = state.workspace || '';
         if (changes.open) refreshChanges();
       }
