@@ -16,8 +16,10 @@ pre { white-space: pre-wrap; font: inherit; margin: .3rem 0 }
 #live { border-color: Highlight }
 form { position: sticky; bottom: 0; background: Canvas; padding-top: .5rem }
 textarea, input { box-sizing: border-box; width: 100%; font: inherit; padding: .5rem }
-textarea { min-height: 2.75rem; max-height: min(10rem, 30dvh); resize: none }
-button { font: inherit; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem .3rem .3rem 0 }
+textarea { display: block; min-height: 2.75rem; max-height: min(10rem, 30dvh); resize: none }
+button { -webkit-appearance: none; appearance: none; box-sizing: border-box; font: inherit; min-width: 2.75rem; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem .3rem .3rem 0; border: 1px solid GrayText; border-radius: .3rem; background: ButtonFace; color: ButtonText }
+button:disabled { color: GrayText }
+button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px }
 #footer:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .7rem; padding: .25rem 0 .5rem; color: GrayText; font: .75rem ui-monospace, monospace }
 #footer-cwd { flex: 1 1 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 #footer-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
@@ -25,8 +27,8 @@ button { font: inherit; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem
 #footer-context { margin-left: auto }
 #footer-context[data-color="warning"] { color: light-dark(#805500, #ffc857) }
 #footer-context[data-color="error"] { color: light-dark(#b00020, #ff8797) }
-#composer { display: flex; align-items: end; gap: .4rem }
-#commands, #attach { margin: 0; flex: 0 0 auto }
+#composer { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem }
+#composer button { margin: .3rem 0; flex: 0 0 auto }
 #attachment:not([hidden]) { display: flex; align-items: center; gap: .5rem; padding: .3rem 0 }
 #preview { max-width: 6rem; max-height: 6rem; object-fit: contain }
 #menu { border: 1px solid GrayText; padding: .5rem; margin-bottom: .5rem }
@@ -83,8 +85,8 @@ small { display: block; color: GrayText }
 <div id="footer" hidden aria-label="Workspace and context status"><span id="footer-cwd"></span><span id="footer-branch"></span><span id="footer-git" aria-label="Git ahead, behind, changed, untracked, and staged counts"></span><span id="footer-context" aria-label="Context tokens used and window"></span></div>
 <div id="attachment" hidden><img id="preview" alt="Pending image"><span id="image-name"></span><button id="remove-image" type="button">Remove</button></div>
 <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><textarea id="prompt" aria-label="Message Pi or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea></div>
-<div><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
+<textarea id="prompt" aria-label="Message Pi or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea>
+<div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><button id="attach" type="button" aria-label="Attach one image" title="PNG, JPEG, or WebP. Large images are resized before upload">Image</button><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
 <div id="notice" role="status"></div>
 </form>
 <script nonce="${nonce}">
