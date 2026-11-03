@@ -209,15 +209,22 @@ The design takes inspiration from opencode and omp
 
 ### remote - this session in a private browser
 
-Run `/remote` in the Pi terminal, then open its private link on a device in
-Tailscale. Run `/remote off` to stop access and invalidate the link. Repeating
-`/remote` shows the current link. The terminal remains usable
+Run `/remote` in the Pi terminal, then scan its QR code with a phone on
+Tailscale or open the text link. QR display needs local `qrencode` and uses
+black on opaque white in both light and dark terminals. Enlarge the terminal
+if the code does not fit. The code appears above the editor without blocking
+input and hides when the browser connects. `/remote hide` hides it without
+stopping access. Run `/remote off` to stop access and invalidate the link
+Repeating `/remote` shows the same link and QR code
 
 The mobile page shows active-branch conversation history and live text, accepts
 plain prompts, queues follow-ups while Pi is busy, and has a Stop button. Slash
 commands and extension dialogs need the terminal. Compaction keeps access open
 and retains earlier conversation history. New, resume, fork, clone, reload,
 and shutdown close access. Run `/remote` again in the new session
+Same-tab refresh keeps access through `sessionStorage`, not `localStorage`
+After phone sleep or a network change, use Reconnect or refresh. Closing the
+tab or mobile OS eviction can lose access and require the private link again
 
 The server binds only the local Tailscale IPv4 address on an available port.
 It uses browser HTTPS when Tailscale HTTPS certificates are already enabled

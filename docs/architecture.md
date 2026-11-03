@@ -506,7 +506,7 @@ refreshes are ignored, and results that arrive after close are discarded
 `/remote` starts one Node HTTP(S) listener inside the existing Pi process, only
 on the connected Tailscale IPv4 address returned by `tailscale status --json`.
 Port zero selects an available port. Nothing starts in the extension factory
-The command shows the current link if already running. `/remote off` and
+The command shows the current link and QR code if already running. `/remote off` and
 `session_shutdown` abort startup, close the listener and all connections, and
 invalidate its in-memory credentials. Raw sockets are tracked so shutdown also
 closes connections that have not completed a TLS handshake. Pi 1.5 session replacement closes access
@@ -522,12 +522,23 @@ not enabled, it explicitly reports HTTP over encrypted tailnet transport.
 Certificate errors stop startup rather than downgrade an HTTPS-capable node
 Certificates are obtained on each start, not renewed within a running listener
 
-The 256-bit random bearer token is shown only in the terminal link's fragment.
-The page removes the fragment, exchanges it through `POST /auth`, and receives
-an independent random bearer credential held only in page memory. API calls
-send it in the Authorization header, not a cookie. Credentials last only until
-stop, and refreshing the page requires the original terminal link again
-No token is sent in request URLs, saved in browser storage, or added to Pi history
+The terminal link and QR code contain a 256-bit random bearer token in the URL
+fragment. Local `qrencode -t UTF8i -m 4` receives the URL on stdin, not in process
+arguments, and returns half-block text captured only in memory. Every QR row
+sets truecolor black foreground and opaque white background with a four-module
+quiet zone, independent of terminal themes. A non-blocking Pi widget above the
+editor shows the code without wrapping or cropping and leaves input focus alone
+If it cannot fit with room for the editor, it asks for a larger terminal and
+keeps the text link. `/remote hide`, successful browser authentication, and
+authenticated state polling clear the widget and cancel pending QR generation
+QR command failure warns and leaves the text link and listener usable. The
+extension writes neither QR data nor the URL to session entries or extra logs
+The page removes the fragment, exchanges it through `POST /auth`, and keeps
+an independent random bearer credential in same-tab `sessionStorage` for refresh
+API calls send it in the Authorization header, not a cookie. A new fragment
+clears the old credential before authentication, with no fallback if it fails
+A 401 clears the stored credential. There is no `localStorage` use. Credentials
+last only until stop. No token is sent in request URLs or added to Pi history
 Possession of the link plus network access grants the same agent control as
 terminal prompts, not a restricted or read-only role
 
@@ -554,7 +565,9 @@ normal input hooks still apply. During compaction, prompts receive an explicit
 retry message. `POST /stop` requests `ctx.abort()`. The page reports terminal
 UI waits but does not implement dialogs. Submission acknowledges dispatch, not
 model completion. Asynchronous SDK or model errors remain in the terminal or
-conversation. A network error stops polling until Reconnect is pressed
+conversation. A network error stops polling until Reconnect is pressed or the
+page is refreshed. Neither recovery path resends prompts. Tab closure or mobile
+OS eviction can require the private link again. Phone sleep does not stop Pi
 
 # Search extension (`extensions/search.ts`)
 

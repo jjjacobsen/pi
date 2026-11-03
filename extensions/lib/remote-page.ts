@@ -43,6 +43,10 @@ let version = '', leaf = '', timer, submitting = false, accessToken = '';
 async function request(path, options = {}) {
   const response = await fetch(path, { ...options, cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(15000),
     headers: { Authorization: 'Bearer ' + accessToken, ...options.headers } });
+  if (response.status === 401) {
+    sessionStorage.removeItem('pi-remote-access');
+    accessToken = '';
+  }
   if (!response.ok) throw new Error(await response.text());
   return response;
 }
@@ -106,11 +110,20 @@ async function connect() {
   const token = location.hash.slice(1);
   window.history.replaceState(null, '', '/');
   try {
-    if (!token) throw new Error('Open the private link from /remote again. Refreshing the page clears browser access');
-    accessToken = (await (await request('/auth', { method: 'POST', headers: { Authorization: 'Bearer ' + token } })).json()).accessToken;
+    if (token) {
+      // A new link replaces the old credential even when authentication fails
+      sessionStorage.removeItem('pi-remote-access');
+      accessToken = (await (await request('/auth', { method: 'POST', headers: { Authorization: 'Bearer ' + token } })).json()).accessToken;
+      sessionStorage.setItem('pi-remote-access', accessToken);
+    } else {
+      accessToken = sessionStorage.getItem('pi-remote-access') || '';
+    }
+    if (!accessToken) throw new Error('Open the private link from /remote in the terminal');
     await poll();
   } catch (error) { disconnected(error); }
 }
+// Opening a new fragment in this tab must replace the active connection too
+window.addEventListener('hashchange', () => window.location.reload());
 connect();
 </script>
 </html>`;

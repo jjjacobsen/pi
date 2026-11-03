@@ -71,6 +71,11 @@ go to both selected model providers
 CLI in Pi's PATH, a connected local Tailscale daemon with an IPv4 address, and a
 browser device on the same tailnet. Tailnet ACLs or grants must permit that
 device to reach the host's selected port. Each start uses a new available port
+QR display also needs the local `qrencode` command in Pi's PATH. Without it,
+the text link still works. No QR data goes to a network service or file
+The non-blocking QR widget needs enough terminal space for the whole code and
+editor. `/remote hide` hides it without stopping access. Browser connection
+also hides it
 No extra npm package, API key, environment variable, or system service is needed
 
 Private browser HTTPS works without Serve when Tailscale HTTPS certificates
@@ -93,13 +98,16 @@ If certificate retrieval fails on an enabled node, startup fails with no HTTP
 fallback. Long-running listeners do not renew certificates, so stop and restart
 before certificate expiry
 
-Keep the displayed link private and stop access when finished. Prompts and tool
+Keep the displayed link and QR code private and stop access when finished. Prompts and tool
 output can contain private data. The browser has full prompt control, not a
 sandbox. The extension writes no extra session data or credentials to this repo
-Normal Pi session persistence is unchanged. Browser state is held only in the
-page memory, with caching disabled and no cookies or browser storage. Refreshing
-the page requires the private terminal link again. Closing a tab does not stop
-the listener. Use `/remote off` or exit Pi
+Normal Pi session persistence is unchanged. The browser keeps its credential in
+same-tab `sessionStorage` so refresh restores access, with caching disabled and
+no cookies or `localStorage`. A new private link replaces the old credential
+Phone sleep or a network change can pause polling. Use Reconnect or refresh
+Neither resends prompts. Tab closure or mobile OS eviction can require the
+private terminal link again, but does not stop Pi or the listener. `/remote off`,
+session replacement, reload, and Pi shutdown close access
 
 ## Local resources
 

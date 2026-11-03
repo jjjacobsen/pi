@@ -6,9 +6,40 @@ import { createServer as createHttpsServer } from "node:https";
 import { isIP, type Socket } from "node:net";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { remotePage } from "./lib/remote-page";
 
 const exec = promisify(execFile);
+
+async function showQr(ctx: ExtensionContext, link: string, signal: AbortSignal) {
+  const helpText = `Scan with a phone on Tailscale. Keep this code and link private\n${link}\nKeep typing below. /remote hide hides this code, /remote off stops access`;
+  const help = new Text(helpText, 0, 0);
+  ctx.ui.setWidget("remote-qr", () => help);
+  let stdout: string;
+  try {
+    const result = exec("qrencode", ["-t", "UTF8i", "-m", "4"], { timeout: 5000, signal, maxBuffer: 128 * 1024 });
+    // Keep the private URL out of process arguments and command errors
+    result.child.stdin.end(link);
+    ({ stdout } = await result);
+  } catch {
+    if (!signal.aborted) ctx.ui.notify("QR code unavailable. Check qrencode in PATH or use the text link", "warning");
+    return;
+  }
+  if (signal.aborted) return;
+  const qr = stdout.replace(/\n$/, "").split("\n").map((line) => `\x1b[0;38;2;0;0;0;48;2;255;255;255m${line}\x1b[0m`);
+  const qrWidth = visibleWidth(qr[0]);
+  ctx.ui.setWidget("remote-qr", (tui) => ({
+    render(width) {
+      const footer = help.render(width);
+      // Leave room for the editor, footer, and conversation instead of covering them
+      if (width < qrWidth || tui.terminal.rows < qr.length + footer.length + 10) {
+        return new Text(`Enlarge the terminal to show the QR code, or use the text link\n${helpText}`, 0, 0).render(width);
+      }
+      return [...qr, ...footer];
+    },
+    invalidate() { help.invalidate(); },
+  }));
+}
 
 function text(content) {
   if (typeof content === "string") return content;
@@ -60,8 +91,25 @@ export default function (pi: ExtensionAPI) {
   let liveVersion = 0;
   let compacting = false;
   let waiting = false;
+  let qrController: AbortController;
+  let qrContext: ExtensionContext;
+
+  function hideQr() {
+    qrController?.abort();
+    qrController = undefined;
+    qrContext?.ui.setWidget("remote-qr", undefined);
+    qrContext = undefined;
+  }
+
+  async function displayQr(ctx: ExtensionContext) {
+    hideQr();
+    qrController = new AbortController();
+    qrContext = ctx;
+    await showQr(ctx, link, qrController.signal);
+  }
 
   async function stop() {
+    hideQr();
     controller?.abort();
     controller = undefined;
     link = undefined;
@@ -147,11 +195,13 @@ export default function (pi: ExtensionAPI) {
       if (request.method === "POST" && request.headers.origin !== origin) return reply(response, 403, "A same-origin request is required");
       if (request.method === "POST" && url.pathname === "/auth") {
         if (!matches(request.headers.authorization, `Bearer ${token}`)) return reply(response, 401, "Invalid remote link");
+        hideQr();
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         return response.end(JSON.stringify({ accessToken }));
       }
       if (!matches(request.headers.authorization, `Bearer ${accessToken}`)) return reply(response, 401, "Open the link from /remote in the terminal");
       if (request.method === "GET" && url.pathname === "/state") {
+        hideQr();
         const leaf = ctx.sessionManager.getLeafId() ?? "root";
         const state = compacting ? "Compacting" : waiting ? "Waiting for a terminal dialog" : ctx.isIdle() ? "Idle" : "Working";
         const pending = ctx.hasPendingMessages();
@@ -226,20 +276,28 @@ export default function (pi: ExtensionAPI) {
     host = `${https ? domain : ip}:${address.port}`;
     origin = `${https ? "https" : "http"}://${host}`;
     link = `${origin}/#${token}`;
-    ctx.ui.notify(`Remote access controls this Pi session with its full permissions. Keep the link private\n${https ? "HTTPS on Tailscale" : "HTTP on Tailscale encrypted transport, NOT browser HTTPS"}\n${link}`, "warning");
+    ctx.ui.notify(`Remote access controls this Pi session with its full permissions. Keep the link private\n${https ? "HTTPS on Tailscale" : "HTTP on Tailscale encrypted transport, NOT browser HTTPS"}`, "warning");
   }
 
   pi.registerCommand("remote", {
-    description: "Open this session in a private Tailscale browser, or /remote off",
+    description: "Open this session in a private Tailscale browser, /remote hide, or /remote off",
     handler: async (args, ctx) => {
+      if (args.trim() === "hide") {
+        hideQr();
+        return;
+      }
       if (args.trim() === "off") {
         await stop();
         ctx.ui.notify("Remote access is off", "info");
         return;
       }
-      if (args.trim()) return ctx.ui.notify("Usage: /remote [off]", "warning");
+      if (args.trim()) return ctx.ui.notify("Usage: /remote [hide|off]", "warning");
       if (ctx.mode !== "tui") return ctx.ui.notify("/remote requires the Pi terminal", "warning");
-      if (controller) return ctx.ui.notify(link ? `Remote access is on\n${link}` : "Remote access is starting", "info");
+      if (controller) {
+        ctx.ui.notify(link ? "Remote access is on" : "Remote access is starting", "info");
+        if (link) await displayQr(ctx);
+        return;
+      }
       controller = new AbortController();
       const signal = controller.signal;
       try {
@@ -248,7 +306,9 @@ export default function (pi: ExtensionAPI) {
         if (signal.aborted) return;
         await stop();
         ctx.ui.notify(error.message, "error");
+        return;
       }
+      await displayQr(ctx);
     },
   });
 }
