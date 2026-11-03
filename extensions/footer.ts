@@ -28,8 +28,8 @@
  * (ctx.sessionManager / ctx.getContextUsage / ctx.model) plus
  * footerData (git branch, extension statuses). Nerd Font icons used:
  * fae-pi U+E22C, md-folder_open U+F0770, fa-code-fork U+F126, and md-web
- * U+F059F (all present in FiraCode Nerd Font). Enabled at session start;
- * /footer toggles.
+ * U+F059F (all present in FiraCode Nerd Font). Enabled by default;
+ * /footer toggles the terminal footer and remote browser strip.
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -38,6 +38,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { hasActiveBrowsers } from "./lib/browser-status";
+import { FOOTER_STATE_REQUEST, type FooterState } from "./lib/footer-state";
 
 // Nerd Font glyphs (verified against FiraCode Nerd Font)
 const ICONS = {
@@ -106,7 +107,11 @@ let browserActive = false;
 let browserStatusTimer: ReturnType<typeof setInterval> | null = null;
 let browserStatusInFlight = false;
 
-let footerEnabled = true;
+// Keep only the user's toggle across runtime replacements, never an SDK context
+const enabledKey = Symbol.for("jonah.pi.footer.enabled");
+const preferences = globalThis as typeof globalThis & { [enabledKey]?: boolean };
+let readState: (() => FooterState) | undefined;
+let disposeFooter: (() => void) | undefined;
 let footerTui: TUI | null = null;
 let stream: StreamState | null = null;
 let streaming = false;
@@ -141,14 +146,15 @@ function sanitizeStatusText(text: string): string {
 	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 }
 
-function refreshGitStatus(ctx: ExtensionContext): void {
+function refreshGitStatus(ctx: ExtensionContext, signal: AbortSignal): void {
 	if (gitStatusInFlight) return;
 	gitStatusInFlight = true;
 	execFile(
 		"git",
 		["--no-optional-locks", "status", "--porcelain", "-b"],
-		{ cwd: ctx.sessionManager.getCwd(), encoding: "utf8", timeout: GIT_STATUS_POLL_MS - 1000 },
+		{ cwd: ctx.sessionManager.getCwd(), encoding: "utf8", timeout: GIT_STATUS_POLL_MS - 1000, signal },
 		(error, stdout) => {
+			if (signal.aborted) return;
 			gitStatusInFlight = false;
 			if (error) {
 				// Not a repo, git missing, or cwd gone: nothing to show
@@ -180,17 +186,20 @@ function refreshGitStatus(ctx: ExtensionContext): void {
 	);
 }
 
-async function refreshBrowserStatus(): Promise<void> {
+async function refreshBrowserStatus(signal: AbortSignal): Promise<void> {
 	if (browserStatusInFlight) return;
 	browserStatusInFlight = true;
 	try {
-		browserActive = await hasActiveBrowsers();
+		const active = await hasActiveBrowsers();
+		if (!signal.aborted) browserActive = active;
 	} catch {
 		// Hide the icon when browser status is unknown.
-		browserActive = false;
+		if (!signal.aborted) browserActive = false;
 	} finally {
-		browserStatusInFlight = false;
-		if (footerTui) footerTui.requestRender();
+		if (!signal.aborted) {
+			browserStatusInFlight = false;
+			if (footerTui) footerTui.requestRender();
+		}
 	}
 }
 
@@ -310,8 +319,30 @@ function justify(left: string, right: string, width: number): string {
 	return truncateToWidth(left, width, "...");
 }
 
+function footerState(ctx: ExtensionContext, footerData: FooterData): FooterState {
+	const contextUsage = ctx.getContextUsage();
+	const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
+	const contextTokens = contextUsage?.tokens ?? null;
+	return {
+		cwd: formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE || ""),
+		branch: footerData.getGitBranch(),
+		gitStatus: gitStatus ? gitStatusSuffix(gitStatus).trim() : "",
+		context: contextTokens === null
+			? `?/${formatTokens(contextWindow)}`
+			: `${contextTokens.toLocaleString("en-US")}/${formatTokens(contextWindow)}`,
+		contextColor: contextTokens === null
+			? "dim"
+			: contextTokens >= ERROR_CTX_TOKENS || (contextWindow > 0 && contextTokens >= ERROR_CTX_FRACTION * contextWindow)
+				? "error"
+				: contextTokens >= WARN_CTX_TOKENS || (contextWindow > 0 && contextTokens >= WARN_CTX_FRACTION * contextWindow)
+					? "warning"
+					: "dim",
+	};
+}
+
 function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterData, width: number): string[] {
 	const lines: string[] = [];
+	const state = footerState(ctx, footerData);
 
 	// Line 1: workspace — π  folder ~/path  git branch + status  • session
 	// Segments separated by exactly two spaces (no glyph delimiter).
@@ -320,10 +351,9 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 	// space to keep the visible gap to the folder glyph at the two columns the
 	// other segments get
 	segments.push(theme.fg("accent", ICONS.pi) + " ");
-	segments.push(theme.fg("dim", `${ICONS.folder} ${formatCwd(ctx.sessionManager.getCwd(), process.env.HOME || process.env.USERPROFILE || "")}`));
-	const branch = footerData.getGitBranch();
-	if (branch) {
-		segments.push(theme.fg("success", `${ICONS.git} ${branch}${gitStatus ? gitStatusSuffix(gitStatus) : ""}`));
+	segments.push(theme.fg("dim", `${ICONS.folder} ${state.cwd}`));
+	if (state.branch) {
+		segments.push(theme.fg("success", `${ICONS.git} ${state.branch}${state.gitStatus ? ` ${state.gitStatus}` : ""}`));
 	}
 	if (browserActive) segments.push(theme.fg("warning", ICONS.browser));
 	const sessionName = ctx.sessionManager.getSessionName();
@@ -332,21 +362,6 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 
 	// Line 2 left: token/cost/context stats
 	const { input, output, cost, cacheRead, cacheWrite, latestCacheHitRate } = sessionTotals(ctx);
-	const contextUsage = ctx.getContextUsage();
-	const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
-	const contextTokens = contextUsage?.tokens ?? null;
-	const contextDisplay =
-		contextTokens === null
-			? `?/${formatTokens(contextWindow)}`
-			: `${contextTokens.toLocaleString("en-US")}/${formatTokens(contextWindow)}`;
-	const contextColor: "error" | "warning" | "dim" =
-		contextTokens === null
-			? "dim"
-			: contextTokens >= ERROR_CTX_TOKENS || (contextWindow > 0 && contextTokens >= ERROR_CTX_FRACTION * contextWindow)
-				? "error"
-				: contextTokens >= WARN_CTX_TOKENS || (contextWindow > 0 && contextTokens >= WARN_CTX_FRACTION * contextWindow)
-					? "warning"
-					: "dim";
 
 	const parts: string[] = [];
 	parts.push(theme.fg("dim", `↑${formatTokens(input)} ↓${formatTokens(output)}`));
@@ -354,7 +369,7 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 		parts.push(theme.fg("dim", `CH${latestCacheHitRate.toFixed(1)}%`));
 	}
 	parts.push(theme.fg("dim", `$${cost.toFixed(3)}`));
-	parts.push(theme.fg(contextColor, contextDisplay));
+	parts.push(theme.fg(state.contextColor, state.context));
 	// tok/s last so the rest of the line never shifts when it appears
 	parts.push(theme.fg("dim", `${currentTokPerSec()} tok/s`));
 	const left = parts.join("  ");
@@ -384,39 +399,41 @@ function renderFooter(ctx: ExtensionContext, theme: Theme, footerData: FooterDat
 }
 
 function enableFooter(ctx: ExtensionContext): void {
+	disposeFooter?.();
 	gitStatus = null; // clear any stale status from a previous session/cwd
+	gitStatusInFlight = false;
+	browserStatusInFlight = false;
 	// Browser status is global, so keep the last result across session changes.
-	if (gitStatusTimer) {
-		clearInterval(gitStatusTimer);
-		gitStatusTimer = null;
-	}
-	if (browserStatusTimer) {
-		clearInterval(browserStatusTimer);
-		browserStatusTimer = null;
-	}
 	ctx.ui.setFooter((tui, theme, footerData) => {
 		footerTui = tui;
+		const controller = new AbortController();
+		const { signal } = controller;
+		readState = () => footerState(ctx, footerData);
 		const unsubscribe = footerData.onBranchChange(() => {
-			refreshGitStatus(ctx); // a branch switch usually means a fresh status too
+			refreshGitStatus(ctx, signal); // a branch switch usually means a fresh status too
 			tui.requestRender();
 		});
-		refreshGitStatus(ctx); // paint the git status as soon as it resolves
-		refreshBrowserStatus();
-		gitStatusTimer = setInterval(() => refreshGitStatus(ctx), GIT_STATUS_POLL_MS);
-		browserStatusTimer = setInterval(refreshBrowserStatus, BROWSER_STATUS_POLL_MS);
+		refreshGitStatus(ctx, signal); // paint the git status as soon as it resolves
+		refreshBrowserStatus(signal);
+		gitStatusTimer = setInterval(() => refreshGitStatus(ctx, signal), GIT_STATUS_POLL_MS);
+		browserStatusTimer = setInterval(() => refreshBrowserStatus(signal), BROWSER_STATUS_POLL_MS);
+		disposeFooter = () => {
+			if (signal.aborted) return;
+			controller.abort();
+			readState = undefined;
+			footerTui = null;
+			if (gitStatusTimer) {
+				clearInterval(gitStatusTimer);
+				gitStatusTimer = null;
+			}
+			if (browserStatusTimer) {
+				clearInterval(browserStatusTimer);
+				browserStatusTimer = null;
+			}
+			unsubscribe();
+		};
 		return {
-			dispose: () => {
-				if (footerTui === tui) footerTui = null;
-				if (gitStatusTimer) {
-					clearInterval(gitStatusTimer);
-					gitStatusTimer = null;
-				}
-				if (browserStatusTimer) {
-					clearInterval(browserStatusTimer);
-					browserStatusTimer = null;
-				}
-				unsubscribe();
-			},
+			dispose: disposeFooter,
 			invalidate: () => {},
 			render: (width: number) => renderFooter(ctx, theme, footerData, width),
 		};
@@ -428,6 +445,14 @@ function enableFooter(ctx: ExtensionContext): void {
 // =============================================================================
 
 export default function (pi: ExtensionAPI) {
+	preferences[enabledKey] ??= true;
+	let unsubscribeState: (() => void) | undefined;
+	pi.on("session_shutdown", () => {
+		unsubscribeState?.();
+		disposeFooter?.();
+		disposeFooter = undefined;
+	});
+
 	pi.on("message_update", (event) => {
 		const ev = event.assistantMessageEvent;
 		if (ev.type !== "text_delta" && ev.type !== "thinking_delta") return;
@@ -474,27 +499,20 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		lastTokPerSec = "0.0"; // fresh session starts at 0.0, not a stale frozen value
 		totalsCache = undefined;
-		if (footerEnabled && ctx.mode === "tui") enableFooter(ctx);
+		unsubscribeState = pi.events.on(FOOTER_STATE_REQUEST, (reply: (state: FooterState | null) => void) => {
+			reply(readState?.() ?? null);
+		});
+		if (preferences[enabledKey] && ctx.mode === "tui") enableFooter(ctx);
 	});
 
 	pi.registerCommand("footer", {
-		description: "Toggle the custom footer",
+		description: "Toggle the custom footer and remote browser status",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") return;
-			footerEnabled = !footerEnabled;
-			if (footerEnabled) enableFooter(ctx);
-			else {
-				ctx.ui.setFooter(undefined);
-				if (gitStatusTimer) {
-					clearInterval(gitStatusTimer);
-					gitStatusTimer = null;
-				}
-				if (browserStatusTimer) {
-					clearInterval(browserStatusTimer);
-					browserStatusTimer = null;
-				}
-			}
-			ctx.ui.notify(footerEnabled ? "Custom footer enabled" : "Default footer restored", "info");
+			preferences[enabledKey] = !preferences[enabledKey];
+			if (preferences[enabledKey]) enableFooter(ctx);
+			else ctx.ui.setFooter(undefined);
+			ctx.ui.notify(preferences[enabledKey] ? "Custom footer enabled" : "Default footer restored", "info");
 		},
 	});
 }

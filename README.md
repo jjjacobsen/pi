@@ -220,8 +220,9 @@ ahead / behind commits and `*N ?N +N` worktree-changed / untracked / staged
 counters, polled from `git status`), a browser icon when any agent-browser daemon
 is live, token and cost stats, the latest response's cache hit percentage (`CH`), and
 a context color set on absolute tokens (warning ~100k, error ~200k). Totals
-include cache-warming usage. `/footer`
-switches between it and the built-in footer. Browser status has no count or `?`
+include cache-warming usage. `/footer` switches between it and the built-in
+footer and also hides or shows the remote browser status strip. The toggle
+stays set across reload and session changes in this process. Browser status has no count or `?`
 indicator. A failed status scan hides the icon
 The design takes inspiration from opencode and omp
 (can1357/oh-my-pi)
@@ -237,7 +238,11 @@ stopping access. Run `/remote off` to stop access and invalidate the link
 Repeating `/remote` shows the same link and QR code
 
 The mobile page shows active-branch history and live text, queues plain prompts
-while Pi is busy, and has a Stop button. Type `/` or press `/` beside the
+while Pi is busy, and has a Stop button. A compact strip above the composer
+shows the footer extension's path, branch, Git counters, and context usage
+with the same formatting and warning levels. It is hidden when the footer
+extension is absent or disabled. `/footer` toggles both displays
+Type `/` or press `/` beside the
 composer for the same filterable command menu. `/new`, `/reload`, and `/resume`
 work remotely. Resume opens a searchable list of saved sessions for the current
 working directory. Loaded extension, skill, and template commands are also

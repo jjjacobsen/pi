@@ -8,6 +8,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { remotePage } from "./lib/remote-page";
+import { readFooterState } from "./lib/footer-state";
 
 const exec = promisify(execFile);
 
@@ -154,7 +155,7 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
     if (access.handle) return access.handle(request, response, url);
     if (request.method === "GET" && url.pathname === "/state") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      return response.end(JSON.stringify({ version: "", state: access.transition, pending: false, live: null }));
+      return response.end(JSON.stringify({ version: "", state: access.transition, pending: false, live: null, footer: null }));
     }
     return reply(response, 503, access.transition);
   }
@@ -319,7 +320,8 @@ export default function (pi: ExtensionAPI) {
         const leaf = `${ctx.sessionManager.getSessionId()}:${ctx.sessionManager.getLeafId() ?? "root"}`;
         const state = compacting ? "Compacting" : waiting ? "Waiting for a terminal dialog" : ctx.isIdle() ? "Idle" : "Working";
         const pending = ctx.hasPendingMessages();
-        const version = `${leaf}:${liveVersion}:${state}:${pending}`;
+        const footer = readFooterState(pi);
+        const version = `${leaf}:${liveVersion}:${state}:${pending}:${JSON.stringify(footer)}`;
         if (url.searchParams.get("version") === version) return reply(response, 204);
         if (leaf !== historyLeaf) {
           // Raw active-branch history retains old messages across compaction, unlike model context
@@ -333,7 +335,7 @@ export default function (pi: ExtensionAPI) {
         }
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         return response.end(JSON.stringify({
-          version, leaf, state, pending, live: live ? messageView(live) : null,
+          version, leaf, state, pending, footer, live: live ? messageView(live) : null,
           ...(url.searchParams.get("leaf") !== leaf ? { history } : {}),
         }));
       }

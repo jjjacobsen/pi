@@ -616,6 +616,15 @@ prompts, thinking blocks, or image bytes. Message events retain the current
 assistant snapshot for live text. Compaction events update status without
 closing the listener. Tree navigation refreshes history on the next poll
 
+Each authenticated `/state` request also reads the footer extension through
+`lib/footer-state.ts`. A synchronous event-bus request returns only formatted
+path, branch, Git counters, context usage, and context color, or null when the
+footer is absent or disabled. The same footer function supplies both displays
+There is no separate Git poll or context calculation in remote. The serialized
+footer is part of the version marker, so footer-only changes cannot return 204
+The page renders the data with `textContent` in a compact strip above the
+composer. Transition responses and connection failures hide the strip
+
 `POST /prompt` rejects leading slash commands and submits literal text through
 `pi.sendUserMessage` with `deliverAs: "followUp"` and expansion disabled. Pi's
 normal input hooks still apply. During compaction, prompts receive an explicit
@@ -749,8 +758,15 @@ The model and thinking level are right-aligned. The provider is shown when
 more than one provider is available. Extension statuses use a third line
 
 The footer starts automatically for TUI sessions. `/footer` switches between
-it and the built-in footer. Message, model, thinking, session-info, compaction,
-branch, git-status, and browser-status changes request a render
+it and the built-in footer and toggles the remote browser strip. Only the
+boolean preference survives runtime replacements in a process-owned slot
+The event-bus reader is bound at session start and removed at shutdown, with
+no SDK objects stored in process state. It reads current SDK context usage and
+the existing Git poll result through the same formatter as the terminal
+Disposal clears the reader, removes listeners and timers, and aborts pending
+Git work. Completed browser scans cannot update disposed state
+Message, model, thinking, session-info, compaction, branch, git-status, and
+browser-status changes request a render
 
 The footer scans agent-browser PID metadata immediately and every 10 seconds,
 across the default socket root, any `AGENT_BROWSER_SOCKET_DIR`, and all their

@@ -18,6 +18,13 @@ form { position: sticky; bottom: 0; background: Canvas; padding-top: .5rem }
 textarea, input { box-sizing: border-box; width: 100%; font: inherit; padding: .5rem }
 textarea { min-height: 2.75rem; max-height: min(10rem, 30dvh); resize: none }
 button { font: inherit; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem .3rem .3rem 0 }
+#footer:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .7rem; padding: .25rem 0 .5rem; color: GrayText; font: .75rem ui-monospace, monospace }
+#footer-cwd { flex: 1 1 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+#footer-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+#footer-git, #footer-context { flex-shrink: 0; white-space: nowrap }
+#footer-context { margin-left: auto }
+#footer-context[data-color="warning"] { color: light-dark(#805500, #ffc857) }
+#footer-context[data-color="error"] { color: light-dark(#b00020, #ff8797) }
 #composer { display: flex; align-items: end; gap: .4rem }
 #commands { margin: 0; flex: 0 0 auto }
 #menu { border: 1px solid GrayText; padding: .5rem; margin-bottom: .5rem }
@@ -37,6 +44,7 @@ small { display: block; color: GrayText }
 <input id="session-filter" hidden aria-label="Filter saved sessions" placeholder="Search sessions…">
 <div id="choices" role="listbox" aria-label="Commands"></div>
 </section>
+<div id="footer" hidden aria-label="Workspace and context status"><span id="footer-cwd"></span><span id="footer-branch"></span><span id="footer-git" aria-label="Git ahead, behind, changed, untracked, and staged counts"></span><span id="footer-context" aria-label="Context tokens used and window"></span></div>
 <div id="composer"><button id="commands" type="button" aria-label="Open command menu" aria-expanded="false" disabled>/</button><textarea id="prompt" aria-label="Message Pi or type / for commands" rows="1" maxlength="60000" placeholder="Message Pi or type /…"></textarea></div>
 <div><button id="send" disabled>Send</button><button id="stop" type="button" disabled>Stop</button><button id="reconnect" type="button" hidden>Reconnect</button></div>
 <div id="notice" role="status"></div>
@@ -52,6 +60,11 @@ const stop = document.getElementById('stop');
 const reconnect = document.getElementById('reconnect');
 const notice = document.getElementById('notice');
 const form = document.getElementById('form');
+const footer = document.getElementById('footer');
+const footerCwd = document.getElementById('footer-cwd');
+const footerBranch = document.getElementById('footer-branch');
+const footerGit = document.getElementById('footer-git');
+const footerContext = document.getElementById('footer-context');
 const commandButton = document.getElementById('commands');
 const menu = document.getElementById('menu');
 const menuTitle = document.getElementById('menu-title');
@@ -166,6 +179,7 @@ async function request(path, options = {}) {
 function disconnected(error) {
   clearTimeout(timer);
   connected = false;
+  footer.hidden = true;
   recovering = true;
   version = '';
   status.textContent = accessToken ? 'Reconnecting…' : 'Disconnected. Open the private /remote link';
@@ -192,6 +206,15 @@ async function poll() {
           return article;
         });
         history.replaceChildren(...nodes);
+      }
+      footer.hidden = !state.footer;
+      if (state.footer) {
+        footerCwd.textContent = footerCwd.title = state.footer.cwd;
+        footerBranch.textContent = footerBranch.title = state.footer.branch || '';
+        footerBranch.hidden = !state.footer.branch;
+        footerGit.textContent = state.footer.branch ? state.footer.gitStatus : '';
+        footerContext.textContent = state.footer.context;
+        footerContext.dataset.color = state.footer.contextColor;
       }
       stream.textContent = state.live ? state.live.text : '';
       live.hidden = !state.live;
