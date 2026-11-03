@@ -77,6 +77,11 @@ The non-blocking QR widget needs enough terminal space for the whole code and
 editor. `/remote hide` hides it without stopping access. Browser connection
 also hides it
 No extra npm package, API key, environment variable, or system service is needed
+The read-only Changes viewer needs Git in Pi's PATH and a repository in the
+current session directory. It uses the same authenticated listener and reads
+only changed files in that repository. No GitHub service or credentials are
+needed. Refresh after file changes. Missing repositories, binary files, deleted
+source, symbolic links, and size limits show messages instead of content
 Image input uses Pi's built-in resize helper. Select a model with image input
 and keep `images.blockImages` false. The Image button uses the native file
 picker, without forced camera capture. Image paste depends on what the browser

@@ -607,7 +607,7 @@ Text-only and command JSON bodies are limited to 64 KiB. Image prompt JSON
 bodies are limited to 15 MiB, uploaded images to 10 MiB, and decoded text to
 64 KiB UTF-8. Request upload timeout is 60 seconds, header timeout 10 seconds
 CSP permits only blob URLs for images, for the local pending-image preview
-The extension adds no file-serving, tool-execution, or shell endpoint
+The extension adds no general file-serving, tool-execution, or shell endpoint
 
 `extensions/lib/remote-page.ts` provides the mobile page. It polls `/state` at
 700 ms with version and leaf markers. The leaf marker includes the session ID
@@ -627,6 +627,35 @@ There is no separate Git poll or context calculation in remote. The serialized
 footer is part of the version marker, so footer-only changes cannot return 204
 The page renders the data with `textContent` in a compact strip above the
 composer. Transition responses and connection failures hide the strip
+
+The header's Changes button opens a full-screen, read-only dialog without
+replacing the chat. Close restores the saved chat scroll position, and polling
+does not scroll the chat while the dialog is open. Refresh reads a new snapshot
+`GET /changes?workspace=<id>` returns the current repository's changed files,
+status codes, and combined added/deleted counts against HEAD. An optional
+`path` and `view=diff|source` returns one listed file's unified diff or current
+full source. The page uses text-only DOM nodes, line numbers, red/green diff
+rows, and horizontal scrolling, with a bounded file list above the diff on phones
+There are no Git write operations, editor, history, tree, or syntax highlighter
+
+`lib/remote-changes.ts` uses bounded Git argv calls with literal pathspecs,
+no optional locks, no external diff or textconv, and no rename detection
+Renames appear as deletion/addition pairs. Untracked files exclude ignored
+files and appear as additions. Without HEAD, current files are additions
+Source reads require membership in a fresh Git status list, a regular file,
+and a canonical path inside the current repository with no symbolic links
+Deleted source and binary or oversized content return clear messages
+Limits are 300 changed files, 256 KiB and 5,000 lines per content view,
+1 MiB of Git metadata output, and three seconds per Git command
+Binary or unavailable new files are excluded from line counts and reported
+No files, index entries, or Git objects are written
+
+Each session runtime gets a random workspace marker included in the state
+version and Changes requests. A mismatched marker rejects the request, and
+handler identity is checked after asynchronous reads. The page clears Changes
+on workspace changes or connection loss and discards superseded responses
+Refresh cannot reuse data from an old repository after session replacement
+The existing process-owned listener and authentication are unchanged
 
 `POST /prompt` accepts JSON `{ text, image?: { data, mimeType } }`, with one
 base64 PNG, JPEG, or WebP image and an optional caption. Image-only prompts use

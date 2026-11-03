@@ -8,6 +8,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { resizeImage, SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { remotePage } from "./lib/remote-page";
+import { readChange, readChanges } from "./lib/remote-changes";
 import { readFooterState } from "./lib/footer-state";
 import { imageFormat } from "./lib/image-providers";
 
@@ -305,7 +306,30 @@ export default function (pi: ExtensionAPI) {
     access.transition = undefined;
     access.renderPage = remotePage;
     access.hideQr = hideQr;
+    const workspace = randomBytes(16).toString("hex");
     const handle = async (request: IncomingMessage, response: ServerResponse, url: URL) => {
+      if (request.method === "GET" && url.pathname === "/changes") {
+        if (url.searchParams.get("workspace") !== workspace) return reply(response, 409, "Session changed. Wait for the current session, then refresh Changes");
+        const path = url.searchParams.get("path");
+        const view = url.searchParams.get("view");
+        if (path !== null && !["diff", "source"].includes(view)) return reply(response, 400, "Choose Diff or Source");
+        let result;
+        try {
+          const snapshot = await readChanges(ctx.cwd);
+          if (access.handle !== handle) return reply(response, 409, "Session changed. Refresh Changes");
+          if (path !== null) result = await readChange(snapshot, path, view);
+          else {
+            const { root, head, ...summary } = snapshot;
+            result = { ...summary, repository: root, hasHead: !!head };
+          }
+        } catch (error) {
+          if (access.handle !== handle) return reply(response, 409, "Session changed. Refresh Changes");
+          return reply(response, 400, error.code ? "Cannot read Git changes. Refresh or review them in the terminal" : error.message);
+        }
+        if (access.handle !== handle) return reply(response, 409, "Session changed. Refresh Changes");
+        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        return response.end(JSON.stringify({ workspace, ...result }));
+      }
       if (request.method === "GET" && url.pathname === "/commands") {
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         return response.end(JSON.stringify(commandList()));
@@ -325,7 +349,7 @@ export default function (pi: ExtensionAPI) {
         const state = compacting ? "Compacting" : waiting ? "Waiting for a terminal dialog" : ctx.isIdle() ? "Idle" : "Working";
         const pending = ctx.hasPendingMessages();
         const footer = readFooterState(pi);
-        const version = `${leaf}:${liveVersion}:${state}:${pending}:${JSON.stringify(footer)}`;
+        const version = `${workspace}:${leaf}:${liveVersion}:${state}:${pending}:${JSON.stringify(footer)}`;
         if (url.searchParams.get("version") === version) return reply(response, 204);
         if (leaf !== historyLeaf) {
           // Raw active-branch history retains old messages across compaction, unlike model context
@@ -339,7 +363,7 @@ export default function (pi: ExtensionAPI) {
         }
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         return response.end(JSON.stringify({
-          version, leaf, state, pending, footer, live: live ? messageView(live) : null,
+          version, leaf, workspace, state, pending, footer, live: live ? messageView(live) : null,
           ...(url.searchParams.get("leaf") !== leaf ? { history } : {}),
         }));
       }

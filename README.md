@@ -247,6 +247,17 @@ The selected model must accept images and `images.blockImages` must be false
 Slash commands reject attachments. Failed sends keep the image for retry
 Unsent images stay only in the page and are lost on refresh or page exit
 
+Press Changes in the header for a full-screen, read-only review of the current
+repository. It lists staged, unstaged, and untracked files with combined line
+counts against HEAD. Select a file for a red/green unified diff with line
+numbers, or use Source for its current full text. A− and A+ resize only the code
+and line numbers from 9 to 18 px, with 12 px as the default. Same-tab refresh keeps
+the size. Refresh reads current changes
+Close returns to the same chat position. New files are additions, and renames
+appear as a deletion and an addition. There are no editing or Git write controls
+Binary files, symbolic links, and content over 256 KiB or 5,000 lines are not
+shown. More than 300 changed files requires review in the terminal
+
 A compact strip above the composer
 shows the footer extension's path, branch, Git counters, and context usage
 with the same formatting and warning levels. It is hidden when the footer

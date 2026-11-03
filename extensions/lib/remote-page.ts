@@ -36,8 +36,42 @@ button { font: inherit; min-height: 2.75rem; padding: .4rem .7rem; margin: .3rem
 #choices button[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px }
 small { display: block; color: GrayText }
 #notice { min-height: 1.5rem }
+#changes { box-sizing: border-box; position: fixed; inset: 0; width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: .75rem; border: 0; background: Canvas; color: CanvasText }
+#changes[open] { display: flex; flex-direction: column; gap: .5rem }
+#changes-heading, #change-toolbar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap }
+#changes-heading h2 { font-size: 1.2rem; margin: 0; flex: 1 }
+#change-toolbar button { min-width: 2.75rem; margin: .3rem 0 }
+#changes-summary { margin: 0; white-space: pre-line }
+#changes-main { display: flex; flex: 1; min-height: 0; gap: .75rem }
+#change-files { flex: 0 0 16rem; overflow: auto; border-right: 1px solid GrayText; padding-right: .5rem }
+#change-files button { display: block; width: 100%; text-align: left; overflow-wrap: anywhere; white-space: pre-wrap; margin: 0 0 .3rem }
+#change-files button[aria-current="true"], #change-toolbar button[aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: -2px }
+#change-detail { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0 }
+#change-path { margin: 0; font-size: 1rem; white-space: pre-wrap }
+#change-content { overflow: auto; flex: 1; min-height: 0; overscroll-behavior: contain }
+.change-code { display: table; min-width: 100%; width: max-content; font: var(--change-code-size, 12px)/1.5 ui-monospace, monospace; white-space: pre; overflow-wrap: normal; tab-size: 4; -webkit-text-size-adjust: 100%; text-size-adjust: 100% }
+.change-line { display: table-row }
+.change-line span { display: table-cell; padding-right: .6rem }
+.change-line .line-number { min-width: 3ch; text-align: right; color: GrayText; user-select: none; border-right: 1px solid GrayText; padding-left: .4rem }
+.change-line .line-text { padding-left: .5rem }
+.change-add { background: light-dark(#dafbe1, #12381f); color: light-dark(#116329, #aff5b4) }
+.change-delete { background: light-dark(#ffebe9, #4c161b); color: light-dark(#a40e26, #ffc1c1) }
+.change-meta { color: GrayText }
+@media (max-width: 600px) {
+  header { gap: .4rem }
+  #changes-main { flex-direction: column }
+  #change-files { flex: 0 1 auto; max-height: 25dvh; border-right: 0; border-bottom: 1px solid GrayText; padding-right: 0 }
+}
 </style>
-<header><h1>Pi remote</h1><div id="status" role="status">Connecting</div></header>
+<header><h1>Pi remote</h1><button id="open-changes" type="button" disabled>Changes</button><div id="status" role="status">Connecting</div></header>
+<dialog id="changes" aria-labelledby="changes-title">
+<div id="changes-heading"><h2 id="changes-title">Changes · read-only</h2><button id="refresh-changes" type="button">Refresh</button><button id="close-changes" type="button">Close</button></div>
+<p id="changes-summary" role="status"></p>
+<div id="changes-main"><nav id="change-files" aria-label="Changed files"></nav><section id="change-detail" aria-label="Selected file">
+<h3 id="change-path"></h3><div id="change-toolbar"><button id="change-diff" type="button" aria-pressed="true">Diff</button><button id="change-source" type="button" aria-pressed="false">Source</button><button id="change-smaller" type="button" aria-label="Decrease code font size">A−</button><button id="change-larger" type="button" aria-label="Increase code font size">A+</button></div>
+<div id="change-content" tabindex="0" aria-label="Read-only file content"></div>
+</section></div>
+</dialog>
 <main id="history" aria-label="Conversation history"></main>
 <article id="live" hidden><strong>Pi (live)</strong><pre id="stream"></pre></article>
 <form id="form">
@@ -78,6 +112,125 @@ const imageFile = document.getElementById('image-file');
 const attachment = document.getElementById('attachment');
 const preview = document.getElementById('preview');
 const imageName = document.getElementById('image-name');
+const changes = document.getElementById('changes');
+const changesButton = document.getElementById('open-changes');
+const changesSummary = document.getElementById('changes-summary');
+const changeFiles = document.getElementById('change-files');
+const changePath = document.getElementById('change-path');
+const changeContent = document.getElementById('change-content');
+const diffButton = document.getElementById('change-diff');
+const sourceButton = document.getElementById('change-source');
+const smallerButton = document.getElementById('change-smaller');
+const largerButton = document.getElementById('change-larger');
+let changeFontSize = 12;
+function setChangeFontSize(size) {
+  changeFontSize = Math.max(9, Math.min(18, size));
+  changeContent.style.setProperty('--change-code-size', changeFontSize + 'px');
+  smallerButton.disabled = changeFontSize === 9;
+  largerButton.disabled = changeFontSize === 18;
+  sessionStorage.setItem('pi-remote-code-size', String(changeFontSize));
+}
+smallerButton.onclick = () => setChangeFontSize(changeFontSize - 1);
+largerButton.onclick = () => setChangeFontSize(changeFontSize + 1);
+let workspace = '', changesRequest = 0, changeRequest = 0, changePathValue = '', changeView = 'diff', chatScroll = 0;
+function clearChanges(message) {
+  changesRequest++;
+  changeRequest++;
+  changeFiles.replaceChildren();
+  changePath.textContent = '';
+  changePathValue = '';
+  changeContent.replaceChildren();
+  changesSummary.textContent = message;
+}
+function renderChange(data) {
+  changeContent.replaceChildren();
+  if (data.message) { changeContent.textContent = data.message; return; }
+  const code = document.createElement('div');
+  code.className = 'change-code';
+  let oldLine = 0, newLine = 0, inHunk = false;
+  const lines = data.text.split('\\n');
+  if (lines.at(-1) === '') lines.pop();
+  lines.forEach((text, index) => {
+    let before = '', after = '', kind = '';
+    if (changeView === 'source') after = index + 1;
+    else {
+      const hunk = /^@@ -(\\d+)(?:,\\d+)? \\+(\\d+)/.exec(text);
+      if (hunk) { oldLine = Number(hunk[1]); newLine = Number(hunk[2]); inHunk = true; kind = 'change-meta'; }
+      else if (inHunk && text.startsWith('+')) { after = newLine++; kind = 'change-add'; }
+      else if (inHunk && text.startsWith('-')) { before = oldLine++; kind = 'change-delete'; }
+      else if (inHunk && text.startsWith(' ')) { before = oldLine++; after = newLine++; }
+      else kind = 'change-meta';
+    }
+    const row = document.createElement('div');
+    row.className = 'change-line ' + kind;
+    for (const [value, className] of [[before, 'line-number'], [after, 'line-number'], [text, 'line-text']]) {
+      const cell = document.createElement('span');
+      cell.className = className;
+      cell.textContent = value;
+      row.append(cell);
+    }
+    code.append(row);
+  });
+  changeContent.append(code);
+  changeContent.scrollTo(0, 0);
+}
+async function loadChange(path) {
+  changePathValue = path;
+  changePath.textContent = path;
+  for (const button of changeFiles.querySelectorAll('button')) button.setAttribute('aria-current', String(button.dataset.path === path));
+  diffButton.setAttribute('aria-pressed', String(changeView === 'diff'));
+  sourceButton.setAttribute('aria-pressed', String(changeView === 'source'));
+  const id = ++changeRequest, current = workspace;
+  changeContent.textContent = 'Loading…';
+  try {
+    const data = await (await request('/changes?' + new URLSearchParams({ workspace: current, path, view: changeView }))).json();
+    if (!changes.open || id !== changeRequest || current !== workspace || data.workspace !== current) return;
+    renderChange(data);
+  } catch (error) { if (changes.open && id === changeRequest && current === workspace) changeContent.textContent = error.message; }
+}
+async function refreshChanges() {
+  const previous = changePathValue;
+  clearChanges('Loading…');
+  const id = changesRequest, current = workspace;
+  if (!current) { changesSummary.textContent = 'Waiting for the current session'; return; }
+  try {
+    const data = await (await request('/changes?' + new URLSearchParams({ workspace: current }))).json();
+    if (!changes.open || id !== changesRequest || current !== workspace || data.workspace !== current) return;
+    if (data.message) { changesSummary.textContent = data.message; return; }
+    changesSummary.textContent = data.repository + '\\n' + data.files.length + ' changed files · +' + data.added + ' / −' + data.deleted
+      + (data.omitted ? ' · ' + data.omitted + ' binary or unavailable files excluded from line counts' : '')
+      + (data.hasHead ? ' · Compared with HEAD' : ' · No HEAD yet, current files shown as additions');
+    for (const file of data.files) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.path = file.path;
+      button.textContent = file.path;
+      const detail = document.createElement('small');
+      const labels = file.untracked ? ['Untracked'] : [file.status[0] !== ' ' ? 'Staged ' + file.status[0] : '', file.status[1] !== ' ' ? 'Unstaged ' + file.status[1] : ''].filter(Boolean);
+      detail.textContent = labels.join(' · ') + (file.added === null ? ' · No line counts' : ' · +' + file.added + ' / −' + file.deleted);
+      button.append(detail);
+      button.onclick = () => loadChange(file.path);
+      changeFiles.append(button);
+    }
+    if (data.files.length) loadChange(data.files.some(file => file.path === previous) ? previous : data.files[0].path);
+    else changeContent.textContent = 'No changed files';
+  } catch (error) { if (changes.open && id === changesRequest && current === workspace) changesSummary.textContent = error.message; }
+}
+changesButton.onclick = () => {
+  chatScroll = window.scrollY;
+  changes.showModal();
+  document.body.style.overflow = 'hidden';
+  refreshChanges();
+};
+document.getElementById('refresh-changes').onclick = refreshChanges;
+document.getElementById('close-changes').onclick = () => changes.close();
+changes.addEventListener('close', () => {
+  clearChanges('');
+  document.body.style.overflow = '';
+  window.scrollTo(0, chatScroll);
+});
+diffButton.onclick = () => { changeView = 'diff'; if (changePathValue) loadChange(changePathValue); };
+sourceButton.onclick = () => { changeView = 'source'; if (changePathValue) loadChange(changePathValue); };
 let pendingImage = null;
 let version = '', leaf = '', timer, noticeTimer, busy = false, submitting = false, accessToken = '';
 let connected = false, stateName = '', recovering = false, menuMode = '', items = [], selected = 0;
@@ -179,6 +332,7 @@ function controls() {
   send.disabled = !connected || submitting || changing || stateName === 'Compacting' || !!(pendingImage && !pendingImage.ready);
   stop.disabled = !connected || changing;
   commandButton.disabled = !connected || submitting || changing;
+  changesButton.disabled = !connected || changing || !workspace;
 }
 function resizePrompt() {
   prompt.style.height = 'auto';
@@ -276,6 +430,8 @@ async function request(path, options = {}) {
 function disconnected(error) {
   clearTimeout(timer);
   connected = false;
+  workspace = '';
+  if (changes.open) clearChanges('Disconnected. Reconnect, then refresh Changes');
   footer.hidden = true;
   recovering = true;
   version = '';
@@ -291,7 +447,11 @@ async function poll() {
     const response = await request('/state?' + new URLSearchParams({ version, leaf }));
     if (response.status !== 204) {
       const state = await response.json();
-      const nearBottom = !leaf || window.innerHeight + window.scrollY >= document.body.scrollHeight - 180;
+      const nearBottom = !changes.open && (!leaf || window.innerHeight + window.scrollY >= document.body.scrollHeight - 180);
+      if (workspace !== (state.workspace || '')) {
+        workspace = state.workspace || '';
+        if (changes.open) refreshChanges();
+      }
       if (state.history) {
         const nodes = state.history.map(message => {
           const article = document.createElement('article');
@@ -366,6 +526,7 @@ async function connect() {
   const token = location.hash.slice(1);
   window.history.replaceState(null, '', '/');
   try {
+    setChangeFontSize(Number(sessionStorage.getItem('pi-remote-code-size')) || 12);
     if (token) {
       // A new link replaces the old credential even when authentication fails
       sessionStorage.removeItem('pi-remote-access');
