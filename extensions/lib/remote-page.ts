@@ -8,10 +8,10 @@ export function remotePage(nonce: string) {
 <style nonce="${nonce}">
 :root { color-scheme: light dark; font: 16px system-ui, sans-serif; --control-bg: light-dark(#fafbfc, #1c2026); --control-border: light-dark(#7d8997, #748292); --control-hover: light-dark(#edf1f5, #29313b); --accent-bg: light-dark(#eef4fc, #202f43); --accent-hover: light-dark(#e1ecfa, #2b405c); --accent-border: light-dark(#6b87aa, #6d8eb8); --accent-text: light-dark(#234f85, #b8d6ff) }
 body { max-width: 55rem; margin: auto; padding: 1rem; overflow-wrap: anywhere }
-header { position: sticky; top: 0; background: Canvas; padding: .125rem 0; border-bottom: 1px solid var(--control-border); display: flex; align-items: center; justify-content: space-between; gap: 1rem }
+header { position: sticky; top: 0; background: Canvas; padding: .125rem 0; border-bottom: 1px solid var(--control-border); display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 1rem }
 h1 { font-size: 1.5rem; font-weight: 500; line-height: 1; margin: 0; white-space: nowrap }
 #open-changes { margin: 0; padding: .25rem .5rem; font-size: .875rem }
-#status { display: flex; align-items: center; justify-content: flex-end; gap: .4rem; font-size: .875rem; text-align: right }
+#status { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: .4rem; font-size: .875rem; text-align: right }
 #status::before { box-sizing: border-box; flex: 0 0 auto; width: .5rem; height: .5rem; border-radius: 50% }
 #status[data-state="Idle"]::before { content: ''; background: GrayText }
 #status[data-state="Working"]::before { content: ''; width: .75rem; height: .75rem; border: 2px solid var(--control-border); border-top-color: var(--accent-text); animation: working-spin 1s linear infinite }
@@ -544,8 +544,6 @@ async function openMenu(mode) {
 prompt.addEventListener('input', resizePrompt);
 commandButton.onclick = () => {
   prompt.blur();
-  prompt.value = '/';
-  resizePrompt();
   openMenu('commands');
 };
 document.getElementById('close-menu').onclick = closeMenu;
