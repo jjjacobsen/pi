@@ -795,6 +795,10 @@ replacement are rejected instead of using stale SDK objects
 `/state` carries the latest action's phase, running/done/error state, and result
 A numeric revision keeps large output out of the request URL. Only the latest
 result is retained in process memory, with text capped at 65,536 characters
+Finished results clear after a valid remote prompt is submitted, including queued
+or image-only prompts, or when a user message starts from any input source
+Clearing advances the action revision. Running actions are not cleared
+Prompt clearing does not run for slash-command dispatch or runtime lifecycle events
 No command result is appended to a session or model conversation
 The browser uses a compact expandable row and shows error notifications only
 Action IDs reject late progress and completion from an older action. Model or

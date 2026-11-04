@@ -297,6 +297,12 @@ export default function (pi: ExtensionAPI) {
     access.actionVersion = (access.actionVersion ?? 0) + 1;
   }
 
+  function clearFinishedAction() {
+    if (!access.action || access.action.state === "running") return;
+    access.action = undefined;
+    access.actionVersion = (access.actionVersion ?? 0) + 1;
+  }
+
   function interruptCommand(message: string) {
     commandController?.abort(new Error(message));
     commands.clear();
@@ -325,6 +331,7 @@ export default function (pi: ExtensionAPI) {
     if (event.reason === "quit") await stop();
   });
   pi.on("message_start", (event) => {
+    if (event.message.role === "user") clearFinishedAction();
     if (event.message.role === "assistant") {
       live = event.message;
       liveVersion++;
@@ -586,6 +593,8 @@ export default function (pi: ExtensionAPI) {
           ...(input.text.trim() ? [{ type: "text" as const, text: input.text }] : []),
           ...images,
         ] : input.text, { deliverAs: "followUp", expandPromptTemplates: false });
+        // Queued follow-ups do not emit message_start until they reach the agent
+        clearFinishedAction();
         return reply(response, 202, "Submitted to Pi. If busy, Pi queues it as a follow-up");
       }
       return reply(response, 404, "Not found");

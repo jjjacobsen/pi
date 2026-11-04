@@ -293,6 +293,7 @@ Resume opens saved sessions for the current working directory without focusing
 search. Tap search to filter, or tap a session to resume it
 Commands require idle Pi. The latest command has a compact progress row with
 an expandable result, without success notifications or conversation entries
+Finished results clear on the next prompt, including queued or image-only prompts
 Errors show a notification and retain typed commands for correction
 Other built-ins and dialogs need the terminal
 

@@ -678,6 +678,9 @@ async function poll() {
           if (action.state === 'done' && prompt.value === pendingCommand.text) { prompt.value = ''; resizePrompt(); }
           pendingCommand = null;
         }
+      } else {
+        actionId = '';
+        pendingCommand = null;
       }
       if (stream.textContent !== (state.live?.text || '')) stream.textContent = state.live?.text || '';
       live.hidden = !state.live;
