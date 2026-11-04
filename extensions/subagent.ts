@@ -36,7 +36,7 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { clampThinkingLevel, getSupportedThinkingLevels, StringEnum } from "@earendil-works/pi-ai/compat";
+import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerWorkerModel } from "./lib/worker-model";
@@ -91,7 +91,7 @@ function sumUsage(session) {
       cacheRead: 0,
       cacheWrite: 0,
       totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, totalFromProvider: true },
     };
     total.input += u.input;
     total.output += u.output;
@@ -105,6 +105,7 @@ function sumUsage(session) {
     total.cost.cacheRead += u.cost.cacheRead;
     total.cost.cacheWrite += u.cost.cacheWrite;
     total.cost.total += u.cost.total;
+    total.cost.totalFromProvider &&= u.cost.totalFromProvider === true;
   }
   return total;
 }
@@ -154,7 +155,8 @@ export default function subagentExtension(pi: ExtensionAPI) {
         }),
       ),
       reasoning: Type.Optional(
-        StringEnum(REASONING_LEVELS, {
+        Type.Enum(REASONING_LEVELS, {
+          type: "string",
           description: "Reasoning level for this subagent. Omit to use the saved subagent thinking level, or inherit the parent reasoning level if unset.",
         }),
       ),

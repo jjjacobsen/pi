@@ -207,9 +207,10 @@ mutation queue and never overwrite existing files. The first image gets a
 preview capped at 1024 pixels per side and 1 MB. Native text blocks accompany
 the paths. Native usage feeds tool usage and details, including returned errors
 with usage. Native Chat Completions cost is a catalog-based estimate. The
-image-only adapter uses OpenRouter's reported `usage.cost` when present
+image-only adapter uses OpenRouter's reported `usage.cost` when present and
+marks that total with `cost.totalFromProvider: true`
 
-Pi 1.4.0 still incorrectly sends image-only OpenRouter models to Chat Completions
+Pi 1.5.0 still incorrectly sends image-only OpenRouter models to Chat Completions
 The registered adapter uses `POST /images` for models without text output,
 sending `prompt` and optional `input_references` and normalizing `data[].b64_json`
 It applies Pi's client identity headers before model and request header overrides,
@@ -392,7 +393,8 @@ PASS, FAIL, or BLOCKED with observed vs expected results, target/package,
 artifact paths, blockers, and current app state. Reports use Pi's normal text
 truncation limit. Failed or cancelled calls retain usage and published evidence
 Usage is summed from session entries by `lib/worker-usage.ts`, also used by
-browser, including compaction and cache warming
+browser, including compaction and cache warming. Worker and subagent sums mark
+`cost.totalFromProvider` true only when every included usage explicitly does
 
 ## Screenshot evidence for browser and device
 
@@ -848,8 +850,8 @@ formatted output is capped at 32 KiB. An empty result is the successful text
 The Exa response body is capped at 4 MiB. Error response text used for API
 messages is capped at 8 KiB. A missing results array or invalid JSON fails the
 tool. Exa's positive `costDollars.total` is returned as tool usage with zero
-tokens, including when no sources are found, so the search cost appears in
-session totals
+tokens and `cost.totalFromProvider: true`, including when no sources are found,
+so the search cost appears in session totals
 
 ## Timeout, retry, and cancellation
 

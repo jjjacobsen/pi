@@ -6,7 +6,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { toolError } from "./lib/toolkit";
 
 const TOOL_NAME = "web_search";
@@ -139,7 +138,7 @@ function formatResults(parsed, excerptCap) {
         cacheWrite: 0,
         totalTokens: 0,
         reasoning: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: parsed.costDollars.total },
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: parsed.costDollars.total, totalFromProvider: true },
       }
     : undefined;
 
@@ -234,14 +233,16 @@ export default function searchExtension(pi: ExtensionAPI) {
     parameters: Type.Object({
       query: Type.String({ description: "The search query." }),
       mode: Type.Optional(
-        StringEnum(["answer", "results"], {
+        Type.Enum(["answer", "results"], {
+          type: "string",
           description: "answer returns longer excerpts for synthesis (default); results shortens excerpts to reduce downstream context. Both use the same Exa auto search tier.",
           default: "answer",
         }),
       ),
       numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Preferred number of distinct sources (default 8)." })),
       recencyFilter: Type.Optional(
-        StringEnum(["day", "week", "month", "year"], {
+        Type.Enum(["day", "week", "month", "year"], {
+          type: "string",
           description: "Restrict to sources from the past day, week, month, or year.",
         }),
       ),

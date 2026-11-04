@@ -170,7 +170,7 @@ selection is saved for all sessions and does not change your coding model
 saves original files without overwrites, and returns a reduced preview
 The picker and settings writes are shared with subagent, browser, device, and commit
 
-Pi 1.4.0 still sends image-only OpenRouter models to Chat Completions. A small
+Pi 1.5.0 still sends image-only OpenRouter models to Chat Completions. A small
 registered provider adapter sends them to OpenRouter's Images API and preserves
 Pi's client identity headers. The selected model does not change
 The custom Vercel integration and `/image-thinking` are removed because Pi has

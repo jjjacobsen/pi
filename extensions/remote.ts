@@ -566,6 +566,8 @@ export default function (pi: ExtensionAPI) {
           if (pi.getSettings().images?.blockImages) return reply(response, 400, "Images are blocked by Pi's images.blockImages setting");
           const model = ctx.model;
           if (!model?.input.includes("image")) return reply(response, 400, "The selected model does not support image input. Select an image-capable model in the terminal");
+          // Pi 1.5.0's schema-derived inputLimits type is unknown with strictNullChecks off
+          const inputLimits = model.inputLimits as { images?: { resize?: Parameters<typeof resizeImage>[2] } };
           for (const source of sources) {
             if (!["image/png", "image/jpeg", "image/webp"].includes(source?.mimeType)) return reply(response, 400, "Attach PNG, JPEG, or WebP images");
             if (typeof source.data !== "string" || !source.data.length) return reply(response, 400, "Expected base64 image data");
@@ -577,7 +579,7 @@ export default function (pi: ExtensionAPI) {
             try {
               if (imageFormat(data).mimeType !== source.mimeType) return reply(response, 400, "Image data does not match its PNG, JPEG, or WebP media type");
               // Queued follow-ups can skip Pi's automatic image resizing
-              image = await resizeImage(data, source.mimeType, model.inputLimits?.images?.resize);
+              image = await resizeImage(data, source.mimeType, inputLimits?.images?.resize);
             } catch {
               return reply(response, 400, "Cannot read this image as PNG, JPEG, or WebP. Choose another image");
             }

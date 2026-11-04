@@ -5,7 +5,7 @@ import { modelKey } from "./worker-model";
 
 export function registerImageProviders(pi: ExtensionAPI) {
   const nativeOpenRouter = builtinProviders().find((provider) => provider.id === "openrouter");
-  // Pi 1.4.0 still sends image-only models to Chat Completions, which rejects them.
+  // Pi 1.5.0 still sends image-only models to Chat Completions, which rejects them.
   // Protocol: https://openrouter.ai/docs/guides/overview/multimodal/image-generation
   pi.registerProvider("openrouter", {
     images: {
@@ -40,7 +40,7 @@ export function registerImageProviders(pi: ExtensionAPI) {
             input: raw.prompt_tokens ?? 0, output: raw.completion_tokens ?? 0,
             totalTokens: raw.total_tokens ?? (raw.prompt_tokens ?? 0) + (raw.completion_tokens ?? 0),
             cacheRead: 0, cacheWrite: 0,
-            cost: { input: 0, output: raw.cost ?? 0, cacheRead: 0, cacheWrite: 0, total: raw.cost ?? 0 },
+            cost: { input: 0, output: raw.cost ?? 0, cacheRead: 0, cacheWrite: 0, total: raw.cost ?? 0, totalFromProvider: raw.cost != null },
           } : undefined;
           return {
             api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),

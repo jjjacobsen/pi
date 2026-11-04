@@ -8,7 +8,8 @@ import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAgentSession, createExtensionRuntime, getAgentDir, SessionManager, SettingsManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { clampThinkingLevel, Type } from "@earendil-works/pi-ai";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { modelKey, registerWorkerModel } from "./lib/worker-model";
 import { registerRemoteCommand } from "./lib/remote-command";
 
