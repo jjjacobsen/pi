@@ -204,7 +204,8 @@ Plays Warcraft 3 orc peon and human peasant voice lines when things
 happen, like session start or task complete. `/peon` opens the settings
 panel to adjust volume and which events make noise. Task complete draws from
 all 33 voice lines, even when other events are disabled. Audio plays through
-PipeWire's `pw-play`. Adapted from the third-party `pi-peon-ping` extension
+PipeWire's `pw-play` on Linux or `afplay` on macOS. Adapted from the
+third-party `pi-peon-ping` extension
 
 ### status - provider limits and balances via /status
 
@@ -265,6 +266,8 @@ Browser memory, host disk/RAM, and the selected model still limit recording leng
 Voice uses the current Pi Voice transcribe-cpp model and language through the public
 [transcribe-cpp API](https://github.com/handy-computer/transcribe.cpp), with a
 separate model instance that is unloaded after each request. Pi Voice is unchanged
+The host uses the installed Pi Voice Git package and `ffmpeg` from PATH, or
+`PI_VOICE_FFMPEG_PATH` when set. See [voice setup](docs/environment.md#remote-browser)
 
 Press Changes in the header for a full-screen, read-only review of the current
 repository. It lists staged, unstaged, and untracked files with combined line

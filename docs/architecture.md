@@ -465,8 +465,8 @@ categories from pi-peon-ping
 ## Assets, config, and state
 
 The 33 WAV files live in `assets/peon/` and are played directly with PipeWire's
-`pw-play`. The sound packs are Orc Peon by tonyyont and Human Peasant by
-thomasKn from OpenPeon CESP, licensed CC-BY-NC-4.0
+`pw-play` on Linux or `afplay` on macOS. The sound packs are Orc Peon by
+tonyyont and Human Peasant by thomasKn from OpenPeon CESP, licensed CC-BY-NC-4.0
 
 Config is `<agent_dir>/peon.json`
 
@@ -509,9 +509,10 @@ is kept only in process memory, so Peon never signals a PID restored from disk
   start the debounce window
 
 Paused or disabled categories do not play. Before a new sound starts, the
-extension sends `SIGTERM` to the recorded player PID. It starts `pw-play`,
-passing the configured 0–1 volume to the player. The player is detached with
-ignored standard streams, `unref` is called, and the new PID is recorded so
+extension sends `SIGTERM` to the recorded player PID. It starts `pw-play` on
+Linux or `afplay` on macOS, passing the configured 0–1 volume to the player.
+The player is detached with ignored standard streams, `unref` is called, and
+the new PID is recorded so
 voice lines do not overlap. Unsupported platforms and
 spawn failures log one line and do not break pi
 
@@ -711,8 +712,10 @@ images are not stored across page exits. History still uses `[Image omitted]`
 
 `POST /transcribe?workspace=<id>` accepts authenticated WebM or MP4 audio,
 never a prompt. `lib/remote-voice.ts` reads the version-1 Pi Voice settings at
-`~/.pi/agent/pi-voice.json` and dynamically imports the public
-`~/.pi/agent/npm/node_modules/transcribe-cpp/dist/index.js` entry
+`<agent_dir>/pi-voice.json` and dynamically imports the public
+`node_modules/transcribe-cpp/dist/index.js` entry from the installed Pi Voice Git
+package at `<agent_dir>/git/github.com/earendil-works/pi-voice`
+Pi's `getAgentDir()` supplies the agent directory and honors `PI_CODING_AGENT_DIR`
 It does not import Pi Voice source or share its
 model. The configured backend must be transcribe-cpp. Model path and language
 are read on each request, with `auto` mapped to library language detection
@@ -725,9 +728,9 @@ session replacement, remote off, and client disconnect abort the request
 Shutdown waits for cleanup, so replacement cannot start another model load. Native load has no cancellation parameter, so it must finish
 before disposal. Native inference cancellation is cooperative
 Uploads stream to a private temporary file with backpressure, without a size or
-upload deadline. Spawned `/usr/bin/ffmpeg` decodes the full recording to a temporary
-mono 16 kHz f32le file, without a duration cap, process deadline, or exec output
-buffer. It retains file/pipe protocols only and no shell. Cancellation kills
+upload deadline. Spawned `ffmpeg` from PATH, or `PI_VOICE_FFMPEG_PATH` when set,
+decodes the full recording to a temporary mono 16 kHz f32le file, without a
+duration cap, process deadline, or exec output buffer. It retains file/pipe protocols only and no shell. Cancellation kills
 FFmpeg and waits for close before cleanup. Both files are removed in `finally`
 The decoded file streams into one full Float32Array, without readFile's fixed
 per-file ceiling or a second full PCM copy

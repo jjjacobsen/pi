@@ -1,15 +1,16 @@
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { pipeline } from "node:stream/promises";
 
 // Read Pi Voice's settings, but use only transcribe-cpp's public package API
 export async function transcribeRemoteAudio(request: IncomingMessage, signal: AbortSignal) {
-  const agentDir = join(homedir(), ".pi", "agent");
+  const agentDir = getAgentDir();
   const settings = JSON.parse(await readFile(join(agentDir, "pi-voice.json"), "utf8").catch((error) => {
     throw new Error(`Cannot read Pi Voice settings: ${error.message}`);
   }));
@@ -18,9 +19,9 @@ export async function transcribeRemoteAudio(request: IncomingMessage, signal: Ab
   if (!settings.model?.path) throw new Error("Select and download a Pi Voice model with /voice-settings first");
   if (typeof settings.transcriptionLanguage !== "string") throw new Error("Pi Voice transcriptionLanguage is missing");
   await access(settings.model.path).catch(() => { throw new Error("Pi Voice model is missing or unreadable. Check /voice-settings"); });
-  await access("/usr/bin/ffmpeg").catch(() => { throw new Error("Remote voice requires /usr/bin/ffmpeg"); });
-  const modulePath = join(agentDir, "npm", "node_modules", "transcribe-cpp", "dist", "index.js");
-  await access(modulePath).catch(() => { throw new Error("The installed public transcribe-cpp module is missing from ~/.pi/agent/npm/node_modules"); });
+  const ffmpeg = process.env.PI_VOICE_FFMPEG_PATH?.trim() || "ffmpeg";
+  const modulePath = join(agentDir, "git", "github.com", "earendil-works", "pi-voice", "node_modules", "transcribe-cpp", "dist", "index.js");
+  await access(modulePath).catch(() => { throw new Error(`The public transcribe-cpp module is missing from the Pi Voice Git installation: ${modulePath}`); });
   const moduleUrl = pathToFileURL(modulePath).href;
 
   signal.throwIfAborted();
@@ -33,7 +34,7 @@ export async function transcribeRemoteAudio(request: IncomingMessage, signal: Ab
     signal.throwIfAborted();
     const pcmFile = join(directory, "audio.f32le");
     await new Promise<void>((resolve, reject) => {
-      const child = spawn("/usr/bin/ffmpeg", [
+      const child = spawn(ffmpeg, [
         "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-i", file,
         "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", pcmFile,
       ], { signal, killSignal: "SIGKILL", stdio: ["ignore", "ignore", "pipe"] });

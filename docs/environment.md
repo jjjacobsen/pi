@@ -102,11 +102,18 @@ transport and cannot change through `/reload` alone
 Voice needs browser HTTPS, microphone permission, and MediaRecorder support
 for WebM/Opus or MP4, including Safari's MP4 recording. HTTP over Tailscale is
 not a secure browser context and cannot use the microphone
-The host needs `/usr/bin/ffmpeg`, the installed public module at
-`~/.pi/agent/npm/node_modules/transcribe-cpp/dist/index.js`, its native runtime, and
-`~/.pi/agent/pi-voice.json` version 1 with `backend.type: transcribe-cpp`, a
-readable local `model.path`, and `transcriptionLanguage`. Select and download
-the model through `/voice-settings` first. Settings are read for each request
+The host needs `ffmpeg` in Pi's PATH, or `PI_VOICE_FFMPEG_PATH` set to its
+executable path, as supported by Pi Voice. On macOS, Homebrew's
+`/opt/homebrew/bin/ffmpeg` works through PATH. Restart Pi after changing its
+environment
+Remote voice uses the installed Pi Voice Git package at
+`<agent_dir>/git/github.com/earendil-works/pi-voice` and its public
+`node_modules/transcribe-cpp/dist/index.js` module and native runtime
+`<agent_dir>` comes from Pi's `getAgentDir()`, normally `~/.pi/agent`, with
+`PI_CODING_AGENT_DIR` as the override. It reads `<agent_dir>/pi-voice.json`
+version 1 with `backend.type: transcribe-cpp`, a readable local `model.path`,
+and `transcriptionLanguage`. Select and download the model through
+`/voice-settings` first. Settings are read for each request
 No Pi Voice source is imported or changed, and no model is downloaded by remote
 Other backends fail with an error. The separate remote model adds memory use
 and load time, with one remote request at a time and disposal after each request
