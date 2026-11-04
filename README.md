@@ -284,12 +284,17 @@ Long model labels are shortened to fit, with reasoning kept visible
 It is hidden when the footer
 extension is absent or disabled. `/footer` toggles both displays
 Press `/` beside the composer to open the command menu without the keyboard
-Tap any command to send it immediately. Type commands with flags or arguments
-and press Send without opening the menu. `/new`, `/reload`, and `/resume`
-work remotely. Resume opens saved sessions for the current working directory
-without focusing search. Tap search to filter, or tap a session to resume it
-Loaded extension, skill, and template commands are also available
-Commands require idle Pi. Other built-ins and dialogs need the terminal
+Tap a command to run it without changing draft text or images. Type commands
+with flags or arguments and press Send without opening the menu
+Remote commands are `/new`, `/resume`, `/reload`, `/compact [instructions]`,
+`/commit`, `/commit-and-push`, `/status`, and `/footer`. Extension commands
+appear only when their remote adapter is loaded. Other commands are rejected
+Resume opens saved sessions for the current working directory without focusing
+search. Tap search to filter, or tap a session to resume it
+Commands require idle Pi. The latest command has a compact progress row with
+an expandable result, without success notifications or conversation entries
+Errors show a notification and retain typed commands for correction
+Other built-ins and dialogs need the terminal
 
 The same link follows this Pi process across new, resume, fork, clone, tree
 navigation, compaction, and reload, including changes made in the terminal

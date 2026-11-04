@@ -93,11 +93,11 @@ dependencies. Each uploaded image must fit the server's 10 MiB limit. Image
 prompt JSON has a 70 MiB limit, including base64 and up to 64 KiB of text
 Images that the browser cannot decode or resize stay unsent with an error
 Submitted images go to the model provider and normal Pi session storage
-After updating an already-running remote listener, use `/remote off`, then
-`/remote` to apply the image-preview CSP and upload timeout if not already done
-For uncapped voice, run `/reload`, `/remote off`, then `/remote` and open the new
-link. Refresh the phone page. The listener must restart to replace the shared
-upload timeout with a per-request deadline that exempts authenticated voice
+After updating an already-running remote listener, run `/reload`, `/remote off`,
+then `/remote` and open the new link. Refresh the phone page for the new command
+interface. Restarting also updates the image-preview CSP, uncapped voice upload
+handling, and footer preservation during reload. These belong to the listener
+transport and cannot change through `/reload` alone
 
 Voice needs browser HTTPS, microphone permission, and MediaRecorder support
 for WebM/Opus or MP4, including Safari's MP4 recording. HTTP over Tailscale is
@@ -167,14 +167,19 @@ but does not stop Pi or the listener. Session replacement and reload keep the
 same listener, link, and browser credential. `/remote off` and process exit close
 access and invalidate the link
 
-Type `/` or use the `/` button beside the composer for remote commands. New,
-reload, and resume use Pi's supported command-context methods. Resume lists
+Type a command or use the `/` button beside the composer. Remote commands are
+new, resume, reload, compact, commit, commit-and-push, status, and footer
+Commit, status, and footer need their matching extensions loaded in each runtime
+They use the same Git, model, provider credentials, and terminal requirements
+as their terminal commands, with no new dependencies or credentials
+New, reload, and resume use Pi's supported command-context methods. Resume lists
 saved sessions in the current working directory and honors the active session
-storage directory. Other listed commands come from loaded extensions, skills,
-and templates. Commands require idle Pi. Other terminal built-ins and extension
-dialogs are not implemented in the browser. A command can still need terminal
-confirmation. Do not retry a command after a timeout until you check the current
-session, since it can have completed
+storage directory. Compact accepts optional summary instructions
+Commands require idle Pi. Progress and the latest expandable result come from
+state polling, not a long command request. Results are kept only in process
+memory, not in the model conversation or a database. Other commands are rejected
+Terminal confirmation dialogs still need the terminal. Do not retry a command
+after a network error until you check its result and the current session
 
 ## Local resources
 

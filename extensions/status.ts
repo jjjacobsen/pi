@@ -4,11 +4,12 @@
  * Adapted from omp (can1357/oh-my-pi)
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import { resolveCodexAuth } from "./lib/toolkit";
+import { registerRemoteCommand } from "./lib/remote-command";
 
 const TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -165,7 +166,7 @@ function appendCodexWindows(limits: LimitInfo[], rateLimit, now: number, feature
 	if (rateLimit.secondary_window) limits.push(codexLimit(rateLimit.secondary_window, "Secondary window", explicitlyAllowed, now, feature));
 }
 
-async function fetchCodexLimits(ctx: ExtensionCommandContext, now: number, signal: AbortSignal): Promise<ProviderLimits> {
+async function fetchCodexLimits(ctx: ExtensionContext, now: number, signal: AbortSignal): Promise<ProviderLimits> {
 	const auth = await resolveCodexAuth(ctx);
 	if (!auth) throw new Error("no openai-codex credentials; log in with /login");
 	const headers: Record<string, string> = {};
@@ -191,7 +192,7 @@ async function fetchCodexLimits(ctx: ExtensionCommandContext, now: number, signa
 	};
 }
 
-async function fetchLimits(ctx: ExtensionCommandContext, signal: AbortSignal): Promise<LimitsData> {
+async function fetchLimits(ctx: ExtensionContext, signal: AbortSignal): Promise<LimitsData> {
 	const fetchedAt = Date.now();
 	const providers = await Promise.all([
 		fetchCodexLimits(ctx, fetchedAt, signal).catch((error) => providerError("openai-codex", error)),
@@ -364,7 +365,42 @@ class StatusComponent {
 	}
 }
 
+function formatSnapshot(data: LimitsData): string {
+	const lines = ["Provider Status", `Fetched ${new Date(data.fetchedAt).toLocaleString()}`, ""];
+	for (const provider of data.providers) {
+		lines.push(providerDisplayName(provider.provider));
+		if (provider.error) {
+			lines.push(`⚠ ${provider.error}`, "");
+			continue;
+		}
+		const account = accountLabel(provider);
+		if (account) lines.push(account);
+		if (provider.balanceUsd !== null) lines.push(`$${provider.balanceUsd.toFixed(2)} USD remaining`);
+		for (const limit of provider.limits) {
+			lines.push(`${statusIcon(limit.status)} ${limit.label} · ${formatRemaining(limit.remainingFraction)}`);
+			if (limit.resetsAt !== null && limit.resetsAt > Date.now()) {
+				lines.push(`  resets in ${formatDuration(limit.resetsAt - Date.now())}`);
+			}
+		}
+		if (provider.resetCredits !== null && provider.resetCredits > 0) {
+			lines.push(`✦ ${provider.resetCredits} saved reset${provider.resetCredits === 1 ? "" : "s"} available`);
+		}
+		lines.push("");
+	}
+	return lines.join("\n").trimEnd();
+}
+
 export default function (pi: ExtensionAPI) {
+	registerRemoteCommand(pi, "status", "Show provider quotas and USD balances", async (args, ctx, update, signal) => {
+		if (args) throw new Error("Usage: /status");
+		update("Fetching provider status");
+		const data = await fetchLimits(ctx, signal);
+		const errors = data.providers.filter((provider) => provider.error);
+		return {
+			text: formatSnapshot(data),
+			...(errors.length ? { error: errors.map((provider) => `${providerDisplayName(provider.provider)}: ${provider.error}`).join("\n") } : {}),
+		};
+	});
 	pi.registerCommand("status", {
 		description: "Show provider quotas and USD balances",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {

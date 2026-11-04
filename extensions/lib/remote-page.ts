@@ -101,6 +101,7 @@ small { display: block; color: GrayText }
 </dialog>
 <main id="history" aria-label="Conversation history"></main>
 <article id="live" hidden><strong>Pi (live)</strong><pre id="stream"></pre></article>
+<article id="command-result" hidden><details class="tool-result"><summary><strong id="command-label"></strong></summary><pre id="command-output"></pre></details></article>
 <form id="form">
 <section id="menu" hidden aria-label="Command menu">
 <div id="menu-heading"><strong id="menu-title">Commands</strong><button id="close-menu" type="button" aria-label="Close menu">Close</button></div>
@@ -128,6 +129,11 @@ const status = document.getElementById('status');
 const history = document.getElementById('history');
 const live = document.getElementById('live');
 const stream = document.getElementById('stream');
+const commandResult = document.getElementById('command-result');
+const commandDetails = commandResult.querySelector('details');
+const commandLabel = document.getElementById('command-label');
+const commandOutput = document.getElementById('command-output');
+let actionId = '', actionRunning = false, lastErrorId = '', pendingCommand = null;
 const prompt = document.getElementById('prompt');
 const send = document.getElementById('send');
 const reconnect = document.getElementById('reconnect');
@@ -360,7 +366,7 @@ diffButton.onclick = () => { changeView = 'diff'; if (changePathValue) loadChang
 sourceButton.onclick = () => { changeView = 'source'; if (changePathValue) loadChange(changePathValue); };
 let pendingImages = [];
 const expandedResults = new Set();
-let historyWorkspace = '';
+let historySession = '';
 let version = '', leaf = '', timer, submitting = false, accessToken = '';
 let connected = false, stateName = '', recovering = false, menuMode = '', items = [], selected = 0;
 function presentNotice() {
@@ -492,7 +498,7 @@ function controls() {
   recordButton.setAttribute('aria-label', recordButton.title);
   voiceCancel.hidden = !voice;
   if (!voice && voiceFocused) recordButton.focus();
-  commandButton.disabled = !connected || submitting || changing || !!voice;
+  commandButton.disabled = !connected || submitting || actionRunning || changing || !!voice;
   changesButton.disabled = !connected || changing || !workspace;
 }
 function resizePrompt() {
@@ -519,10 +525,7 @@ function renderChoices() {
     description.textContent = item.description;
     button.append(description);
     button.onclick = () => {
-      closeMenu();
-      prompt.value = item.value;
-      resizePrompt();
-      form.requestSubmit();
+      submitCommand(item.value);
     };
     return button;
   }));
@@ -607,13 +610,14 @@ async function poll() {
     if (response.status !== 204) {
       const state = await response.json();
       const nearBottom = !changes.open && (!leaf || window.innerHeight + window.scrollY >= document.body.scrollHeight - 180);
+      const contentChanged = (state.history && state.leaf !== leaf) || stream.textContent !== (state.live?.text || '') || live.hidden !== !state.live;
       if (workspace !== (state.workspace || '')) {
         cancelVoice('Session changed. Voice cancelled');
         workspace = state.workspace || '';
         if (changes.open) refreshChanges();
       }
-      if (state.workspace && historyWorkspace !== state.workspace) {
-        historyWorkspace = state.workspace;
+      if (state.sessionId && historySession !== state.sessionId) {
+        historySession = state.sessionId;
         expandedResults.clear();
         for (const details of history.querySelectorAll('details.tool-result')) details.open = false;
       }
@@ -659,14 +663,30 @@ async function poll() {
         footerReasoning.textContent = state.footer.reasoning ? '• ' + state.footer.reasoning : '';
         footerReasoning.hidden = !state.footer.reasoning;
       }
-      stream.textContent = state.live ? state.live.text : '';
+      const action = state.action;
+      commandResult.hidden = !action;
+      actionRunning = action?.state === 'running';
+      if (action) {
+        if (actionId !== action.id) { actionId = action.id; commandDetails.open = false; }
+        commandLabel.textContent = '/' + action.name + ' · ' + action.phase;
+        commandOutput.textContent = action.text || action.phase;
+        if (action.state === 'error' && lastErrorId !== action.id) {
+          lastErrorId = action.id;
+          showError(action.error || action.text);
+        }
+        if (pendingCommand?.id === action.id && action.state !== 'running') {
+          if (action.state === 'done' && prompt.value === pendingCommand.text) { prompt.value = ''; resizePrompt(); }
+          pendingCommand = null;
+        }
+      }
+      if (stream.textContent !== (state.live?.text || '')) stream.textContent = state.live?.text || '';
       live.hidden = !state.live;
       stateName = state.state;
       status.textContent = stateName + (state.pending ? ' (queued prompts)' : '');
       status.dataset.state = stateName;
       version = state.version;
       if (state.leaf) leaf = state.leaf;
-      if (nearBottom) window.scrollTo(0, document.body.scrollHeight);
+      if (nearBottom && contentChanged) window.scrollTo(0, document.body.scrollHeight);
     }
     connected = true;
     controls();
@@ -674,6 +694,19 @@ async function poll() {
     reconnect.hidden = true;
     timer = setTimeout(poll, 700);
   } catch (error) { disconnected(error); }
+}
+async function submitCommand(value, draftText) {
+  if (submitting || actionRunning || !connected || voice) return;
+  closeMenu();
+  if (value === '/resume') { await openMenu('sessions'); return; }
+  submitting = true;
+  controls();
+  try {
+    const result = await (await request('/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: value }) })).json();
+    if (draftText !== undefined) pendingCommand = { id: result.id, text: draftText };
+    actionRunning = true;
+  } catch (error) { showError(error.message + '. Check the current session before trying again'); }
+  finally { submitting = false; version = ''; controls(); }
 }
 form.onsubmit = async event => {
   event.preventDefault();
@@ -685,19 +718,19 @@ form.onsubmit = async event => {
   closeMenu();
   if (command && images.length) { showError('Images cannot be attached to slash commands. Remove the images first'); return; }
   if (new TextEncoder().encode(text).length > 64 * 1024) { showError('Text is too large (64 KiB limit)'); return; }
-  if (value === '/resume') { await openMenu('sessions'); return; }
+  if (command) { await submitCommand(value, text); return; }
   submitting = true;
   controls();
   try {
-    const body = { text: command ? value : text, ...(images.length ? { images: await Promise.all(images.map(image => readImage(image.file))) } : {}) };
-    await request(command ? '/command' : '/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const body = { text, ...(images.length ? { images: await Promise.all(images.map(image => readImage(image.file))) } : {}) };
+    await request('/prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body), signal: AbortSignal.timeout(images.length ? 60000 : 15000) });
     if (prompt.value === text) {
       prompt.value = '';
       resizePrompt();
     }
     images.forEach(removeImage);
-  } catch (error) { showError(error.message + (command ? '. Check the current session before trying again' : '')); }
+  } catch (error) { showError(error.message); }
   finally { submitting = false; version = ''; controls(); }
 };
 send.onclick = async () => {

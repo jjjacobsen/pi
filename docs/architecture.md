@@ -629,7 +629,7 @@ label visible. Output still uses `textContent` with no additional truncation
 Assistant text and tool-call markers remain ordinary visible messages
 An in-memory set of open result IDs preserves expansion across history rebuilds
 and tree navigation. Rebuilds also restore summary keyboard focus. The set resets
-when the runtime's `workspace` changes or the page refreshes, not on a temporary
+when the session ID changes or the page refreshes, not on reload or a temporary
 network disconnect. New results start collapsed
 
 Each authenticated `/state` request also reads the footer extension through
@@ -641,7 +641,9 @@ footer function supplies both displays, including provider visibility and
 There is no separate Git poll, context calculation, or model lookup in remote. The serialized
 footer is part of the version marker, so footer-only changes cannot return 204
 The page renders the data with `textContent` in a compact strip above the
-composer. Transition responses and connection failures hide the strip
+composer. Reload transition responses retain the last plain footer snapshot
+Other transitions and connection failures hide the strip. Status-only polls do
+not scroll the conversation
 
 The header's Changes button opens a full-screen, read-only dialog without
 replacing the chat. Close restores the saved chat scroll position, and polling
@@ -759,14 +761,15 @@ submission state, leaves text and images unchanged, and never submits the form
 The action is disabled while disconnected or changing sessions. Explicit form
 submission still supports queued follow-ups. Abort does not promise to close dialogs
 
-Only the adjacent `/` button opens the command menu. It lists all commands,
-without filtering from the textarea. Each choice submits immediately without
-focusing the textarea. Typed commands remain manually sendable with arguments
-Opening or closing the menu does not focus a text field
-`GET /commands` returns names and descriptions from `pi.getCommands()` plus
-three supported built-ins: new, reload, and resume. It does not expose source
-paths or system-prompt data. `GET /sessions` uses `SessionManager.list()` for
-the current working directory and active storage directory. It returns IDs,
+Only the adjacent `/` button opens the command menu. Each choice calls
+`submitCommand(value)` directly, without writing or resizing the textarea,
+consuming draft images, or focusing a text field. Typed commands remain manually
+sendable with arguments. Their text clears only after successful completion
+`GET /commands` returns an explicit allowlist: new, resume, reload, compact,
+commit, commit-and-push, status, and footer. The last four appear only when their
+extension answers the synchronous `lib/remote-command.ts` event-bus request
+No skills, templates, source paths, or system-prompt data are exposed
+`GET /sessions` uses `SessionManager.list()` for the current working directory and active storage directory. It returns IDs,
 display names, modification times, message counts, and the current-session flag
 The browser uses these entries in a searchable resume picker, opened by choosing
 Resume or sending `/resume`. Search is not focused automatically, and choosing a
@@ -779,14 +782,31 @@ This obtains a supported `ExtensionCommandContext`, rather than pretending
 that prompt text can execute terminal built-ins. The handler calls
 `ctx.newSession()`, `ctx.reload()`, or `ctx.switchSession()` for the three
 built-ins. Resume resolves a listed session ID to its path on the server
-Cancellation and synchronous command errors return to the browser. Other listed
-commands dispatch through Pi's normal extension, skill, and template handling
-No unsupported built-in is sent to the model as a fallback. Request bodies that
-span session replacement are rejected instead of using stale SDK objects
+Compact uses `ctx.compact()` with optional instructions and completion/error
+callbacks. Commit, status, and footer execute their loaded remote adapters,
+not slash-message fallbacks. Adapters bind at session start and unsubscribe at
+shutdown. They share the existing commit workflow, provider fetch/format helpers,
+and footer toggle. Terminal command behavior is unchanged. Status returns a
+single text snapshot with per-provider failures instead of opening a TUI panel
+No unsupported command is sent to the model. Request bodies that span session
+replacement are rejected instead of using stale SDK objects
 
-The page reports terminal UI waits but does not implement dialogs. Prompt and
-resource-command submission acknowledges dispatch, not model completion
-Asynchronous SDK or model errors remain in the terminal or conversation
+`POST /command` returns 202 with an action ID before execution completes
+`/state` carries the latest action's phase, running/done/error state, and result
+A numeric revision keeps large output out of the request URL. Only the latest
+result is retained in process memory, with text capped at 65,536 characters
+No command result is appended to a session or model conversation
+The browser uses a compact expandable row and shows error notifications only
+Action IDs reject late progress and completion from an older action. Model or
+unrelated runtime changes interrupt running actions. Requested new/resume/reload
+actions finish from the matching replacement lifecycle event, not dispatch
+Model selections during their replacement startup do not interrupt these actions
+Stop settles the compact command wait even if an extension delays SDK cancellation
+Only plain action data and the reload footer snapshot survive replacement
+
+The page reports terminal UI waits but does not implement dialogs. Prompt
+submission acknowledges dispatch, not model completion
+Remote command completion and failures are reported through state polling
 Polling retries network failures automatically with the same credential and
 resets transition status from fresh state. Authentication failure clears the
 credential and requires the private link again. Recovery never resends prompts

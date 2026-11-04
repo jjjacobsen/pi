@@ -10,6 +10,12 @@ import { createAgentSession, createExtensionRuntime, getAgentDir, SessionManager
 import { Text } from "@earendil-works/pi-tui";
 import { clampThinkingLevel, Type } from "@earendil-works/pi-ai";
 import { modelKey, registerWorkerModel } from "./lib/worker-model";
+import { registerRemoteCommand } from "./lib/remote-command";
+
+interface CommitDisplay {
+  step: (label: string) => void;
+  message: (text: string) => void;
+}
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_WIDGET = "commit";
@@ -53,7 +59,7 @@ async function readTiming() {
   return mode;
 }
 
-function trackTiming(ctx) {
+function trackTiming(ctx, display?: CommitDisplay) {
   let mode = "normal";
   const started = performance.now();
   const parts = [];
@@ -73,18 +79,24 @@ function trackTiming(ctx) {
       if (mode === "verbose") {
         finish(current, now);
         current = { label, started: now };
-        showSpinner(ctx, label, now);
+        if (display) display.step(label);
+        else showSpinner(ctx, label, now);
       } else if (!phase || phase.label !== nextPhase) {
         finish(phase, now);
         phase = { label: nextPhase, started: now };
-        showSpinner(ctx, nextPhase, now);
+        if (display) display.step(nextPhase);
+        else showSpinner(ctx, nextPhase, now);
       }
     },
     finish() {
       const now = performance.now();
       finish(mode === "verbose" ? current : phase, now);
-      hideSpinner(ctx);
-      notify(ctx, `Timing (total ${duration(now - started)}):\n${parts.join("\n")}`);
+      const text = `Timing (total ${duration(now - started)}):\n${parts.join("\n")}`;
+      if (display) display.message(text);
+      else {
+        hideSpinner(ctx);
+        notify(ctx, text);
+      }
     },
   };
 }
@@ -679,9 +691,10 @@ async function writeMessage(model, thinkingLevel, prompt, cwd, signal, step, req
 }
 
 export default function (pi: ExtensionAPI) {
-  async function runCommit(args, ctx: ExtensionContext, signal, push = false, split = false) {
+  async function runCommit(args, ctx: ExtensionContext, signal, push = false, split = false, display?: CommitDisplay) {
     const cwd = ctx.cwd;
-    const timing = trackTiming(ctx);
+    const timing = trackTiming(ctx, display);
+    const report = (text, level = "info") => display ? display.message(text) : notify(ctx, text, level);
     const { step } = timing;
     let root;
     let base;
@@ -701,7 +714,7 @@ export default function (pi: ExtensionAPI) {
 
       let analysis = await analyze(pi, cwd, signal, step);
       if (!analysis) {
-        notify(ctx, "nothing to commit", "info");
+        report("nothing to commit", "info");
         return "nothing to commit";
       }
       step("build prompt and session context");
@@ -714,7 +727,7 @@ export default function (pi: ExtensionAPI) {
         step("plan: record starting HEAD");
         base = await runGit(pi, root, ["rev-parse", "--verify", "HEAD"], signal, 128);
         plan = await planSplit(pi, analysis, model, thinkingLevel, intent, tail, requiredPrefix, signal, step);
-        notify(ctx, `Split plan (${plan.length} commits):\n${plan.map((group, i) => `${i + 1}. ${group.intent}\n${group.paths.map((file) => `  ${JSON.stringify(file)}`).join("\n")}`).join("\n")}`);
+        report(`Split plan (${plan.length} commits):\n${plan.map((group, i) => `${i + 1}. ${group.intent}\n${group.paths.map((file) => `  ${JSON.stringify(file)}`).join("\n")}`).join("\n")}`);
         step("plan: unstage complete snapshot (keep working files)");
         const reset = await runGit(pi, root, ["read-tree", ...(base.ok ? [trim(base.stdout)] : ["--empty"])], signal, 4096);
         if (!reset.ok) throw new Error(`cannot prepare split index: ${trim(reset.stderr)}`);
@@ -734,7 +747,7 @@ export default function (pi: ExtensionAPI) {
         const message = await writeMessage(model, thinkingLevel, prompt, cwd, signal, step, requiredPrefix);
         const summary = await commit(pi, cwd, message, signal, analysis.tree, step);
         completed.push(summary);
-        notify(ctx, summary, "success");
+        report(summary, "success");
         nextGroup++;
         if (split) await checkSplitProgress(pi, root, group, groups.slice(nextGroup), signal, step);
       }
@@ -745,7 +758,7 @@ export default function (pi: ExtensionAPI) {
         pushStarted = true;
         const result = await runGit(pi, cwd, ["push"], signal);
         if (!result.ok) throw new Error(`commit created (${summary}), but git push failed: ${trim(result.stderr)}`);
-        notify(ctx, "git push completed", "success");
+        report("git push completed", "success");
       }
       return summary;
     } catch (error) {
@@ -762,13 +775,25 @@ export default function (pi: ExtensionAPI) {
   }
 
   for (const command of ["commit", "commit-and-push"]) {
+    const run = (args, ctx, display?: CommitDisplay, signal = ctx.signal) => {
+      const split = /^--split(?:\s|$)/.test(args.trim());
+      const intent = split ? args.trim().slice("--split".length).trim() : args;
+      return runCommit(intent, ctx, signal, command === "commit-and-push", split, display);
+    };
+    registerRemoteCommand(pi, command, `Stage all changes and commit${command === "commit-and-push" ? ", then push" : ""}`, async (args, ctx, update, signal) => {
+      const messages = [];
+      try {
+        await run(args, ctx, { step: update, message: (text) => messages.push(text) }, signal);
+        return { text: messages.join("\n\n") };
+      } catch (error) {
+        return { text: [...messages, error.message].join("\n\n"), error: error.message };
+      }
+    });
     pi.registerCommand(command, {
       description: `Stage all changes and write Conventional Commits${command === "commit-and-push" ? ", then git push" : ""}: /${command} [--split] [CAS-1234] [intent] (one commit by default)`,
       handler: async (args, ctx) => {
         try {
-          const split = /^--split(?:\s|$)/.test(args.trim());
-          const intent = split ? args.trim().slice("--split".length).trim() : args;
-          await runCommit(intent, ctx, ctx.signal, command === "commit-and-push", split);
+          await run(args, ctx);
         } catch (error) {
           notify(ctx, error?.message ?? String(error), "error");
         }

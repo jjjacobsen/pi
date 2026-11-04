@@ -10,7 +10,8 @@ import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import { remotePage } from "./lib/remote-page";
 import { transcribeRemoteAudio } from "./lib/remote-voice";
 import { readChange, readChanges } from "./lib/remote-changes";
-import { readFooterState } from "./lib/footer-state";
+import { readFooterState, type FooterState } from "./lib/footer-state";
+import { readRemoteCommand, type RemoteCommandResult } from "./lib/remote-command";
 import { imageFormat } from "./lib/image-providers";
 
 const exec = promisify(execFile);
@@ -21,6 +22,15 @@ const maxPromptBytes = 70 * 1024 * 1024;
 
 // The transport belongs to this Pi process, not to a replaceable extension runtime
 const accessKey = Symbol.for("jonah.pi.remote");
+interface CommandAction {
+  id: string;
+  name: string;
+  state: "running" | "done" | "error";
+  phase: string;
+  text: string;
+  error?: string;
+}
+
 interface RemoteAccess {
   server?: Server;
   controller?: AbortController;
@@ -30,6 +40,10 @@ interface RemoteAccess {
   handle?: (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<unknown>;
   hideQr?: () => void;
   transition?: string;
+  action?: CommandAction;
+  actionVersion?: number;
+  replacementId?: string;
+  footer?: FooterState | null;
   voice?: { controller: AbortController; done: Promise<string> };
 }
 const processState = globalThis as typeof globalThis & { [accessKey]?: RemoteAccess };
@@ -38,7 +52,9 @@ const builtins = [
   { name: "new", description: "Start a new session" },
   { name: "reload", description: "Reload Pi resources" },
   { name: "resume", description: "Choose a saved session" },
+  { name: "compact", description: "Compact model context, with optional instructions" },
 ];
+const extensionCommands = ["commit", "commit-and-push", "status", "footer"];
 
 async function showQr(ctx: ExtensionContext, link: string, signal: AbortSignal) {
   const helpText = `Scan with a phone on Tailscale. Keep this code and link private\n${link}\nKeep typing below. /remote hide hides this code, /remote off stops access`;
@@ -180,7 +196,7 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
     }
     if (request.method === "GET" && url.pathname === "/state") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      return response.end(JSON.stringify({ version: "", state: access.transition, pending: false, live: null, footer: null }));
+      return response.end(JSON.stringify({ version: "", state: access.transition, pending: false, live: null, action: access.action, footer: access.transition === "Reloading" ? access.footer : null }));
     }
     return reply(response, 503, access.transition);
   }
@@ -218,8 +234,8 @@ async function start(access: RemoteAccess, signal: AbortSignal) {
 
 export default function (pi: ExtensionAPI) {
   const access = processState[accessKey] ??= { connections: new Set(), renderPage: remotePage };
-  const commands = new Map<string, { text: string; resolve: (message: string) => void; reject: (error: Error) => void }>();
-  let commandRunning = false;
+  const commands = new Map<string, string>();
+  let commandController: AbortController;
   let live: AgentMessage;
   let liveVersion = 0;
   let compacting = false;
@@ -254,6 +270,11 @@ export default function (pi: ExtensionAPI) {
     access.controller = undefined;
     access.link = undefined;
     live = undefined;
+    commandController?.abort();
+    commands.clear();
+    access.action = undefined;
+    access.replacementId = undefined;
+    access.footer = null;
     await stopVoice();
     const previous = access.server;
     access.server = undefined;
@@ -266,8 +287,36 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function finishAction(id: string, result: RemoteCommandResult) {
+    const action = access.action;
+    if (action?.id !== id || action.state !== "running") return;
+    action.state = result.error ? "error" : "done";
+    action.phase = result.error ? "Failed" : "Completed";
+    action.text = result.text.length > maxTextBytes ? `[Earlier output omitted]\n${result.text.slice(-maxTextBytes)}` : result.text;
+    action.error = result.error?.slice(-maxTextBytes);
+    access.actionVersion = (access.actionVersion ?? 0) + 1;
+  }
+
+  function interruptCommand(message: string) {
+    commandController?.abort(new Error(message));
+    commands.clear();
+    if (access.action?.state === "running") finishAction(access.action.id, { text: message, error: message });
+  }
+
+  pi.on("model_select", () => {
+    // Earlier session_start handlers can select the replacement session's model
+    if (!access.replacementId) interruptCommand("Command interrupted by a model change. Check the current state before trying again");
+  });
   pi.on("session_shutdown", async (event) => {
     hideQr();
+    commandController?.abort();
+    commands.clear();
+    const action = access.action;
+    if (access.replacementId !== action?.id || action?.name !== event.reason) {
+      access.replacementId = undefined;
+      interruptCommand("Command interrupted by a runtime change. Check the current state before trying again");
+    }
+    if (event.reason !== "reload") access.footer = null;
     // Never retain session-bound SDK objects after replacement
     access.handle = undefined;
     access.hideQr = undefined;
@@ -299,33 +348,69 @@ export default function (pi: ExtensionAPI) {
   pi.on("ui_prompt_end", () => { waiting = false; });
 
   function commandList() {
-    // getCommands contains extension, prompt, and skill commands, not TUI built-ins
-    return [...builtins, ...pi.getCommands().filter((command) => !builtins.some(({ name }) => command.name === name))]
-      .map(({ name, description }) => ({ name, description }));
+    return [...builtins, ...extensionCommands.flatMap((name) => {
+      const command = readRemoteCommand(pi, name);
+      return command ? [{ name, description: command.description }] : [];
+    })];
   }
 
-  async function executeCommand(value: string, ctx: ExtensionCommandContext) {
-    const [name, ...args] = value.slice(1).split(/\s+/);
+  async function executeCommand(id: string, value: string, ctx: ExtensionCommandContext): Promise<RemoteCommandResult | void> {
+    const [, name, argument = ""] = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(value);
+    const args = argument ? argument.split(/\s+/) : [];
+    const update = (phase: string) => {
+      if (access.action?.id === id && access.action.state === "running") {
+        access.action.phase = phase;
+        access.actionVersion = (access.actionVersion ?? 0) + 1;
+      }
+    };
     if (name === "new") {
       if (args.length) throw new Error("Usage: /new");
-      return (await ctx.newSession()).cancelled ? "New session cancelled" : "New session started";
+      access.replacementId = id;
+      if ((await ctx.newSession()).cancelled) return { text: "New session cancelled" };
+      return;
     }
     if (name === "reload") {
       if (args.length) throw new Error("Usage: /reload");
+      access.replacementId = id;
       await ctx.reload();
-      return "Reloaded";
+      // The TUI reports reload failures without rejecting ctx.reload()
+      if (access.replacementId === id) throw new Error("Reload did not complete. Check the Pi terminal");
+      return;
     }
     if (name === "resume") {
       const sessions = await SessionManager.list(ctx.cwd, ctx.sessionManager.getSessionDir());
       const selected = sessions.find((session) => session.id === args[0]);
       if (args.length !== 1 || !selected) throw new Error("Choose a saved session in the browser");
-      return (await ctx.switchSession(selected.path)).cancelled ? "Resume cancelled" : "Session resumed";
+      access.replacementId = id;
+      if ((await ctx.switchSession(selected.path)).cancelled) return { text: "Resume cancelled" };
+      return;
     }
-    pi.sendUserMessage(value, { expandPromptTemplates: true });
-    return "Command submitted. Check the terminal for dialogs";
+    if (name === "compact") {
+      update("Compacting");
+      const signal = commandController.signal;
+      signal.throwIfAborted();
+      let cancel: () => void;
+      return new Promise<RemoteCommandResult>((resolve, reject) => {
+        cancel = () => reject(signal.reason);
+        signal.addEventListener("abort", cancel, { once: true });
+        ctx.compact({
+          customInstructions: argument || undefined,
+          onComplete: (result) => resolve({ text: `Context compacted (${result.tokensBefore.toLocaleString("en-US")} tokens before)\n\n${result.summary}` }),
+          onError: reject,
+        });
+      }).finally(() => signal.removeEventListener("abort", cancel));
+    }
+    const command = extensionCommands.includes(name) && readRemoteCommand(pi, name);
+    if (!command) throw new Error(`/${name} is not available remotely`);
+    return command.run(argument, update, commandController.signal);
   }
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
+    const action = access.action;
+    if (action?.state === "running" && access.replacementId === action.id && action.name === event.reason) {
+      finishAction(action.id, { text: event.reason === "reload" ? "Reloaded" : event.reason === "new" ? "New session started" : "Session resumed" });
+    } else if (event.reason !== "reload") access.action = undefined;
+    access.replacementId = undefined;
     live = undefined;
     liveVersion = 0;
     compacting = false;
@@ -398,10 +483,11 @@ export default function (pi: ExtensionAPI) {
       if (request.method === "GET" && url.pathname === "/state") {
         hideQr();
         const leaf = `${ctx.sessionManager.getSessionId()}:${ctx.sessionManager.getLeafId() ?? "root"}`;
-        const state = compacting ? "Compacting" : waiting ? "Waiting for a terminal dialog" : ctx.isIdle() ? "Idle" : "Working";
+        const state = compacting ? "Compacting" : waiting ? "Waiting for a terminal dialog" : access.action?.state === "running" || !ctx.isIdle() ? "Working" : "Idle";
         const pending = ctx.hasPendingMessages();
-        const footer = readFooterState(pi);
-        const version = `${workspace}:${leaf}:${liveVersion}:${state}:${pending}:${JSON.stringify(footer)}`;
+        const footer = access.footer = readFooterState(pi);
+        const action = access.action;
+        const version = `${workspace}:${leaf}:${liveVersion}:${state}:${pending}:${JSON.stringify(footer)}:${access.actionVersion ?? 0}`;
         if (url.searchParams.get("version") === version) return reply(response, 204);
         if (leaf !== historyLeaf) {
           // Raw active-branch history retains old messages across compaction, unlike model context
@@ -415,11 +501,12 @@ export default function (pi: ExtensionAPI) {
         }
         response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         return response.end(JSON.stringify({
-          version, leaf, workspace, state, pending, footer, live: live ? messageView(live) : null,
+          version, leaf, workspace, sessionId: ctx.sessionManager.getSessionId(), state, pending, footer, action, live: live ? messageView(live) : null,
           ...(url.searchParams.get("leaf") !== leaf ? { history } : {}),
         }));
       }
       if (request.method === "POST" && url.pathname === "/stop") {
+        interruptCommand("Command stopped. Check the current state before trying again");
         ctx.abort();
         return reply(response, 202, "Stop requested. Check the terminal for dialogs and queued prompts");
       }
@@ -450,20 +537,21 @@ export default function (pi: ExtensionAPI) {
         if (url.pathname === "/command") {
           const value = input.text.trim();
           const name = value.split(/\s+/, 1)[0].slice(1);
-          if (!value.startsWith("/") || !commandList().some((command) => command.name === name)) return reply(response, 400, "Command is not available remotely");
-          if (!ctx.isIdle() || compacting || waiting || commandRunning) return reply(response, 409, "Wait for Pi and any terminal dialog to finish");
-          commandRunning = true;
-          try {
-            // Only command handlers receive the supported session-control context
-            const result = await new Promise<string>((resolve, reject) => {
-              const id = randomBytes(16).toString("hex");
-              commands.set(id, { text: value, resolve, reject });
-              pi.sendUserMessage(`/remote run ${id}`, { expandPromptTemplates: true });
-            });
-            return reply(response, 200, result);
-          } catch (error) {
-            return reply(response, 400, error.message);
-          } finally { commandRunning = false; }
+          if (!value.startsWith("/") || !commandList().some((command) => command.name === name)) return reply(response, 400, `/${name} is not available remotely. Use the command menu for supported commands`);
+          if (!ctx.isIdle() || compacting || waiting || access.action?.state === "running") return reply(response, 409, "Wait for Pi and any terminal dialog or remote command to finish");
+          const id = randomBytes(16).toString("hex");
+          access.action = { id, name, state: "running", phase: "Starting", text: "" };
+          access.actionVersion = (access.actionVersion ?? 0) + 1;
+          commandController = new AbortController();
+          commands.set(id, value);
+          // Dispatch only this private adapter command, never arbitrary slash text
+          try { pi.sendUserMessage(`/remote run ${id}`, { expandPromptTemplates: true }); }
+          catch (error) {
+            commands.delete(id);
+            finishAction(id, { text: error.message, error: error.message });
+          }
+          response.writeHead(202, { "Content-Type": "application/json; charset=utf-8" });
+          return response.end(JSON.stringify({ id }));
         }
         if (input.text.trimStart().startsWith("/")) return reply(response, 400, "Use the command menu for slash commands");
         const images = [];
@@ -513,8 +601,14 @@ export default function (pi: ExtensionAPI) {
       const pending = args.startsWith("run ") ? commands.get(id) : undefined;
       if (pending) {
         commands.delete(id);
-        try { pending.resolve(await executeCommand(pending.text, ctx)); }
-        catch (error) { pending.reject(error); }
+        try {
+          if (!ctx.isIdle() || waiting || compacting) throw new Error("Pi is busy. Wait for Pi and any terminal dialog to finish");
+          const result = await executeCommand(id, pending, ctx);
+          if (result) finishAction(id, result);
+        } catch (error) { finishAction(id, { text: error.message, error: error.message }); }
+        finally {
+          if (access.replacementId === id) access.replacementId = undefined;
+        }
         return;
       }
       if (args.trim() === "hide") {

@@ -39,6 +39,7 @@ import { execFile } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { hasActiveBrowsers } from "./lib/browser-status";
 import { FOOTER_STATE_REQUEST, type FooterState } from "./lib/footer-state";
+import { registerRemoteCommand } from "./lib/remote-command";
 
 // Nerd Font glyphs (verified against FiraCode Nerd Font)
 const ICONS = {
@@ -505,14 +506,22 @@ export default function (pi: ExtensionAPI) {
 		if (preferences[enabledKey] && ctx.mode === "tui") enableFooter(ctx);
 	});
 
+	function toggleFooter(ctx: ExtensionContext) {
+		preferences[enabledKey] = !preferences[enabledKey];
+		if (preferences[enabledKey]) enableFooter(ctx);
+		else ctx.ui.setFooter(undefined);
+		return preferences[enabledKey] ? "Custom footer enabled" : "Default footer restored";
+	}
+	registerRemoteCommand(pi, "footer", "Toggle the custom footer and remote browser status", async (args, ctx) => {
+		if (args) throw new Error("Usage: /footer");
+		if (ctx.mode !== "tui") throw new Error("/footer requires the Pi terminal");
+		return { text: toggleFooter(ctx) };
+	});
 	pi.registerCommand("footer", {
 		description: "Toggle the custom footer and remote browser status",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") return;
-			preferences[enabledKey] = !preferences[enabledKey];
-			if (preferences[enabledKey]) enableFooter(ctx);
-			else ctx.ui.setFooter(undefined);
-			ctx.ui.notify(preferences[enabledKey] ? "Custom footer enabled" : "Default footer restored", "info");
+			ctx.ui.notify(toggleFooter(ctx), "info");
 		},
 	});
 }
