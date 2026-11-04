@@ -282,12 +282,12 @@ shows the footer extension's path, branch, Git counters, context usage, current
 model, and reasoning level with the same formatting and warning levels
 Long model labels are shortened to fit, with reasoning kept visible
 It is hidden when the footer
-extension is absent or disabled. `/footer` toggles both displays
+extension is absent or disabled. Terminal `/footer` toggles both displays
 Press `/` beside the composer to open the command menu without the keyboard
 Tap a command to run it without changing draft text or images. Type commands
 with flags or arguments and press Send without opening the menu
 Remote commands are `/new`, `/resume`, `/reload`, `/compact [instructions]`,
-`/commit`, `/commit-and-push`, `/status`, and `/footer`. Extension commands
+`/commit`, `/commit-and-push`, and `/status`. Extension commands
 appear only when their remote adapter is loaded. Other commands are rejected
 Resume opens saved sessions for the current working directory without focusing
 search. Tap search to filter, or tap a session to resume it

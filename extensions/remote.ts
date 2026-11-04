@@ -54,7 +54,7 @@ const builtins = [
   { name: "resume", description: "Choose a saved session" },
   { name: "compact", description: "Compact model context, with optional instructions" },
 ];
-const extensionCommands = ["commit", "commit-and-push", "status", "footer"];
+const extensionCommands = ["commit", "commit-and-push", "status"];
 
 async function showQr(ctx: ExtensionContext, link: string, signal: AbortSignal) {
   const helpText = `Scan with a phone on Tailscale. Keep this code and link private\n${link}\nKeep typing below. /remote hide hides this code, /remote off stops access`;

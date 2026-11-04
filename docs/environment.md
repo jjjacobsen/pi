@@ -168,8 +168,8 @@ same listener, link, and browser credential. `/remote off` and process exit clos
 access and invalidate the link
 
 Type a command or use the `/` button beside the composer. Remote commands are
-new, resume, reload, compact, commit, commit-and-push, status, and footer
-Commit, status, and footer need their matching extensions loaded in each runtime
+new, resume, reload, compact, commit, commit-and-push, and status
+Commit and status need their matching extensions loaded in each runtime
 They use the same Git, model, provider credentials, and terminal requirements
 as their terminal commands, with no new dependencies or credentials
 New, reload, and resume use Pi's supported command-context methods. Resume lists

@@ -766,7 +766,7 @@ Only the adjacent `/` button opens the command menu. Each choice calls
 consuming draft images, or focusing a text field. Typed commands remain manually
 sendable with arguments. Their text clears only after successful completion
 `GET /commands` returns an explicit allowlist: new, resume, reload, compact,
-commit, commit-and-push, status, and footer. The last four appear only when their
+commit, commit-and-push, and status. The last three appear only when their
 extension answers the synchronous `lib/remote-command.ts` event-bus request
 No skills, templates, source paths, or system-prompt data are exposed
 `GET /sessions` uses `SessionManager.list()` for the current working directory and active storage directory. It returns IDs,
@@ -783,10 +783,10 @@ that prompt text can execute terminal built-ins. The handler calls
 `ctx.newSession()`, `ctx.reload()`, or `ctx.switchSession()` for the three
 built-ins. Resume resolves a listed session ID to its path on the server
 Compact uses `ctx.compact()` with optional instructions and completion/error
-callbacks. Commit, status, and footer execute their loaded remote adapters,
+callbacks. Commit and status execute their loaded remote adapters,
 not slash-message fallbacks. Adapters bind at session start and unsubscribe at
-shutdown. They share the existing commit workflow, provider fetch/format helpers,
-and footer toggle. Terminal command behavior is unchanged. Status returns a
+shutdown. They share the existing commit workflow and provider fetch/format helpers
+The footer toggle remains terminal-only. Terminal command behavior is unchanged. Status returns a
 single text snapshot with per-provider failures instead of opening a TUI panel
 No unsupported command is sent to the model. Request bodies that span session
 replacement are rejected instead of using stale SDK objects
