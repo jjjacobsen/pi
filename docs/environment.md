@@ -21,7 +21,7 @@ Install or configure only what you use
 - Bash and Git
 - agent-browser and Chrome/Chromium
 - agent-device (latest) for the device worker, plus Android SDK platform-tools (`adb`) and a prepared dedicated Android emulator
-- pi-voice
+- Pi Voice (`pi install npm:@earendil-works/pi-voice`)
 - FFmpeg for file transcription
 - lazygit
 - Neovim
@@ -104,11 +104,12 @@ for WebM/Opus or MP4, including Safari's MP4 recording. HTTP over Tailscale is
 not a secure browser context and cannot use the microphone
 The host needs `ffmpeg` in Pi's PATH, or `PI_VOICE_FFMPEG_PATH` set to its
 executable path, as supported by Pi Voice. On macOS, Homebrew's
-`/opt/homebrew/bin/ffmpeg` works through PATH. Restart Pi after changing its
-environment
-Remote voice uses the installed Pi Voice Git package at
-`<agent_dir>/git/github.com/earendil-works/pi-voice` and its public
-`node_modules/transcribe-cpp/dist/index.js` module and native runtime
+`/opt/homebrew/bin/ffmpeg` works through PATH. On Linux, the distribution's
+`ffmpeg` works through PATH. Restart Pi after changing its environment
+Install Pi Voice with `pi install npm:@earendil-works/pi-voice`
+Remote voice uses its public transcribe-cpp module at
+`<agent_dir>/npm/node_modules/transcribe-cpp/dist/index.js` and the matching
+native runtime installed by npm. Git installs are not supported
 `<agent_dir>` comes from Pi's `getAgentDir()`, normally `~/.pi/agent`, with
 `PI_CODING_AGENT_DIR` as the override. It reads `<agent_dir>/pi-voice.json`
 version 1 with `backend.type: transcribe-cpp`, a readable local `model.path`,

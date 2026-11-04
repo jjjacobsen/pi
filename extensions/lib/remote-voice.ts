@@ -20,8 +20,8 @@ export async function transcribeRemoteAudio(request: IncomingMessage, signal: Ab
   if (typeof settings.transcriptionLanguage !== "string") throw new Error("Pi Voice transcriptionLanguage is missing");
   await access(settings.model.path).catch(() => { throw new Error("Pi Voice model is missing or unreadable. Check /voice-settings"); });
   const ffmpeg = process.env.PI_VOICE_FFMPEG_PATH?.trim() || "ffmpeg";
-  const modulePath = join(agentDir, "git", "github.com", "earendil-works", "pi-voice", "node_modules", "transcribe-cpp", "dist", "index.js");
-  await access(modulePath).catch(() => { throw new Error(`The public transcribe-cpp module is missing from the Pi Voice Git installation: ${modulePath}`); });
+  const modulePath = join(agentDir, "npm", "node_modules", "transcribe-cpp", "dist", "index.js");
+  await access(modulePath).catch(() => { throw new Error(`The public transcribe-cpp module is missing from the Pi Voice npm installation: ${modulePath}`); });
   const moduleUrl = pathToFileURL(modulePath).href;
 
   signal.throwIfAborted();

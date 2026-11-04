@@ -712,9 +712,10 @@ images are not stored across page exits. History still uses `[Image omitted]`
 
 `POST /transcribe?workspace=<id>` accepts authenticated WebM or MP4 audio,
 never a prompt. `lib/remote-voice.ts` reads the version-1 Pi Voice settings at
-`<agent_dir>/pi-voice.json` and dynamically imports the public
-`node_modules/transcribe-cpp/dist/index.js` entry from the installed Pi Voice Git
-package at `<agent_dir>/git/github.com/earendil-works/pi-voice`
+`<agent_dir>/pi-voice.json` and dynamically imports the public entry at
+`<agent_dir>/npm/node_modules/transcribe-cpp/dist/index.js` from Pi's npm
+installation of `@earendil-works/pi-voice`. Its native runtime is installed by
+npm. Git installs are not supported
 Pi's `getAgentDir()` supplies the agent directory and honors `PI_CODING_AGENT_DIR`
 It does not import Pi Voice source or share its
 model. The configured backend must be transcribe-cpp. Model path and language
