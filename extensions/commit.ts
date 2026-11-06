@@ -692,8 +692,8 @@ async function writeMessage(model, thinkingLevel, prompt, cwd, signal, step, req
 }
 
 export default function (pi: ExtensionAPI) {
-  async function runCommit(args, ctx: ExtensionContext, signal, push = false, split = false, display?: CommitDisplay) {
-    const cwd = ctx.cwd;
+  async function runCommit(args, ctx: ExtensionContext, signal, push = false, split = false, display?: CommitDisplay, directory?: string) {
+    const cwd = directory === undefined ? ctx.cwd : path.resolve(ctx.cwd, directory);
     const timing = trackTiming(ctx, display);
     const report = (text, level = "info") => display ? display.message(text) : notify(ctx, text, level);
     const { step } = timing;
@@ -811,17 +811,19 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Create user-requested commits through the shared /commit workflow, with optional logical whole-file splitting",
     promptGuidelines: [
       "Only commit when the user explicitly requests it. After work and checks are complete, use the commit tool for requests such as 'do the work then commit', not bash or a separate git workflow. Never make unsolicited commits",
+      "Pass commit's cwd parameter when the target repository is outside the session directory. Relative cwd paths resolve against the session directory. If commit fails, report the failure instead of bypassing the commit workflow with bash or another Git workflow",
       "The commit tool stages all repository changes, not a selected subset. Check the full change set first. If that scope conflicts with the user's request, ask the user rather than bypassing the workflow. Do not delete goal.md or handoff.md just to bypass the commit safeguard",
       "Use the commit tool with split: true when the user asks for logical multiple commits, separate commits, or splitting changes into commits. Do not use a separate bash workflow. Split covers all changed files exactly once in ordered whole-file groups and can select one group. It never stages part of a file. Stop on failure and report completed commits and remaining work, do not retry automatically or push a partial sequence",
-      "Pass any requested ticket prefix and intent in commit's intent parameter, as with /commit [--split] [CAS-1234] [intent]. Set the split parameter separately, not in intent. The tool never pushes. /commit-and-push is a separate user command for explicitly requested pushes",
+      "Pass any requested ticket prefix and intent in commit's intent parameter, as with /commit [--split] [CAS-1234] [intent]. Set the split parameter separately, not in intent. The commit tool never pushes. If the user explicitly requests a push, use bash with git -C <target> push only after the full commit workflow succeeds, including all split groups and checks. Never push after failure or a partial sequence. /commit-and-push is a separate user command",
     ],
     parameters: Type.Object({
+      cwd: Type.Optional(Type.String({ description: "Target repository directory, absolute or relative to the session directory. Defaults to the session directory" })),
       intent: Type.Optional(Type.String({ description: "Optional /commit arguments: a leading ticket ID such as CAS-1234, followed by message intent, applied to every commit" })),
       split: Type.Optional(Type.Boolean({ description: "Plan ordered logical whole-file commits from all changes. Default false creates one commit. One logical group is allowed" })),
     }),
     executionMode: "sequential",
     async execute(_id, params, signal, _onUpdate, ctx) {
-      const summary = await runCommit(params.intent, ctx, signal, false, params.split);
+      const summary = await runCommit(params.intent, ctx, signal, false, params.split, undefined, params.cwd);
       return { content: [{ type: "text", text: summary }], details: undefined };
     },
   });

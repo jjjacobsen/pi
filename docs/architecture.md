@@ -51,12 +51,19 @@ message, validates it, and creates the commit. It has no automatic trigger.
 The model-callable `commit` tool and both slash commands call one shared
 workflow. The tool accepts an optional `intent` string with the same
 `[CAS-1234] [intent]` syntax and an optional `split` boolean, false by default
+Its optional `cwd` selects another repository. Relative paths resolve against
+`ctx.cwd`, and omission keeps `ctx.cwd`. The selected directory is used for
+analysis, message sessions, commits, and all split planning and recovery
+Slash commands keep the session directory
 Both commands accept `[--split] [CAS-1234] [intent]`. The tool never pushes
 Prompt guidelines require an
 explicit user commit request, route natural-language commit requests to this
 tool with `split: true` for logical multiple commits, and require a check of
 the all-changes staging scope without removing
-blocking files to bypass the safeguard
+blocking files to bypass the safeguard. Failures must be reported, not bypassed
+with bash or another Git workflow. For an explicitly requested push, the agent
+can use `git -C <target> push` only after the full commit workflow succeeds,
+including all split groups and checks. The tool itself never pushes
 
 `/commit-and-push` shares the same workflow and arguments, then runs plain
 `git push` only after the complete commit sequence succeeds. It adds a Push

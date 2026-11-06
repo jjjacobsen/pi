@@ -116,11 +116,17 @@ refuses to commit if the staged snapshot changes while it writes the message
 
 The `commit` tool uses this same workflow when you ask Pi to commit, including
 requests such as "do the work then commit". It never commits without a user
-request and never pushes. Its optional `intent` string accepts the same
+request and never pushes. Pass its optional `cwd` to target another repository
+Absolute paths are used directly, relative paths resolve against the session
+directory, and omission keeps the session directory. Slash commands keep that default
+Its optional `intent` string accepts the same
 `[CAS-1234] [intent]` arguments as `/commit`. Set its optional `split` boolean
 for requests such as "make logical separate commits". It stages all changes, so Pi must
 check that scope first and must not remove blocking files just to bypass it.
 The result reports the short commit hash and header, or that nothing changed
+On tool failure, Pi must report the error, not bypass the commit workflow
+For an explicitly requested push, Pi can use `git -C <target> push` only after
+the full commit workflow succeeds, including all split groups and checks
 
 Use `/commit [--split] [CAS-1234] [intent]` or
 `/commit-and-push [--split] [CAS-1234] [intent]`. Without `--split`, each command
