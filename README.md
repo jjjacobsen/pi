@@ -209,7 +209,8 @@ are not included
 Plays Warcraft 3 orc peon and human peasant voice lines when things
 happen, like session start or task complete. `/peon` opens the settings
 panel to adjust volume and which events make noise. Task complete draws from
-all 33 voice lines, even when other events are disabled. Audio plays through
+all 16 active voice lines, even when other events are disabled. Attack, annoyed,
+and death sounds are excluded. Error and rapid-prompt events are silent. Audio plays through
 PipeWire's `pw-play` on Linux or `afplay` on macOS. Adapted from the
 third-party `pi-peon-ping` extension
 

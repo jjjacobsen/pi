@@ -34,15 +34,10 @@ const SOUNDS = {
     "PeasantYes2.wav",
     "PeasantYes3.wav",
     "PeasantYes4.wav",
-    "PeasantYesAttack1.wav",
-    "PeasantYesAttack2.wav",
     "PeonYes1.wav",
     "PeonYes2.wav",
     "PeonYes3.wav",
     "PeonYes4.wav",
-    "PeonYesAttack1.wav",
-    "PeonYesAttack2.wav",
-    "PeonYesAttack3.wav",
   ],
   "task.complete": [
     "PeasantReady1.wav",
@@ -54,20 +49,9 @@ const SOUNDS = {
     "PeonYes1.wav",
     "PeonYes2.wav",
     "PeonYes3.wav",
-    "PeonYesAttack1.wav",
-    "PeonYesAttack3.wav",
   ],
-  "task.error": ["PeasantYesAttack3.wav", "PeasantYesAttack4.wav", "PeonAngry4.wav", "PeonDeath.wav"],
-  "user.spam": [
-    "PeasantAngry1.wav",
-    "PeasantAngry2.wav",
-    "PeasantAngry3.wav",
-    "PeasantAngry4.wav",
-    "PeasantAngry5.wav",
-    "PeonAngry1.wav",
-    "PeonAngry2.wav",
-    "PeonAngry3.wav",
-  ],
+  "task.error": [],
+  "user.spam": [],
 };
 
 SOUNDS["task.complete"] = [...new Set(Object.values(SOUNDS).flat())];
@@ -256,7 +240,7 @@ function pickSound(state, category) {
 }
 
 function play(config, state, category) {
-  if (config.paused || !config.categories[category]) return;
+  if (config.paused || !config.categories[category] || SOUNDS[category].length === 0) return;
   const sound = pickSound(state, category);
 
   if (activePlayer) activePlayer.kill("SIGTERM");
