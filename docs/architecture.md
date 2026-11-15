@@ -827,8 +827,10 @@ The page reports terminal UI waits but does not implement dialogs. Prompt
 submission acknowledges dispatch, not model completion
 Remote command completion and failures are reported through state polling
 Polling retries network failures automatically with the same credential and
-resets transition status from fresh state. Authentication failure clears the
-credential and requires the private link again. Recovery never resends prompts
+shows Reconnecting without an error notification. Fresh state restores the status
+Submission, Stop, and connection setup errors still show notifications
+Authentication failure clears the credential, shows an error notification, and
+requires the private link again, even during recovery. Recovery never resends prompts
 or commands. A timed-out command can still finish. Tab closure or mobile OS
 eviction can require the private link again. Phone sleep does not stop Pi
 

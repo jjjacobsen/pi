@@ -368,7 +368,7 @@ let pendingImages = [];
 const expandedResults = new Set();
 let historySession = '';
 let version = '', leaf = '', timer, submitting = false, accessToken = '';
-let connected = false, stateName = '', recovering = false, menuMode = '', items = [], selected = 0;
+let connected = false, stateName = '', menuMode = '', items = [], selected = 0;
 function presentNotice() {
   // Keep the toast above, and interactive inside, the modal Changes dialog
   notice.hidePopover();
@@ -587,15 +587,13 @@ async function request(path, options = {}) {
   if (!response.ok) throw new Error(await response.text());
   return response;
 }
-function disconnected(error) {
+function disconnected() {
   clearTimeout(timer);
   connected = false;
   cancelVoice('Disconnected. Voice cancelled');
   workspace = '';
   if (changes.open) clearChanges('Disconnected. Reconnect, then refresh Changes');
   footer.hidden = true;
-  if (!recovering) showError(error.message);
-  recovering = true;
   version = '';
   status.textContent = accessToken ? 'Reconnecting…' : 'Disconnected. Open the private /remote link';
   delete status.dataset.state;
@@ -693,10 +691,12 @@ async function poll() {
     }
     connected = true;
     controls();
-    recovering = false;
     reconnect.hidden = true;
     timer = setTimeout(poll, 700);
-  } catch (error) { disconnected(error); }
+  } catch (error) {
+    if (!accessToken) showError(error.message);
+    disconnected();
+  }
 }
 async function submitCommand(value, draftText) {
   if (submitting || actionRunning || !connected || voice) return;
@@ -740,7 +740,7 @@ send.onclick = async () => {
   if (send.disabled) return;
   if (!send.hasAttribute('data-stop')) { form.requestSubmit(); return; }
   try { await request('/stop', { method: 'POST' }); }
-  catch (error) { disconnected(error); }
+  catch (error) { showError(error.message); disconnected(); }
 };
 reconnect.onclick = () => { reconnect.hidden = true; version = ''; poll(); };
 async function connect() {
@@ -758,7 +758,7 @@ async function connect() {
     }
     if (!accessToken) throw new Error('Open the private link from /remote in the terminal');
     await poll();
-  } catch (error) { disconnected(error); }
+  } catch (error) { showError(error.message); disconnected(); }
 }
 // Opening a new fragment in this tab must replace the active connection too
 window.addEventListener('hashchange', () => window.location.reload());

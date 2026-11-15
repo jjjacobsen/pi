@@ -313,7 +313,9 @@ navigation, compaction, and reload, including changes made in the terminal
 Keep this extension loaded globally so it is available in each working directory
 Only `/remote off` or process exit closes access. Reload status clears when the
 replacement runtime is ready. Polling reconnects automatically after network
-errors, without resending prompts or commands. Same-tab refresh keeps access
+errors, showing Reconnecting rather than an error notification, without resending
+prompts or commands. Submission and authentication errors remain visible
+Same-tab refresh keeps access
 through `sessionStorage`, not `localStorage`. Closing the tab or mobile OS
 eviction can lose access and require the private link again
 
