@@ -11,7 +11,7 @@ people and organizations I trust
 2. `mise trust`, then `mise use -g pi@latest` to install pi
 3. `pi install ~/Projects/pi` to load this repo's extensions, prompts, and skills, then restart pi
 4. Run `/login` to authenticate your model provider, then `/model` to select a model
-5. Merge the [personal pi settings](docs/pi-settings.md) into `~/.pi/agent/settings.json`
+5. Apply the [personal pi settings and keybindings](docs/pi-settings.md)
 
 See [environment and dependencies](docs/environment.md) for feature-specific API
 keys, browser, device and audio setup, external resources, and development tools

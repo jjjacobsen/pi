@@ -21,3 +21,22 @@ file automatically
 - Print a resume hint instead of the transcript when exiting fullscreen mode
 
 Theme, skill paths, package configuration, and `lastChangelogVersion` stay local
+
+## Keybindings
+
+Merge these into `~/.pi/agent/keybindings.json`, then run `/reload`
+
+```json
+{
+  "tui.altScreen.pageUp": [],
+  "tui.altScreen.pageDown": [],
+  "tui.altScreen.halfPageUp": "pageUp",
+  "tui.altScreen.halfPageDown": "pageDown",
+  "tui.altScreen.top": "home",
+  "tui.altScreen.bottom": "end"
+}
+```
+
+- Page Up/Down scroll the conversation by half a page
+- Home/End jump to the conversation start/end
+- On Mac, use Fn with the arrow keys: up/down for Page Up/Down, left/right for Home/End
